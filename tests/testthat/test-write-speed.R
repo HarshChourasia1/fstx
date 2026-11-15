@@ -36,7 +36,7 @@ test_that("written bytes are the same at 1 and 14 threads", {
                   stringsAsFactors = FALSE)
   for (pr in c("fast", "balanced", "small")) {
     write_fstx(x, p1, profile = pr, threads = 1)
-    write_fstx(x, p14, profile = pr, threads = 14)
+    write_fstx(x, p14, profile = pr, threads = test_threads(2))
     expect_identical(unname(tools::md5sum(p1)), unname(tools::md5sum(p14)), label = pr)
   }
   expect_identical(read_fstx(p14), x)
