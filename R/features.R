@@ -7,7 +7,7 @@ fstx_features <- function() {
     format_write = r$format_write,
     features = data.frame(bit = r$feature_bit, name = r$feature_name, read = r$feature_read,
                           stringsAsFactors = FALSE),
-    codecs = data.frame(id = r$codec_id, name = r$codec_name, read = r$codec_read, write = r$codec_read,
+    codecs = data.frame(id = r$codec_id, name = r$codec_name, read = r$codec_read, write = r$codec_write,
                         stringsAsFactors = FALSE),
     types = data.frame(id = 0:5, name = c("int32", "float64", "logical", "string", "int64", "binary"),
                        read = c(TRUE, TRUE, TRUE, TRUE, FALSE, FALSE), stringsAsFactors = FALSE)

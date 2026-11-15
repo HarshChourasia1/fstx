@@ -1,6 +1,6 @@
 \name{fstx_pages}
 \alias{fstx_pages}
-\title{List the stored pages of an FST-X file}
+\title{List the stored pages of an fstx file}
 \usage{
 fstx_pages(path)
 }

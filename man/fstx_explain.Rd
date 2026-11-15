@@ -1,7 +1,7 @@
 \name{fstx_explain}
 \alias{fstx_explain}
 \alias{fstx_which}
-\title{Run a filter on an FST-X file: matching rows, and how the filter is served}
+\title{Run a filter on an fstx file: matching rows, and how the filter is served}
 \description{
 \code{fstx_which()} returns the rows that match a filter; \code{fstx_explain()} shows how many
 pages the filter skips by their statistics and how many rows are left, without returning the data.
