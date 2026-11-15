@@ -91,37 +91,6 @@ bool fsst_table_ok(const uint8_t* p, size_t len) {
   return total <= 255 && need <= len;
 }
 
-// True when a code byte the table does not have (nsym..254) appears in p[0, n). Escaped literal bytes count too, so
-// a hit only means the exact walk (fsst_codes_ok) must decide. One 16-byte vector pass.
-typedef uint8_t vu16 __attribute__((vector_size(16)));
-bool fsst_maybe_unused(const uint8_t* p, size_t n, uint32_t nsym) {
-  if (nsym >= 255) return false;
-  const uint8_t lo = (uint8_t)nsym, span = (uint8_t)(255 - nsym);
-  vu16 acc = {};
-  size_t i = 0;
-  for (; i + 16 <= n; i += 16) {
-    vu16 x;
-    std::memcpy(&x, p + i, 16);
-    acc |= (vu16)((vu16)(x - lo) < span);
-  }
-  uint8_t hit = 0;
-  for (int k = 0; k < 16; ++k) hit |= acc[k];
-  for (; i < n; ++i) hit |= (uint8_t)(p[i] - lo) < span;
-  return hit != 0;
-}
-
-// The exact walk of one code string: escape (255) takes the next byte as a literal; every other code must be < nsym.
-bool fsst_codes_ok(const uint8_t* p, size_t n, uint32_t nsym) {
-  for (size_t i = 0; i < n; ++i) {
-    if (p[i] == 255) {
-      if (++i == n) return false;
-    } else if (p[i] >= nsym) {
-      return false;
-    }
-  }
-  return true;
-}
-
 // FSST encoding of many strings, byte for byte what libfsst's scalar compressBulk writes (the vendored build has no
 // AVX-512 path): each string in chunks of up to 511 bytes, each chunk followed by the table's terminator byte, then a
 // greedy parse (long symbol from the hash table, else the shortCodes entry). compressBulk walks one string at a time
@@ -619,11 +588,6 @@ void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n
     if (csum != bb.len || total > 8 * csum || total > kMaxRawPage) corrupt("FSST sizes");
     if (buf.size() < total + 64) buf.resize((size_t)total + 64);
     const unsigned char* src = bb.p;
-    // codes the table does not have would decode to filler text: walk the strings exactly only when a byte in the
-    // unused range shows up anywhere (it may be an escaped literal)
-    uint32_t nsym = 0;
-    for (int l = 0; l < 8; ++l) nsym += tb.p[9 + l];
-    const bool walk = fsst_maybe_unused(bb.p, (size_t)bb.len, nsym);
     uint64_t pos = 0;
     for (uint32_t i = 0; i < n; ++i) {
       const size_t cl = (size_t)lens[i];
@@ -637,7 +601,6 @@ void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n
           while (esc < cl && src[cl - 1 - esc] == 255) ++esc;
           if (esc & 1) corrupt("FSST escape at the end of a string");
         }
-        if (walk && !fsst_codes_ok(src, cl, nsym)) corrupt("FSST code not in the symbol table");
         got = fsst_decompress(&dec, cl, src, (size_t)(total - pos) + 32, buf.data() + pos);
         if (got > total - pos) corrupt("FSST string longer than the page");
       }
