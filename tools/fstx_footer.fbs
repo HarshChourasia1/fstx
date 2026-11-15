@@ -1,4 +1,6 @@
-// FST-X footer schema (format version 2: M2 encodings).
+// FST-X footer schema, format version 3 ("fstx format 1.0"; format 2 is the same without the last three Footer
+// fields). Rules for later versions: fields are only ever added at the end of a table; the Page struct never
+// changes (new per-page facts go into new lists in ColumnChunk, one entry per page).
 // Compiled once with flatc (google/flatbuffers v25.12.19, Windows release binary):
 //   flatc --cpp --scoped-enums -o ../src fstx_footer.fbs
 // The generated header src/fstx_footer_generated.h is committed, so building the package never needs flatc.
@@ -8,12 +10,15 @@ namespace fstx.fb;
 file_identifier "FSTX";
 
 // How values sit in a page (the R storage type).
+// Reserved: 4 = 64-bit integer (fstx 1.1; its page min/max are rounded outward to doubles), 5 = binary.
 enum PhysType : ubyte { Int32 = 0, Float64 = 1, Logical = 2, String = 3 }
 
 // R type layered on top of the physical type. Anything else is "None" and its
-// attributes travel in Column.attrs.
+// attributes travel in Column.attrs. 4-255 reserved.
 enum LogicalType : ubyte { None = 0, Factor = 1, Date = 2, POSIXct = 3 }
 
+// Reserved: 3 = zstd with a dictionary, 4 = Pcodec, 5-127 later codecs, 128-255 experiments a release never
+// writes (src/codec_ext.h).
 enum Codec : ubyte { None = 0, LZ4 = 1, ZSTD = 2 }
 
 // Speed profile the file was written with (informational).
@@ -55,7 +60,8 @@ table Column {
   ordered: bool;            // ordered factor
   levels: [string];         // factor levels, UTF-8, once per column
   tzone: string;            // POSIXct time zone; absent when the column has no tzone attribute
-  attrs: [ubyte];           // other R attributes: serialize(list(...)) from R, empty if none
+  attrs: [ubyte];           // other R attributes: serialize(list(...)) from R, empty if none (readers that are
+                            // not R may ignore it)
 }
 
 table Footer {
@@ -67,6 +73,10 @@ table Footer {
   table_attrs: [ubyte];     // data.frame-level attributes (class etc.), R-serialized
   created_by: string;
   profile: Profile = Balanced;
+  // format 3
+  required_features: ulong;  // feature bits a reader must know (bits 0-15 repeat header bytes 6-7)
+  optional_features: ulong;  // feature bits a reader may ignore
+  feature_names: [string];   // a name for each set bit: required bits, then optional bits, each in ascending order
 }
 
 root_type Footer;

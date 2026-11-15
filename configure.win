@@ -32,5 +32,9 @@ case "`${CXX} -dumpmachine 2>/dev/null`" in
     ;;
 esac
 rm -f conftest.cpp conftest.o
+# the package version, written into every file's created_by (one source: DESCRIPTION)
+FSTX_VER=`sed -n 's/^Version:[[:space:]]*//p' DESCRIPTION | tr -d '\r'`
+FLAGS="${FLAGS} -DFSTX_VERSION=${FSTX_VER}"
+echo "fstx version: ${FSTX_VER}"
 sed "s|@FSTX_CXXFLAGS@|${FLAGS}|" src/Makevars.win.in > src/Makevars.win
 exit 0

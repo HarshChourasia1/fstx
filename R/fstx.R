@@ -11,6 +11,9 @@ NULL
 .small_level <- 9L      # M2 timing: 2-4% smaller than level 3 for ~1.8x the write time; 12+ gains < 1%
 .encoding_ids <- c(plain = 1L, const = 2L, "for" = 3L, delta = 4L, rle = 5L, dict = 6L, split = 7L,
                    alp = 8L, alprd = 9L, fsst = 10L)
+# test flags that go with .encoding: string dictionaries with the forced tag on their code pages, the same with
+# an FSST-coded dictionary page, and the codec kept on every page
+.encoding_flags <- c(dict_codes = 256L, fsst_dict = 512L, keep_codec = 1024L)
 
 .path_arg <- function(path, what = "path") {
   if (!is.character(path) || length(path) != 1L || is.na(path) || !nzchar(path))
@@ -42,7 +45,8 @@ NULL
 #'   factor levels may grow (the file's levels first, new ones after; ordered factors need the same levels);
 #'   POSIXct columns need the same time zone; files with stored row names cannot be appended to. The
 #'   profile defaults to the file's. An interrupted append leaves the old table readable.
-#' @param .encoding for tests only: force one encoding on every page where it applies.
+#' @param .encoding for tests only: force one encoding on every page where it applies, plus any of the flags
+#'   "dict_codes", "fsst_dict" and "keep_codec".
 #' @param .crash for tests only.
 #' @return x, invisibly.
 write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compress = NULL, level = NULL,
@@ -73,10 +77,13 @@ write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compre
   level <- .whole(level, "level")
   force <- 0L
   if (!is.null(.encoding)) {
-    if (!is.character(.encoding) || length(.encoding) != 1L || !(.encoding %in% names(.encoding_ids)))
-      stop(sprintf("write_fstx: '.encoding' must be one of %s", paste(names(.encoding_ids), collapse = ", ")),
+    tag <- .encoding[.encoding %in% names(.encoding_ids)]
+    if (!is.character(.encoding) || length(.encoding) < 1L || length(tag) > 1L ||
+        !all(.encoding %in% c(names(.encoding_ids), names(.encoding_flags))))
+      stop(sprintf("write_fstx: '.encoding' must be one of %s, plus any of %s",
+                   paste(names(.encoding_ids), collapse = ", "), paste(names(.encoding_flags), collapse = ", ")),
            call. = FALSE)
-    force <- .encoding_ids[[.encoding]]
+    force <- as.integer(sum(.encoding_ids[tag], .encoding_flags[unique(setdiff(.encoding, tag))]))
   }
   threads <- .whole(threads, "threads", 1)
   path <- .path_arg(path)

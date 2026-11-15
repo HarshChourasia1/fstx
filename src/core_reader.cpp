@@ -1,6 +1,6 @@
 // FST-X core engine: open (header, tail, footer checks), plan (which pages a request needs) and read
 // (parallel decode straight into host memory; strings, string dictionaries and dictionary codes handed to
-// the host on the calling thread). File format 2 (encoded pages, enc.h). No R headers.
+// the host on the calling thread). File formats 2 and 3 (encoded pages, enc.h). No R headers.
 #include <algorithm>
 #include <atomic>
 #include <limits>
@@ -49,6 +49,56 @@ struct fstx_plan {
 
 namespace fstx {
 
+const char* feature_name(int bit) {
+  switch (bit) {
+    case kFeatInt64: return "int64";
+    case kFeatBinary: return "binary";
+    case kFeatZstdDict: return "zstd_dict";
+    case kFeatPcodec: return "pcodec";
+    default: return nullptr;
+  }
+}
+
+uint64_t features_known() { return codec_feature_bits(); }
+
+namespace {
+// A number this reader does not know, in a header or footer whose checksum is valid: a newer fstx wrote it.
+[[noreturn]]
+#if defined(__MINGW32__)
+__attribute__((format(gnu_printf, 2, 3)))
+#elif defined(__GNUC__)
+__attribute__((format(printf, 2, 3)))
+#endif
+void refuse_newer(const std::string& path, const char* fmt, ...) {
+  char what[512];
+  va_list ap;
+  va_start(ap, fmt);
+  std::vsnprintf(what, sizeof(what), fmt, ap);
+  va_end(ap);
+  fail(FSTX_ERR_FORMAT, "'%s' uses %s, which this fstx (%s) cannot read. Update fstx.", path.c_str(), what, kVersion);
+}
+
+// A feature bit the reader lacks: named from the file's own list when it has one, else from the reserved names.
+[[noreturn]] void refuse_feature(const std::string& path, int bit, const fb::Footer* ft) {
+  std::string nm;
+  if (ft && ft->feature_names()) {
+    const uint64_t req = ft->required_features(), opt = ft->optional_features();
+    const auto* names = ft->feature_names();
+    const uint32_t i = (uint32_t)__builtin_popcountll(req & ((1ull << bit) - 1));
+    if (names->size() == (uint32_t)(__builtin_popcountll(req) + __builtin_popcountll(opt)) && i < names->size()) {
+      const auto* s = names->Get(i);
+      for (uint32_t k = 0; k < s->size() && k < 64; ++k) {
+        const char ch = s->c_str()[k];
+        nm += (ch >= 0x20 && ch < 0x7f && ch != '\'') ? ch : '?';
+      }
+    }
+  }
+  if (nm.empty() && feature_name(bit)) nm = feature_name(bit);
+  if (nm.empty()) refuse_newer(path, "the file feature bit %d", bit);
+  refuse_newer(path, "the file feature '%s' (bit %d)", nm.c_str(), bit);
+}
+}  // namespace
+
 void open_file(fstx_file& F, const std::string& path) {
   F.path = path;
   F.map.open(path);
@@ -75,18 +125,25 @@ void open_file(fstx_file& F, const std::string& path) {
   }
   F.size = size;
   if (F.version == 0) fail(FSTX_ERR_CORRUPT, "'%s' has a corrupt header (format version 0)", path.c_str());
-  if (F.version < kFormatVersion)
+  if (F.version < kFormatOldest)
     fail(FSTX_ERR_FORMAT,
-         "'%s' was written by an older FST-X version (file format %u); this version reads format %u only. "
+         "'%s' was written by an older FST-X version (file format %u); this version reads formats %u and %u. "
          "Read it with fstx 0.1.x and write it again.",
-         path.c_str(), F.version, kFormatVersion);
+         path.c_str(), F.version, kFormatOldest, kFormatVersion);
   if (F.version > kFormatVersion)
     fail(FSTX_ERR_FORMAT, "'%s' uses FSTX format version %u; this reader supports up to %u. Update fstx.",
          path.c_str(), F.version, kFormatVersion);
+  // Header bytes 6..7: required feature bits 0..15, checked before the footer is read (always 0 in format 2).
+  const uint16_t hflags = get_u16(d + 6);
+  if (F.version == 2 && hflags) fail(FSTX_ERR_CORRUPT, "'%s' has a corrupt header (feature bits in a format 2 file)", path.c_str());
+  for (int b = 0; b < 16; ++b)
+    if ((hflags >> b & 1u) && !(features_known() >> b & 1u)) refuse_feature(path, b, nullptr);
 
   const uint8_t* tail = d + size - kTailSize;
   if (std::memcmp(tail + 28, "FSTX", 4) != 0)
     fail(FSTX_ERR_CORRUPT, "'%s' is truncated or incomplete (end marker missing)", path.c_str());
+  if (F.version >= 3 && get_u32(tail + 24) != F.version)
+    fail(FSTX_ERR_CORRUPT, "'%s' has a corrupt tail (format version)", path.c_str());
   const uint64_t foff = get_u64(tail), flen = get_u64(tail + 8);
   if (foff < kDataStart || foff % 8 != 0 || foff > size - kTailSize || flen != size - kTailSize - foff || flen < 8 ||
       flen >= 0x7fffffffULL)
@@ -103,16 +160,34 @@ void open_file(fstx_file& F, const std::string& path) {
   F.footer_off = foff;
   const fb::Footer* ft = F.footer;
   if (ft->format_version() != F.version) fail(FSTX_ERR_CORRUPT, "'%s': header and footer versions differ", path.c_str());
+  // ---- feature bits (format 3): unknown required bits are refused, unknown optional bits ignored
+  const uint64_t req = ft->required_features();
+  if (F.version == 2 && (req || ft->optional_features() || ft->feature_names()))
+    fail(FSTX_ERR_CORRUPT, "'%s' is corrupt (feature fields in a format 2 footer)", path.c_str());
+  if ((req & kFeatHeaderMask) != hflags) fail(FSTX_ERR_CORRUPT, "'%s': header and footer feature bits differ", path.c_str());
+  for (int b = 0; b < 64; ++b)
+    if ((req >> b & 1u) && !(features_known() >> b & 1u)) refuse_feature(path, b, ft);
   F.profile = (int)ft->profile();
   if (F.profile > enc::P_SMALL) fail(FSTX_ERR_CORRUPT, "'%s' has an unknown profile", path.c_str());
+  const uint64_t rg_size = ft->row_group_size();
+  if (rg_size == 0 || rg_size > kMaxRowGroup) fail(FSTX_ERR_CORRUPT, "'%s' has an invalid row group size", path.c_str());
 
   // ---- schema
   const auto* cols = ft->columns();
   F.n_cols = cols ? cols->size() : 0;
+  if (F.n_cols > kMaxColumns) fail(FSTX_ERR_CORRUPT, "'%s' has more columns than the format allows", path.c_str());
+  auto text_ok = [](const flatbuffers::String* s) {
+    return !s || (valid_utf8(s->c_str(), s->size()) && std::memchr(s->c_str(), 0, s->size()) == nullptr);
+  };
   for (uint32_t c = 0; c < F.n_cols; ++c) {
     const fb::Column* x = cols->Get(c);
     int phys = (int)x->phys(), lt = (int)x->logical();
-    if (phys < FSTX_INT32 || phys > FSTX_STRING) fail(FSTX_ERR_CORRUPT, "column %u has an unknown type", c);
+    if (!text_ok(x->name()) || !text_ok(x->tzone()))
+      fail(FSTX_ERR_CORRUPT, "column %u: its name or time zone is not valid UTF-8 text", c + 1);
+    if (phys == 4) refuse_newer(path, "64-bit integer columns (column '%s', type 4)", F.col_name(c).c_str());
+    if (phys == 5) refuse_newer(path, "binary columns (column '%s', type 5)", F.col_name(c).c_str());
+    if (phys > FSTX_STRING) refuse_newer(path, "column type %d (column '%s')", phys, F.col_name(c).c_str());
+    if (lt > FSTX_LT_POSIXCT) refuse_newer(path, "logical type %d (column '%s')", lt, F.col_name(c).c_str());
     bool ok = true;
     switch (lt) {
       case FSTX_LT_NONE: break;
@@ -133,7 +208,8 @@ void open_file(fstx_file& F, const std::string& path) {
   uint64_t expect = 0;
   for (uint32_t g = 0; g < nrg; ++g) {
     const fb::RowGroup* rg = rgs->Get(g);
-    if (rg->first_row() != expect || rg->row_count() == 0 || rg->row_count() > F.n_rows - expect)
+    if (rg->first_row() != expect || rg->row_count() == 0 || rg->row_count() > F.n_rows - expect ||
+        rg->row_count() > rg_size)
       fail(FSTX_ERR_CORRUPT, "row group %u has inconsistent row numbers", g);
     const auto* chunks = rg->columns();
     if ((chunks ? chunks->size() : 0) != F.n_cols) fail(FSTX_ERR_CORRUPT, "row group %u has the wrong number of columns", g);
@@ -148,8 +224,25 @@ void open_file(fstx_file& F, const std::string& path) {
         const uint64_t cl = p->comp_len(), rl = p->raw_len();
         const uint32_t ch2 = p->chain();
         const int top = enc::chain_tag(ch2, 0);
+        // numbers reserved for later versions first, so a newer file gets "Update fstx", not "corrupt"
+        const int codec = (int)p->codec();
+        if (!codec_supported(codec)) {
+          const char* cn = codec_name(codec);
+          if (cn) refuse_newer(path, "the codec '%s' (codec %d, column '%s')", cn, codec, F.col_name(c).c_str());
+          if (codec >= kCodecExperimental)
+            refuse_newer(path, "the experimental codec %d (column '%s'); codecs 128-255 are never written by a release",
+                         codec, F.col_name(c).c_str());
+          refuse_newer(path, "codec %d (column '%s')", codec, F.col_name(c).c_str());
+        }
+        if (enc::chain_kind(ch2) > enc::K_DICT)
+          refuse_newer(path, "page kind %d (column '%s')", enc::chain_kind(ch2), F.col_name(c).c_str());
+        if (enc::chain_na(ch2) > enc::NA_RUNS)
+          refuse_newer(path, "missing-value mode %d (column '%s')", enc::chain_na(ch2), F.col_name(c).c_str());
+        for (int i = 0; i < 3; ++i)
+          if (enc::chain_tag(ch2, i) > enc::kMaxTag)
+            refuse_newer(path, "encoding %d (column '%s')", enc::chain_tag(ch2, i), F.col_name(c).c_str());
         bool ok = p->row_count() > 0 && p->offset() >= kDataStart && p->offset() % kAlign == 0 && cl <= foff &&
-                  p->offset() <= foff - cl && (int)p->codec() <= FSTX_CODEC_ZSTD && rl <= kMaxRawPage && rl >= 8 &&
+                  p->offset() <= foff - cl && cl <= kMaxRawPage && rl <= kMaxRawPage && rl >= 8 &&
                   rl % 8 == 0 && enc::chain_kind(ch2) == kind && enc::chain_na(ch2) <= enc::NA_RUNS && top >= 1 &&
                   top <= enc::kMaxTag && p->null_count() <= p->row_count();
         if (ok && p->codec() == fb::Codec::None) ok = cl == rl;
@@ -157,7 +250,7 @@ void open_file(fstx_file& F, const std::string& path) {
       };
       const fb::Page* dp = ch->dictionary();
       if (dp) {
-        if (phys != FSTX_STRING || !page_ok(dp, enc::K_DICT) || dp->null_count() != 0 || dp->row_count() > (1u << 25))
+        if (phys != FSTX_STRING || !page_ok(dp, enc::K_DICT) || dp->null_count() != 0 || dp->row_count() > kMaxDictEntries)
           fail(FSTX_ERR_CORRUPT, "the dictionary of column %u, row group %u is invalid", c, g);
         F.sums[c].comp += dp->comp_len();
         F.sums[c].raw += dp->raw_len();

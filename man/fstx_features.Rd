@@ -5,6 +5,13 @@
 fstx_features()
 }
 \description{
-Placeholder in the fstx 1.0 development build: it does nothing yet.
+Lists the package version, the file format versions this build reads and writes, the named file feature
+bits, the page codecs and the column types, each marked with whether this build can read it. Names marked
+\code{FALSE} are reserved for later versions: a file that uses one is refused with a message that names it.
 }
-\value{\code{NULL} for now.}
+\value{A list with \code{version}, \code{format_read}, \code{format_write}, and data frames \code{features}
+(\code{bit}, \code{name}, \code{read}), \code{codecs} (\code{id}, \code{name}, \code{read}, \code{write}) and
+\code{types} (\code{id}, \code{name}, \code{read}).}
+\examples{
+fstx_features()$format_read
+}

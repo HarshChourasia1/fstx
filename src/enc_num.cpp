@@ -1155,7 +1155,9 @@ uint32_t encode_top_dbl(const double* x, uint32_t n, const EncCtx& cx0, Buf& out
   const int f = cx0.force;
   if (f) {
     if (f == T_CONST && cst) return encode_as<int64_t>(T_CONST, xb, n, 0, cx, out);
-    if (f == T_PLAIN || f == T_SPLIT || f == T_DICT) return encode_as<int64_t>(f, xb, n, 0, cx, out);
+    // FOR, DELTA and RLE work on the bit patterns; the chooser never picks them for doubles, but they are legal
+    if (f == T_PLAIN || f == T_SPLIT || f == T_DICT || f == T_FOR || f == T_DELTA || f == T_RLE)
+      return encode_as<int64_t>(f, xb, n, 0, cx, out);
     if (f == T_ALP) {
       AlpParams ap;
       alp_search(x, n, ap);

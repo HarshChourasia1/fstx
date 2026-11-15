@@ -538,7 +538,10 @@ struct Footer FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
     VT_ROW_GROUPS = 12,
     VT_TABLE_ATTRS = 14,
     VT_CREATED_BY = 16,
-    VT_PROFILE = 18
+    VT_PROFILE = 18,
+    VT_REQUIRED_FEATURES = 20,
+    VT_OPTIONAL_FEATURES = 22,
+    VT_FEATURE_NAMES = 24
   };
   uint16_t format_version() const {
     return GetField<uint16_t>(VT_FORMAT_VERSION, 0);
@@ -564,6 +567,15 @@ struct Footer FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   fstx::fb::Profile profile() const {
     return static_cast<fstx::fb::Profile>(GetField<uint8_t>(VT_PROFILE, 1));
   }
+  uint64_t required_features() const {
+    return GetField<uint64_t>(VT_REQUIRED_FEATURES, 0);
+  }
+  uint64_t optional_features() const {
+    return GetField<uint64_t>(VT_OPTIONAL_FEATURES, 0);
+  }
+  const ::flatbuffers::Vector<::flatbuffers::Offset<::flatbuffers::String>> *feature_names() const {
+    return GetPointer<const ::flatbuffers::Vector<::flatbuffers::Offset<::flatbuffers::String>> *>(VT_FEATURE_NAMES);
+  }
   template <bool B = false>
   bool Verify(::flatbuffers::VerifierTemplate<B> &verifier) const {
     return VerifyTableStart(verifier) &&
@@ -581,6 +593,11 @@ struct Footer FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
            VerifyOffset(verifier, VT_CREATED_BY) &&
            verifier.VerifyString(created_by()) &&
            VerifyField<uint8_t>(verifier, VT_PROFILE, 1) &&
+           VerifyField<uint64_t>(verifier, VT_REQUIRED_FEATURES, 8) &&
+           VerifyField<uint64_t>(verifier, VT_OPTIONAL_FEATURES, 8) &&
+           VerifyOffset(verifier, VT_FEATURE_NAMES) &&
+           verifier.VerifyVector(feature_names()) &&
+           verifier.VerifyVectorOfStrings(feature_names()) &&
            verifier.EndTable();
   }
 };
@@ -613,6 +630,15 @@ struct FooterBuilder {
   void add_profile(fstx::fb::Profile profile) {
     fbb_.AddElement<uint8_t>(Footer::VT_PROFILE, static_cast<uint8_t>(profile), 1);
   }
+  void add_required_features(uint64_t required_features) {
+    fbb_.AddElement<uint64_t>(Footer::VT_REQUIRED_FEATURES, required_features, 0);
+  }
+  void add_optional_features(uint64_t optional_features) {
+    fbb_.AddElement<uint64_t>(Footer::VT_OPTIONAL_FEATURES, optional_features, 0);
+  }
+  void add_feature_names(::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<::flatbuffers::String>>> feature_names) {
+    fbb_.AddOffset(Footer::VT_FEATURE_NAMES, feature_names);
+  }
   explicit FooterBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -633,10 +659,16 @@ inline ::flatbuffers::Offset<Footer> CreateFooter(
     ::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<fstx::fb::RowGroup>>> row_groups = 0,
     ::flatbuffers::Offset<::flatbuffers::Vector<uint8_t>> table_attrs = 0,
     ::flatbuffers::Offset<::flatbuffers::String> created_by = 0,
-    fstx::fb::Profile profile = fstx::fb::Profile::Balanced) {
+    fstx::fb::Profile profile = fstx::fb::Profile::Balanced,
+    uint64_t required_features = 0,
+    uint64_t optional_features = 0,
+    ::flatbuffers::Offset<::flatbuffers::Vector<::flatbuffers::Offset<::flatbuffers::String>>> feature_names = 0) {
   FooterBuilder builder_(_fbb);
+  builder_.add_optional_features(optional_features);
+  builder_.add_required_features(required_features);
   builder_.add_row_group_size(row_group_size);
   builder_.add_row_count(row_count);
+  builder_.add_feature_names(feature_names);
   builder_.add_created_by(created_by);
   builder_.add_table_attrs(table_attrs);
   builder_.add_row_groups(row_groups);
@@ -655,11 +687,15 @@ inline ::flatbuffers::Offset<Footer> CreateFooterDirect(
     const std::vector<::flatbuffers::Offset<fstx::fb::RowGroup>> *row_groups = nullptr,
     const std::vector<uint8_t> *table_attrs = nullptr,
     const char *created_by = nullptr,
-    fstx::fb::Profile profile = fstx::fb::Profile::Balanced) {
+    fstx::fb::Profile profile = fstx::fb::Profile::Balanced,
+    uint64_t required_features = 0,
+    uint64_t optional_features = 0,
+    const std::vector<::flatbuffers::Offset<::flatbuffers::String>> *feature_names = nullptr) {
   auto columns__ = columns ? _fbb.CreateVector<::flatbuffers::Offset<fstx::fb::Column>>(*columns) : 0;
   auto row_groups__ = row_groups ? _fbb.CreateVector<::flatbuffers::Offset<fstx::fb::RowGroup>>(*row_groups) : 0;
   auto table_attrs__ = table_attrs ? _fbb.CreateVector<uint8_t>(*table_attrs) : 0;
   auto created_by__ = created_by ? _fbb.CreateString(created_by) : 0;
+  auto feature_names__ = feature_names ? _fbb.CreateVector<::flatbuffers::Offset<::flatbuffers::String>>(*feature_names) : 0;
   return fstx::fb::CreateFooter(
       _fbb,
       format_version,
@@ -669,7 +705,10 @@ inline ::flatbuffers::Offset<Footer> CreateFooterDirect(
       row_groups__,
       table_attrs__,
       created_by__,
-      profile);
+      profile,
+      required_features,
+      optional_features,
+      feature_names__);
 }
 
 inline const fstx::fb::Footer *GetFooter(const void *buf) {

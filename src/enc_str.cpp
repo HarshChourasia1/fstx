@@ -101,6 +101,8 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
   sc.dlen.clear();
   sc.fsst.reset();
   sc.vsizes.assign(nv, 0);
+  const bool dict_fsst = (force & F_DICT_FSST) != 0;  // tests: FSST-code the dictionary page
+  force &= 0xff;
 
   bool dict = force == 0 || force == T_DICT;
   PtrDict pd;
@@ -162,6 +164,21 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
     const double plain_raw = (double)plain_bytes + (double)n;
     if (force == T_DICT || dict_raw < plain_raw) {
       sc.mode = T_DICT;
+      if (dict_fsst) {
+        std::vector<const unsigned char*> dp(nd);
+        std::vector<size_t> dl(nd);
+        for (uint64_t k = 0; k < nd; ++k) {
+          dp[k] = (const unsigned char*)(sc.dlen[k] > 0 ? sc.dptr[k] : "");
+          dl[k] = (size_t)sc.dlen[k];
+        }
+        std::unique_ptr<FsstTable> ft(new FsstTable());
+        ft->enc = fsst_create(nd, dl.data(), dp.data(), 0);
+        if (!ft->enc) fail(FSTX_ERR_MEMORY, "cannot create an FSST symbol table");
+        unsigned char buf[FSST_MAXHEADER];
+        const unsigned int len = fsst_export((fsst_encoder_t*)ft->enc, buf);
+        ft->blob.assign(buf, buf + len);
+        sc.fsst = std::move(ft);
+      }
       return 0;
     }
   }

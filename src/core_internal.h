@@ -15,13 +15,23 @@
 #include <thread>
 #include <vector>
 
+#include "codec_ext.h"
 #include "fstx_core.h"
 #include "prof.h"
 
 namespace fstx {
 
-// ---------------------------------------------------------------- format constants
-constexpr uint32_t kFormatVersion = 2;
+// ---------------------------------------------------------------- version and format constants
+// The package version, from DESCRIPTION through configure (-DFSTX_VERSION=x.y.z); written into created_by.
+#ifndef FSTX_VERSION
+#define FSTX_VERSION unknown
+#endif
+#define FSTX_STR_(x) #x
+#define FSTX_STR(x) FSTX_STR_(x)
+constexpr const char* kVersion = FSTX_STR(FSTX_VERSION);
+
+constexpr uint32_t kFormatVersion = 3;     // written ("fstx format 1.0"); format 2 (fstx 0.2-0.7) is still read
+constexpr uint32_t kFormatOldest = 2;      // format 1 (fstx 0.1) is refused
 constexpr size_t kHeaderSize = 32;
 constexpr size_t kTailSize = 32;
 constexpr uint64_t kAlign = 64;           // every page (and the footer) starts on a 64-byte boundary
@@ -32,6 +42,20 @@ constexpr uint32_t kDefaultPageBytes = 262144;
 constexpr uint32_t kVector = 1024;        // page row counts are multiples of this (except the last / long strings)
 constexpr uint64_t kMaxRawPage = 0x7fffffffULL;  // LZ4 and int32 string lengths need raw pages below 2 GB
 constexpr uint8_t kFlagMinMax = 1;
+// Limits a reader enforces (the writer stays inside them): see inst/spec/fstx-format-1.0.md.
+constexpr uint32_t kMaxColumns = 1u << 24;
+constexpr uint64_t kMaxRowGroup = 1ull << 31;   // rows per row group (footer row_group_size)
+constexpr uint32_t kMaxDictEntries = 1u << 25;  // entries in one string dictionary page
+
+// Feature bits (format 3: footer required_features / optional_features). Bits 0-15 are for features that change
+// how the header, tail or footer are read; they are also in header bytes 6-7, so a reader refuses them before it
+// reads the footer. Bits 16-63 are for everything else (types, codecs, encodings). This build uses none; the
+// named ones are reserved for later versions.
+enum : int { kFeatInt64 = 16, kFeatBinary = 17, kFeatZstdDict = 18, kFeatPcodec = 19 };
+constexpr uint64_t kFeatHeaderMask = 0xffffu;
+const char* feature_name(int bit);  // reserved name of a bit, or nullptr
+uint64_t features_known();          // bits this build can read
+bool valid_utf8(const char* s, size_t n);  // well-formed UTF-8 (no overlongs, surrogates or values past U+10FFFF)
 
 // ---------------------------------------------------------------- errors
 struct Error : public std::exception {
@@ -147,20 +171,7 @@ class OutFile {
 #endif
 };
 
-// ---------------------------------------------------------------- codecs
-// One per worker, reused across pages (thread-local contexts).
-struct CodecContext {
-  void* zc = nullptr;  // ZSTD_CCtx*
-  void* zd = nullptr;  // ZSTD_DCtx*
-  ~CodecContext();
-};
-size_t compress_bound(int codec, size_t n);
-// Returns the compressed size; throws on codec failure.
-size_t compress_page(CodecContext& ctx, int codec, int level, const void* src, size_t n, void* dst, size_t cap);
-// Decompresses exactly raw_len bytes; throws FSTX_ERR_CORRUPT on any decoder error or size mismatch.
-void decompress_page(CodecContext& ctx, int codec, const void* src, size_t comp_len, void* dst, size_t raw_len);
-int zstd_level_min();
-int zstd_level_max();
+// ---------------------------------------------------------------- codecs: codec_ext.h
 
 // ---------------------------------------------------------------- thread pool
 // Persistent worker pool. start() hands a job to k workers and returns at once, so the calling thread

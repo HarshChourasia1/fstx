@@ -1,4 +1,4 @@
-// FST-X core engine: errors, hashing, file I/O, codecs and the worker pool. No R headers.
+// FST-X core engine: errors, hashing, file I/O and the worker pool (the codecs are in codec_ext.cpp). No R headers.
 #include "core_internal.h"
 
 #include <algorithm>
@@ -9,8 +9,6 @@
 
 #define XXH_INLINE_ALL
 #include "vendor/xxhash/xxhash.h"
-#include "vendor/lz4/lz4.h"
-#include "vendor/zstd/zstd.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -48,6 +46,30 @@ void set_error(fstx_error* err, int code, const char* msg, int64_t column) {
 
 // ---------------------------------------------------------------- hashing
 uint64_t hash64(const void* p, size_t n) { return (uint64_t)XXH3_64bits(p, n); }
+
+// ---------------------------------------------------------------- UTF-8 (column names and time zones)
+bool valid_utf8(const char* str, size_t n) {
+  const unsigned char* s = (const unsigned char*)str;
+  size_t i = 0;
+  while (i < n) {
+    const unsigned c = s[i];
+    if (c < 0x80) {
+      ++i;
+      continue;
+    }
+    int k;
+    unsigned lo = 0x80, hi = 0xBF;  // allowed range of the second byte
+    if (c >= 0xC2 && c <= 0xDF) k = 1;
+    else if (c >= 0xE0 && c <= 0xEF) k = 2, lo = c == 0xE0 ? 0xA0 : 0x80, hi = c == 0xED ? 0x9F : 0xBF;
+    else if (c >= 0xF0 && c <= 0xF4) k = 3, lo = c == 0xF0 ? 0x90 : 0x80, hi = c == 0xF4 ? 0x8F : 0xBF;
+    else return false;
+    if (n - i <= (size_t)k || s[i + 1] < lo || s[i + 1] > hi) return false;
+    for (int j = 2; j <= k; ++j)
+      if ((s[i + j] & 0xC0) != 0x80) return false;
+    i += (size_t)k + 1;
+  }
+  return true;
+}
 
 // ---------------------------------------------------------------- files
 #ifdef _WIN32
@@ -376,63 +398,6 @@ bool registry_has(const FileId& id) {
   if (!id.ok) return false;
   std::lock_guard<std::mutex> g(registry_mutex());
   return registry().count(id) > 0;
-}
-
-// ---------------------------------------------------------------- codecs
-CodecContext::~CodecContext() {
-  if (zc) ZSTD_freeCCtx((ZSTD_CCtx*)zc);
-  if (zd) ZSTD_freeDCtx((ZSTD_DCtx*)zd);
-}
-
-int zstd_level_min() { return ZSTD_minCLevel(); }
-int zstd_level_max() { return ZSTD_maxCLevel(); }
-
-size_t compress_bound(int codec, size_t n) {
-  switch (codec) {
-    case FSTX_CODEC_LZ4: return (size_t)LZ4_compressBound((int)n);
-    case FSTX_CODEC_ZSTD: return ZSTD_compressBound(n);
-    default: return n;
-  }
-}
-
-size_t compress_page(CodecContext& ctx, int codec, int level, const void* src, size_t n, void* dst, size_t cap) {
-  if (codec == FSTX_CODEC_ZSTD) {
-    if (!ctx.zc) {
-      ctx.zc = ZSTD_createCCtx();
-      if (!ctx.zc) fail(FSTX_ERR_MEMORY, "cannot create a ZSTD context");
-    }
-    size_t r = ZSTD_compressCCtx((ZSTD_CCtx*)ctx.zc, dst, cap, src, n, level);
-    if (ZSTD_isError(r)) fail(FSTX_ERR_INTERNAL, "ZSTD compression failed: %s", ZSTD_getErrorName(r));
-    return r;
-  }
-  if (codec == FSTX_CODEC_LZ4) {
-    if (n > (size_t)LZ4_MAX_INPUT_SIZE) fail(FSTX_ERR_INTERNAL, "page too large for LZ4");
-    int r = LZ4_compress_default((const char*)src, (char*)dst, (int)n, (int)std::min<size_t>(cap, 0x7fffffff));
-    if (r <= 0) fail(FSTX_ERR_INTERNAL, "LZ4 compression failed");
-    return (size_t)r;
-  }
-  fail(FSTX_ERR_INTERNAL, "unknown codec %d", codec);
-}
-
-void decompress_page(CodecContext& ctx, int codec, const void* src, size_t comp_len, void* dst, size_t raw_len) {
-  if (codec == FSTX_CODEC_ZSTD) {
-    if (!ctx.zd) {
-      ctx.zd = ZSTD_createDCtx();
-      if (!ctx.zd) fail(FSTX_ERR_MEMORY, "cannot create a ZSTD context");
-    }
-    size_t r = ZSTD_decompressDCtx((ZSTD_DCtx*)ctx.zd, dst, raw_len, src, comp_len);
-    if (ZSTD_isError(r)) fail(FSTX_ERR_CORRUPT, "corrupt page: ZSTD error '%s'", ZSTD_getErrorName(r));
-    if (r != raw_len) fail(FSTX_ERR_CORRUPT, "corrupt page: ZSTD gave %llu bytes, expected %llu", (unsigned long long)r, (unsigned long long)raw_len);
-    return;
-  }
-  if (codec == FSTX_CODEC_LZ4) {
-    if (comp_len > 0x7fffffff || raw_len > 0x7fffffff) fail(FSTX_ERR_CORRUPT, "corrupt page: LZ4 sizes out of range");
-    // safe decoder only: never reads past src+comp_len or writes past dst+raw_len
-    int r = LZ4_decompress_safe((const char*)src, (char*)dst, (int)comp_len, (int)raw_len);
-    if (r < 0 || (size_t)r != raw_len) fail(FSTX_ERR_CORRUPT, "corrupt page: LZ4 decoding failed");
-    return;
-  }
-  fail(FSTX_ERR_CORRUPT, "corrupt page: unknown codec %d", codec);
 }
 
 // ---------------------------------------------------------------- thread pool

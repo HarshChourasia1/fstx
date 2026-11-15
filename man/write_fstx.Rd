@@ -22,7 +22,8 @@ write_fstx(x, path, profile = c("balanced", "fast", "small"), compress = NULL,
     type and class; factor levels may grow (the file's levels first, new ones after; ordered factors need
     the same levels); POSIXct columns need the same time zone; files with stored row names cannot be
     appended to. The profile defaults to the file's. An interrupted append leaves the old table readable.}
-  \item{.encoding}{for tests only: force one encoding on every page where it applies.}
+  \item{.encoding}{for tests only: force one encoding on every page where it applies, plus any of the flags
+    \code{"dict_codes"}, \code{"fsst_dict"} and \code{"keep_codec"}.}
   \item{.crash}{for tests only.}
 }
 \details{

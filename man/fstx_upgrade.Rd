@@ -9,6 +9,7 @@ fstx_upgrade(path, to = NULL)
   \item{to}{output path; \code{NULL} replaces the file.}
 }
 \description{
-Placeholder in the fstx 1.0 development build: it does nothing yet.
+Not available in this development build: it stops with an error. Files written by fstx 0.7 (format 2) are
+read as they are.
 }
-\value{\code{NULL} for now.}
+\value{Does not return.}

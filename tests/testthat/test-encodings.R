@@ -119,7 +119,7 @@ test_that("profiles round-trip, record themselves and order by size", {
     expect_identical(read_fstx(p), x, label = pr)
     m <- fstx_meta(p)
     expect_identical(m$profile, pr)
-    expect_identical(m$format_version, 2)
+    expect_identical(m$format_version, 3)
     sz[pr] <- file.size(p)
     if (pr == "fast") expect_true(all(fstx_pages(p)$codec == "none"))
   }

@@ -71,6 +71,14 @@ struct WriterImpl {
   std::vector<uint8_t> table_attrs;
   int codec = FSTX_CODEC_ZSTD, level = 1, threads = 1;
   int profile = enc::P_BALANCED, keep_pct = 10, force_num = 0, force_str = 0;
+  int force_codes = 0;     // tests: encoding forced on string dictionary code pages
+  bool keep_codec = false;  // tests: keep the codec on every page, even when it does not save space
+  // format of the file written: version 3 for new files; appends and compaction keep the file's version and
+  // feature fields
+  uint32_t version = kFormatVersion;
+  uint64_t req_features = 0, opt_features = 0;
+  std::vector<std::string> feature_names;
+  const Forge* forge = nullptr;  // tests only (forge_copy)
   std::vector<std::vector<enc::StrChunk>> sch;  // [row group of this append][column]: string chunk plans
   size_t rg0 = 0;                               // first row group of the current append call
   uint64_t rg_size = kDefaultRowGroup;
@@ -97,8 +105,8 @@ struct WriterImpl {
     out.create(path);
     uint8_t h[kHeaderSize] = {0};
     std::memcpy(h, "FSTX", 4);
-    put_u16(h + 4, (uint16_t)kFormatVersion);
-    put_u16(h + 6, 0);  // flags
+    put_u16(h + 4, (uint16_t)version);
+    put_u16(h + 6, (uint16_t)(forge && forge->hdr_flags >= 0 ? forge->hdr_flags : req_features & kFeatHeaderMask));
     put_u32(h + 8, kEndianMark);
     put_u64(h + 24, hash64(h, 24));
     out.write(h, kHeaderSize);
@@ -147,6 +155,17 @@ struct WriterImpl {
     total_rows = F.n_rows;
     rg_size = F.footer->row_group_size();
     profile = F.profile;
+    keep_format(F);
+  }
+
+  // Appends and compaction keep the file's format version and feature fields.
+  void keep_format(const fstx_file& F) {
+    version = F.version;
+    req_features |= F.footer->required_features();
+    opt_features = F.footer->optional_features();
+    if (const auto* nm = F.footer->feature_names())
+      for (const auto* x : *nm) feature_names.push_back(x->str());
+    if (version < 3 && req_features) fail(FSTX_ERR_ARG, "this write needs file features that format 2 files cannot hold");
   }
 
   void check_same_columns(const fstx_file& F) {
@@ -174,6 +193,7 @@ struct WriterImpl {
   // close resets them, readers see the old table and ignore everything past it.
   void begin_append(const std::string& path, const uint8_t* hdr, uint64_t end) {
     std::memcpy(hdr0, hdr, kHeaderSize);
+    put_u16(hdr0 + 6, (uint16_t)(req_features & kFeatHeaderMask));
     put_u64(hdr0 + 16, 0);
     put_u64(hdr0 + 24, hash64(hdr0, 24));
     uint8_t h1[kHeaderSize];
@@ -390,15 +410,16 @@ struct WriterImpl {
     } else {
       const enc::StrChunk& sc = sch[(size_t)(t.rg - rg0)][t.col];
       FSTX_PROF_SCOPE(W_STR_ENC);
-      if (t.what == 1) {  // the chunk's dictionary
-        pm.chain = enc::encode_str_page(enc::K_DICT, sc.dptr.data(), sc.dlen.data(), n, enc::T_PLAIN, nullptr, cx,
-                                        s.raw);
+      if (t.what == 1) {  // the chunk's dictionary (FSST-coded only when the plan made a symbol table for it)
+        pm.chain = enc::encode_str_page(enc::K_DICT, sc.dptr.data(), sc.dlen.data(), n,
+                                        sc.fsst ? enc::T_FSST : enc::T_PLAIN, sc.fsst.get(), cx, s.raw);
       } else if (sc.mode == enc::T_DICT) {
         const uint64_t r0 = (uint64_t)(t.rg - rg0) * rg_size;
         const int32_t* codes = sc.codes.data() + (t.row_start - r0);
         uint32_t na = 0;
         for (uint32_t i = 0; i < n; ++i) na += codes[i] < 0;
         pm.null_count = na;
+        cx.force = force_codes;
         pm.chain = enc::encode_int_page(codes, n, enc::K_CODES, -1, cx, s.raw);
       } else {
         if (ptrs.size() < n) {
@@ -431,7 +452,8 @@ struct WriterImpl {
       FSTX_PROF_SCOPE(W_COMPRESS);
       size_t cl = compress_page(cc, codec, level, raw, raw_len, s.comp.data(), cap);
       // keep the codec only when it saves at least keep_pct percent (decoding it costs time)
-      if (cl < raw_len && (uint64_t)cl * 100 <= (uint64_t)raw_len * (uint64_t)(100 - keep_pct)) {
+      if ((cl < raw_len && (uint64_t)cl * 100 <= (uint64_t)raw_len * (uint64_t)(100 - keep_pct)) ||
+          (keep_codec && cl <= kMaxRawPage)) {
         s.out = s.comp.data();
         s.out_len = cl;
         pm.codec = (uint8_t)codec;
@@ -616,9 +638,15 @@ struct WriterImpl {
     auto groups = b.CreateVector(gvec);
     flatbuffers::Offset<flatbuffers::Vector<uint8_t>> tattrs = 0;
     if (!table_attrs.empty()) tattrs = b.CreateVector(table_attrs);
-    auto created = b.CreateString("fstx 0.2.0");
-    auto footer = fb::CreateFooter(b, (uint16_t)kFormatVersion, total_rows, rg_size, columns, groups, tattrs, created,
-                                   (fb::Profile)profile);
+    auto created = b.CreateString(std::string("fstx ") + kVersion);
+    flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<flatbuffers::String>>> fnames = 0;
+    if (!feature_names.empty()) {
+      std::vector<flatbuffers::Offset<flatbuffers::String>> v;
+      for (const std::string& x : feature_names) v.push_back(b.CreateString(x));
+      fnames = b.CreateVector(v);
+    }
+    auto footer = fb::CreateFooter(b, (uint16_t)version, total_rows, rg_size, columns, groups, tattrs, created,
+                                   (fb::Profile)profile, req_features, opt_features, fnames);
     fb::FinishFooterBuffer(b, footer);
 
     out.pad_to(align_up(out.pos()));
@@ -629,7 +657,7 @@ struct WriterImpl {
     put_u64(tail, foff);
     put_u64(tail + 8, flen);
     put_u64(tail + 16, hash64(b.GetBufferPointer(), (size_t)flen));
-    put_u32(tail + 24, kFormatVersion);
+    put_u32(tail + 24, version);
     std::memcpy(tail + 28, "FSTX", 4);
     out.write(tail, kTailSize);
     if (appending) {  // the new table is on disk: only now drop the committed end from the header
@@ -674,6 +702,15 @@ struct WriterImpl {
       cols.push_back(std::move(d));
     }
     if (const auto* a = F.footer->table_attrs()) table_attrs.assign(a->begin(), a->end());
+    keep_format(F);
+    if (forge) {
+      if (forge->version >= 0) version = (uint32_t)forge->version;
+      req_features = forge->req;
+      opt_features = forge->opt;
+      feature_names = forge->names;
+      if (forge->phys0 >= 0) cols[0].phys = forge->phys0;
+      if (forge->logical0 >= 0) cols[0].logical = forge->logical0;
+    }
     open(tmp);
     const auto* g = F.footer->row_groups();
     const uint32_t nrg = g ? g->size() : 0;
@@ -701,6 +738,13 @@ struct WriterImpl {
     total_rows = F.n_rows;
     rg_size = F.footer->row_group_size();
     profile = F.profile;
+    if (forge && !rgs.empty()) {  // the first page of column 0
+      PageMeta& p = rgs[0].chunks[0][0];
+      if (forge->codec0 >= 0) p.codec = (uint8_t)forge->codec0;
+      if (forge->kind0 >= 0) p.chain = (p.chain & ~15u) | (uint32_t)forge->kind0;
+      if (forge->na0 >= 0) p.chain = (p.chain & ~0xf0u) | (uint32_t)forge->na0 << 4;
+      if (forge->tag0 >= 0) p.chain = (p.chain & ~0xff00u) | (uint32_t)forge->tag0 << 8;
+    }
     close();
   }
 };
@@ -733,20 +777,32 @@ static void configure(fstx::WriterImpl& W, const fstx_write_column* cols, uint32
     if (opt->keep_pct < 0 || opt->keep_pct > 90) fstx::fail(FSTX_ERR_ARG, "keep_pct must be between 0 and 90");
     W.keep_pct = opt->keep_pct;
     if (opt->force_encoding) {
-      const int f = opt->force_encoding;
-      if (f == fstx::enc::T_FSST) W.force_str = f;
-      else if (f == fstx::enc::T_DICT || f == fstx::enc::T_PLAIN) W.force_num = W.force_str = f;
-      else if (f >= 1 && f <= fstx::enc::kMaxTag) W.force_num = f;
-      else fstx::fail(FSTX_ERR_ARG, "unknown encoding %d", f);
+      namespace e = fstx::enc;
+      const int f = opt->force_encoding & 0xff, fl = opt->force_encoding & ~0xff;
+      if (fl & ~(e::F_STR_DICT | e::F_DICT_FSST | e::F_KEEP_CODEC)) fstx::fail(FSTX_ERR_ARG, "unknown encoding flags");
+      if (f == e::T_FSST) W.force_str = f;
+      else if (f == e::T_DICT || f == e::T_PLAIN) W.force_num = W.force_str = f;
+      else if (f >= 1 && f <= e::kMaxTag) W.force_num = f;
+      else if (f != 0) fstx::fail(FSTX_ERR_ARG, "unknown encoding %d", f);
+      if (fl & (e::F_STR_DICT | e::F_DICT_FSST)) {
+        W.force_str = e::T_DICT | (fl & e::F_DICT_FSST);
+        W.force_codes = W.force_num;
+      }
+      W.keep_codec = (fl & e::F_KEEP_CODEC) != 0;
     }
     if (opt->page_bytes) {
       if (opt->page_bytes < 4096 || opt->page_bytes > (1u << 28)) fstx::fail(FSTX_ERR_ARG, "page size out of range");
       W.page_bytes = opt->page_bytes;
     }
+    if (n_cols > fstx::kMaxColumns) fstx::fail(FSTX_ERR_ARG, "too many columns (the format allows %u)", fstx::kMaxColumns);
+    auto text_ok = [](const std::string& x) {
+      return fstx::valid_utf8(x.data(), x.size()) && x.find('\0') == std::string::npos;
+    };
     for (uint32_t c = 0; c < n_cols; ++c) {
       const fstx_write_column& s = cols[c];
       fstx::ColDef d;
       d.name.assign(s.name ? s.name : "", s.name ? s.name_len : 0);
+      if (!text_ok(d.name)) fstx::fail(FSTX_ERR_ARG, "column %u: its name is not valid UTF-8 text", c + 1);
       if (s.phys < FSTX_INT32 || s.phys > FSTX_STRING) fstx::fail(FSTX_ERR_ARG, "column %u: unknown type", c);
       if (s.logical < FSTX_LT_NONE || s.logical > FSTX_LT_POSIXCT) fstx::fail(FSTX_ERR_ARG, "column %u: unknown logical type", c);
       d.phys = s.phys;
@@ -760,12 +816,14 @@ static void configure(fstx::WriterImpl& W, const fstx_write_column* cols, uint32
       if (s.has_tzone) {
         d.has_tz = true;
         d.tz.assign(s.tzone ? s.tzone : "", s.tzone ? s.tzone_len : 0);
+        if (!text_ok(d.tz)) fstx::fail(FSTX_ERR_ARG, "column %u: its time zone is not valid UTF-8 text", c + 1);
       }
       if (s.attrs && s.attrs_len) d.attrs.assign(s.attrs, s.attrs + s.attrs_len);
       W.cols.push_back(std::move(d));
     }
     if (table_attrs && table_attrs_len) W.table_attrs.assign(table_attrs, table_attrs + table_attrs_len);
     W.test_crash = opt->test_crash;
+    W.req_features |= fstx::codec_feature_bit(W.codec);
   }
 }
 
@@ -841,6 +899,14 @@ extern "C" int fstx_compact_copy(const char* path, const char* tmp, fstx_error* 
   } catch (...) {
     return fstx::to_error(err);
   }
+}
+
+void fstx::forge_copy(const std::string& src, const std::string& dst, const Forge& f) {
+  fstx_file F;
+  fstx::open_file(F, src);
+  fstx::WriterImpl W;
+  W.forge = &f;
+  W.compact_from(F, dst);
 }
 
 extern "C" int fstx_file_sizes(const char* path, uint64_t* committed, uint64_t* physical, uint64_t* valid_end,

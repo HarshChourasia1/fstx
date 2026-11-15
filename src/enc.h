@@ -35,6 +35,11 @@ enum : uint8_t {
   T_NA_RUNS = 0x82
 };
 constexpr int kMaxTag = 10;
+// Writer test flags, carried above the forced tag in fstx_write_options.force_encoding (never stored in files):
+// F_STR_DICT  string chunks use a dictionary; their code pages get the forced tag
+// F_DICT_FSST as F_STR_DICT, and the dictionary page is FSST-coded
+// F_KEEP_CODEC keep the codec on every page, even when it saves nothing
+enum { F_STR_DICT = 0x100, F_DICT_FSST = 0x200, F_KEEP_CODEC = 0x400 };
 
 // page kinds (low nibble of chain byte 0, and byte 0 of the page body)
 enum : uint8_t { K_INT = 1, K_DBL = 2, K_LGL = 3, K_STR = 4, K_CODES = 5, K_DICT = 6 };
@@ -189,7 +194,7 @@ struct StrChunk {
 };
 
 // Reads rows [r0, r1) through the host callback, picks dictionary / FSST / plain, builds what the pages
-// need. force: 0, T_DICT, T_FSST or T_PLAIN. Returns the host's error code (0 = fine).
+// need. force: 0, T_DICT (optionally | F_DICT_FSST), T_FSST or T_PLAIN. Returns the host's error code (0 = fine).
 int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const EncCtx& cx, int force, StrChunk& sc);
 
 // kind K_STR (may hold NA) or K_DICT (dictionary page, no NA). mode T_PLAIN or T_FSST.
