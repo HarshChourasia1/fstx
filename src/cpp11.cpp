@@ -111,6 +111,28 @@ extern "C" SEXP _fstx_fstx_kernel_bench_impl(SEXP min_time) {
   END_CPP11
 }
 
+// r_features.cpp (Phase 0 placeholder; one argument list in, one R object out)
+SEXP fstx_features_impl(SEXP args);
+extern "C" SEXP _fstx_fstx_features_impl(SEXP args) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(fstx_features_impl(cpp11::as_cpp<cpp11::decay_t<SEXP>>(args)));
+  END_CPP11
+}
+SEXP fstx_upgrade_impl(SEXP args);
+extern "C" SEXP _fstx_fstx_upgrade_impl(SEXP args) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(fstx_upgrade_impl(cpp11::as_cpp<cpp11::decay_t<SEXP>>(args)));
+  END_CPP11
+}
+
+// r_arrow.cpp (Phase 0 placeholder; one argument list in, one R object out)
+SEXP fstx_arrow_stream_impl(SEXP args);
+extern "C" SEXP _fstx_fstx_arrow_stream_impl(SEXP args) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(fstx_arrow_stream_impl(cpp11::as_cpp<cpp11::decay_t<SEXP>>(args)));
+  END_CPP11
+}
+
 extern "C" {
 static const R_CallMethodDef CallEntries[] = {
     {"_fstx_fstx_prof_impl", (DL_FUNC) &_fstx_fstx_prof_impl, 1},
@@ -129,6 +151,9 @@ static const R_CallMethodDef CallEntries[] = {
     {"_fstx_fstx_filter_impl", (DL_FUNC) &_fstx_fstx_filter_impl, 7},
     {"_fstx_fstx_compact_impl", (DL_FUNC) &_fstx_fstx_compact_impl, 2},
     {"_fstx_fstx_sizes_impl", (DL_FUNC) &_fstx_fstx_sizes_impl, 1},
+    {"_fstx_fstx_features_impl", (DL_FUNC) &_fstx_fstx_features_impl, 1},
+    {"_fstx_fstx_upgrade_impl", (DL_FUNC) &_fstx_fstx_upgrade_impl, 1},
+    {"_fstx_fstx_arrow_stream_impl", (DL_FUNC) &_fstx_fstx_arrow_stream_impl, 1},
     {NULL, NULL, 0}
 };
 }

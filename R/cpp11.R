@@ -63,3 +63,15 @@ fstx_kernel_selftest_impl <- function(seed, iters) {
 fstx_kernel_bench_impl <- function(min_time) {
   .Call(`_fstx_fstx_kernel_bench_impl`, min_time)
 }
+
+fstx_features_impl <- function(args) {
+  .Call(`_fstx_fstx_features_impl`, args)
+}
+
+fstx_upgrade_impl <- function(args) {
+  .Call(`_fstx_fstx_upgrade_impl`, args)
+}
+
+fstx_arrow_stream_impl <- function(args) {
+  .Call(`_fstx_fstx_arrow_stream_impl`, args)
+}

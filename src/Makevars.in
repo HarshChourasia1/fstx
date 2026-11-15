@@ -44,4 +44,5 @@ OBJECTS = \
   vendor/lz4/lz4.o \
   vendor/fsst/libfsst.o vendor/fsst/fsst_nosimd.o \
   vendor/highway/hwy/targets.o vendor/highway/hwy/abort.o \
-  core_util.o enc_num.o enc_str.o core_writer.o core_reader.o core_filter.o core_colsrc.o prof.o simd_kernels.o kern_test.o r_glue.o r_lazy.o r_m4.o cpp11.o
+  core_util.o enc_num.o enc_str.o core_writer.o core_reader.o core_filter.o core_colsrc.o prof.o simd_kernels.o kern_test.o r_glue.o r_lazy.o r_m4.o cpp11.o \
+  codec_ext.o r_features.o r_arrow.o

@@ -24,6 +24,6 @@ Description: Reads and writes data frames in a column-store file format built
 License: MIT + file LICENSE
 Encoding: UTF-8
 LinkingTo: cpp11
-Suggests: testthat (>= 3.0.0), data.table, tibble, dplyr
+Suggests: testthat (>= 3.0.0), data.table, tibble, dplyr, nanoarrow
 Config/testthat/edition: 3
 SystemRequirements: C++17
