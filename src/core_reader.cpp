@@ -8,6 +8,7 @@
 #include <unordered_map>
 
 #include "core_file.h"
+#include "vendor/zstd/zstd.h"
 
 namespace fb = fstx::fb;
 
@@ -226,6 +227,9 @@ void open_file(fstx_file& F, const std::string& path) {
       const fb::ColumnChunk* ch = chunks->Get(c);
       const auto* pages = ch->pages();
       if (!pages || pages->size() == 0) fail(FSTX_ERR_CORRUPT, "row group %u, column %u has no pages", g, c);
+      // the writer aligns every page vector; the verifier checks only its 4-byte length, and a Page has 8-byte fields
+      if ((reinterpret_cast<const uint8_t*>(pages->Data()) - (d + foff)) % alignof(fb::Page) != 0)
+        fail(FSTX_ERR_CORRUPT, "row group %u, column %u: the page directory is misaligned", g, c);
       // a page is encoded (enc.h): the body is a whole number of 8-byte words, the chain names a known
       // encoding and the kind the column type implies
       auto page_ok = [&](const fb::Page* p, int kind) {
@@ -254,6 +258,14 @@ void open_file(fstx_file& F, const std::string& path) {
                   rl % 8 == 0 && enc::chain_kind(ch2) == kind && enc::chain_na(ch2) <= enc::NA_RUNS && top >= 1 &&
                   top <= enc::kMaxTag && p->null_count() <= p->row_count();
         if (ok && p->codec() == fb::Codec::None) ok = cl == rl;
+        // a raw size the codec cannot reach from cl bytes is refused before anything is allocated for it: LZ4
+        // expands at most 255x; zstd at most one 128 KB block per 4-byte (RLE) block
+        if (ok && p->codec() == fb::Codec::LZ4) ok = rl <= cl * 255 + 64;
+        if (ok && p->codec() == fb::Codec::ZSTD) ok = rl <= cl * 32768 + 131072;
+        // fixed-width values (enc.h): chains nest at most 3 deep and each level at most doubles the values, so
+        // 64 x the plain size plus 64 KB of block headers is far above any page the writer can make
+        if (ok && kind != enc::K_STR && kind != enc::K_DICT)
+          ok = rl <= (uint64_t)p->row_count() * (kind == enc::K_DBL ? 8u : 4u) * 64u + 65536u;
         return ok;
       };
       const fb::Page* dp = ch->dictionary();
@@ -422,6 +434,13 @@ const uint8_t* page_body(const fstx_file& F, uint32_t col, const fb::Page* p, bo
   const uint8_t* src = page_src(F, col, p, verify);
   if (p->codec() == fb::Codec::None) return src;
   const size_t raw = p->raw_len();
+  if (p->codec() == fb::Codec::ZSTD) {  // R6-1: every fstx writer stores the frame's content size; it must be raw_len
+    const unsigned long long fs = ZSTD_getFrameContentSize(src, p->comp_len());
+    if (fs != raw)
+      fail(FSTX_ERR_CORRUPT, "column '%s' (rows %llu to %llu): the page size does not match its ZSTD frame: the file is "
+           "corrupt", F.col_name(col).c_str(), (unsigned long long)p->first_row() + 1,
+           (unsigned long long)(p->first_row() + p->row_count()));
+  }
   if (buf.size() < raw) buf.resize(raw);
   FSTX_PROF_SCOPE(R_DECOMP);
   decompress_page(cc, (int)p->codec(), src, p->comp_len(), buf.data(), raw);

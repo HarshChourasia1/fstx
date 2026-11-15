@@ -7,6 +7,7 @@
 #include "r_lazy.h"
 
 #include <algorithm>
+#include <climits>
 #include <cstring>
 #include <limits>
 #include <new>
@@ -19,7 +20,7 @@ extern "C" {
 namespace {
 
 R_altrep_class_t cls_str, cls_int, cls_dbl, cls_lgl;
-R_altrep_class_t cls_sub;  // M6.1: internal helper for str_extract_subset, never returned to R code
+R_altrep_class_t cls_view;  // 1.0: rows of an unfinished string column, R strings made on first use
 
 void holder_finalize(SEXP xp) {
   Holder* h = (Holder*)R_ExternalPtrAddr(xp);
@@ -138,6 +139,35 @@ void str_make_into_full(SEXP x, Holder* h, uint32_t p) {
   if (h->s_made == (uint32_t)h->made.size()) str_finish(x, h);
 }
 
+// 1.0: an all-dictionary column with nothing made yet, made whole in one pass straight from the codes. Every
+// dictionary is made first and the full vector is allocated last; nothing is allocated while the rows are written,
+// so the full vector is the newest object on R's heap and plain pointer stores need no write barrier (R's own
+// duplicate() copies string vectors the same way). Called from Dataptr, so R's collector is also off.
+void str_dict_fill(SEXP x, Holder* h, const fstx_colsrc_info& ci) {
+  for (uint32_t d = 0; d < ci.n_dicts; ++d) str_dict(x, h, (int32_t)d);
+  SEXP dc = VECTOR_ELT(R_altrep_data2(x), 2);
+  SEXP full = str_full_vec(x, h);  // allocated last
+  SEXP* o = (SEXP*)STRING_PTR_RO(full);
+  fstx_error err;
+  for (uint32_t p = 0; p < ci.n_pages; ++p) {
+    const int32_t* codes;
+    const char* bytes;
+    int32_t d;
+    if (fstx_colsrc_str_page(h->src, p, &codes, &bytes, &d, &err) != FSTX_OK) raise_err(&err);
+    uint64_t first;
+    uint32_t n;
+    fstx_colsrc_page_span(h->src, p, &first, &n);
+    const SEXP* dp = STRING_PTR_RO(VECTOR_ELT(dc, d));  // codes are checked against the dictionary at decode
+    SEXP* to = o + first;
+    for (uint32_t i = 0; i < n; ++i) to[i] = codes[i] < 0 ? NA_STRING : dp[codes[i]];
+    h->made[p] = 1;
+    fstx_colsrc_drop(h->src, p);
+    if (p < h->offs.size()) std::vector<uint64_t>().swap(h->offs[p]);
+  }
+  h->s_made = ci.n_pages;
+  str_finish(x, h);
+}
+
 // Makes every remaining page; returns the full vector.
 SEXP str_complete(SEXP x) {
   Holder* h = hold(x);
@@ -148,6 +178,11 @@ SEXP str_complete(SEXP x) {
   if (!ci.detached && ci.pages_ready + h->s_made + (h->p0 != UINT32_MAX ? 1u : 0u) < ci.n_pages) {
     // lazy column: decode the pages not made yet in parallel first
     if (fstx_colsrc_load(h->src, nullptr, h->threads, &err) != FSTX_OK) raise_err(&err);
+  }
+  // only into a brand-new full vector: the stores skip the write barrier (an earlier fill may have stopped part way)
+  if (ci.all_dict && h->s_made == 0 && h->p0 == UINT32_MAX && ci.n_pages > 0 && st_full(x) == R_NilValue) {
+    str_dict_fill(x, h, ci);
+    return st_full(x);
   }
   str_full_vec(x, h);
   for (uint32_t p = 0; p < ci.n_pages && !h->s_done; ++p)
@@ -274,66 +309,163 @@ void str_subset_fill(SEXP x, SEXP indx, SEXP out) {
   }
 }
 
-// The helper's Dataptr: R calls it with its collector off, so the strings made for the subset start no collection.
-// data1 = the column, data2 = list(indx, out).
-void* sub_dataptr(SEXP hx, Rboolean) {
-  SEXP st = R_altrep_data2(hx);
-  str_subset_fill(R_altrep_data1(hx), VECTOR_ELT(st, 0), VECTOR_ELT(st, 1));
-  return (void*)STRING_PTR_RO(VECTOR_ELT(st, 1));
+// x[indx] read from the R strings fp[0, nx) with R's own subset rule (NA or out-of-range index -> NA).
+SEXP subset_of_ptr(const SEXP* fp, R_xlen_t nx, SEXP indx) {
+  const bool is_int = TYPEOF(indx) == INTSXP;
+  const R_xlen_t k = Rf_xlength(indx);
+  const int* ii = is_int ? INTEGER(indx) : nullptr;
+  const double* di = is_int ? nullptr : REAL(indx);
+  SEXP out = PROTECT(Rf_allocVector(STRSXP, k));
+  for (R_xlen_t j = 0; j < k; ++j) {  // same tests as R's ExtractSubset (subset.c)
+    R_xlen_t r;
+    if (is_int) {
+      r = ii[j] > 0 && (R_xlen_t)ii[j] <= nx ? (R_xlen_t)ii[j] - 1 : -1;
+    } else {
+      const double d = di[j];  // R: (R_xlen_t)(d - 1) in [0, nx), tested before the cast
+      r = R_FINITE(d) && d > 0 && d < (double)nx + 1 ? (R_xlen_t)(d - 1) : -1;
+    }
+    SET_STRING_ELT(out, j, r < 0 ? NA_STRING : fp[r]);
+  }
+  UNPROTECT(1);
+  return out;
 }
-R_xlen_t sub_length(SEXP hx) { return Rf_xlength(VECTOR_ELT(R_altrep_data2(hx), 1)); }
+
+// True when every index is a whole row number in [1, n] (no NA, nothing out of range).
+bool rows_valid(SEXP indx, double n) {
+  const bool is_int = TYPEOF(indx) == INTSXP;
+  const R_xlen_t k = Rf_xlength(indx);
+  const int* ii = is_int ? INTEGER(indx) : nullptr;
+  const double* di = is_int ? nullptr : REAL(indx);
+  for (R_xlen_t j = 0; j < k; ++j) {
+    if (is_int ? (ii[j] == NA_INTEGER || ii[j] < 1 || (double)ii[j] > n)
+               : (ISNAN(di[j]) || di[j] < 1 || di[j] > n || di[j] != std::floor(di[j])))
+      return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------- views (1.0)
+// A subset of an unfinished string column (dplyr::filter, x[i], vec_slice) that makes no R string until it is
+// used: filter() slices every column, but later steps often use only a few of them. On first use (Elt,
+// Dataptr, serialize) every row of the view is made at once, inside R's Elt / Dataptr call (collector off), and
+// the view lets go of its column.
+// data1 = the column (an fstx_str vector, kept alive by the view; R_NilValue once made),
+// data2 = list(row numbers: 1-based INTSXP, or REALSXP past INT_MAX; the made STRSXP or NULL).
+inline SEXP vw_rows(SEXP v) { return VECTOR_ELT(R_altrep_data2(v), 0); }
+inline SEXP vw_made(SEXP v) { return VECTOR_ELT(R_altrep_data2(v), 1); }
+
+// A new view of column x (unfinished, holder with a source) over the valid row numbers in rows (copied).
+SEXP view_new(SEXP x, SEXP rows) {
+  Holder* h = hold(x);
+  const R_xlen_t k = Rf_xlength(rows);
+  const bool small = h->rows <= (uint64_t)INT_MAX;
+  SEXP r = PROTECT(Rf_allocVector(small ? INTSXP : REALSXP, k));
+  if (TYPEOF(rows) == INTSXP) {
+    const int* s = INTEGER(rows);
+    if (small) std::memcpy(INTEGER(r), s, (size_t)k * sizeof(int));
+    else for (R_xlen_t j = 0; j < k; ++j) REAL(r)[j] = (double)s[j];
+  } else {
+    const double* s = REAL(rows);
+    if (small) for (R_xlen_t j = 0; j < k; ++j) INTEGER(r)[j] = (int)s[j];
+    else std::memcpy(REAL(r), s, (size_t)k * sizeof(double));
+  }
+  SEXP st = PROTECT(Rf_allocVector(VECSXP, 2));
+  SET_VECTOR_ELT(st, 0, r);
+  // The view reads x's rows later: R code that changes x must copy it first (x is shared from here on).
+  MARK_NOT_MUTABLE(x);
+  SEXP v = R_new_altrep(cls_view, x, st);
+  UNPROTECT(2);
+  return v;
+}
+
+// Makes every row of view v (once) and returns the STRSXP that holds them. R allocation: called by R inside Elt /
+// Dataptr (collector off) or from a method that may allocate.
+SEXP view_make(SEXP v) {
+  SEXP made = vw_made(v);
+  if (made != R_NilValue) return made;
+  SEXP x = R_altrep_data1(v), rows = vw_rows(v);
+  Holder* h = hold(x);
+  if (h->s_done) {
+    made = subset_of_ptr(h->s_fp, (R_xlen_t)h->rows, rows);
+  } else {
+    if (!h->src) Rf_error("fstx: internal error, column source is missing");
+    made = PROTECT(Rf_allocVector(STRSXP, Rf_xlength(rows)));
+    str_subset_fill(x, rows, made);
+    UNPROTECT(1);
+  }
+  SEXP st = R_altrep_data2(v);
+  SET_VECTOR_ELT(st, 1, made);  // protected through v from here on
+  SET_VECTOR_ELT(st, 0, R_NilValue);
+  R_set_altrep_data1(v, R_NilValue);  // the column may go now
+  return made;
+}
+
+R_xlen_t vw_length(SEXP v) {
+  SEXP made = vw_made(v);
+  return Rf_xlength(made != R_NilValue ? made : vw_rows(v));
+}
+SEXP vw_elt(SEXP v, R_xlen_t i) {
+  SEXP made = vw_made(v);
+  return STRING_ELT(made != R_NilValue ? made : view_make(v), i);
+}
+void vw_set_elt(SEXP v, R_xlen_t i, SEXP s) {
+  PROTECT(s);
+  SET_STRING_ELT(view_make(v), i, s);
+  UNPROTECT(1);
+}
+void* vw_dataptr(SEXP v, Rboolean) { return (void*)STRING_PTR_RO(view_make(v)); }
+const void* vw_dataptr_or_null(SEXP v) {
+  SEXP made = vw_made(v);
+  return made != R_NilValue ? (const void*)STRING_PTR_RO(made) : nullptr;
+}
+// A subset of a view: a new view of the same column while nothing is made (filter then arrange), else R's rule.
+SEXP vw_extract_subset(SEXP v, SEXP indx, SEXP) {
+  if (TYPEOF(indx) != INTSXP && TYPEOF(indx) != REALSXP) return nullptr;
+  SEXP made = vw_made(v);
+  if (made == R_NilValue && hold(R_altrep_data1(v))->s_done) made = view_make(v);  // the column is made: cheap
+  if (made != R_NilValue) return subset_of_ptr(STRING_PTR_RO(made), Rf_xlength(made), indx);
+  SEXP rows = vw_rows(v);
+  const R_xlen_t k = Rf_xlength(indx);
+  if (k < 2 || !rows_valid(indx, (double)Rf_xlength(rows))) return nullptr;
+  SEXP x = R_altrep_data1(v);
+  const bool is_int = TYPEOF(indx) == INTSXP, r_int = TYPEOF(rows) == INTSXP;
+  SEXP comp = PROTECT(Rf_allocVector(r_int ? INTSXP : REALSXP, k));  // column row numbers of the subset
+  for (R_xlen_t j = 0; j < k; ++j) {
+    const R_xlen_t q = is_int ? (R_xlen_t)INTEGER(indx)[j] - 1 : (R_xlen_t)REAL(indx)[j] - 1;
+    if (r_int) INTEGER(comp)[j] = INTEGER(rows)[q];
+    else REAL(comp)[j] = REAL(rows)[q];
+  }
+  SEXP out = view_new(x, comp);
+  UNPROTECT(1);
+  return out;
+}
+Rboolean vw_inspect(SEXP v, int, int, int, void (*)(SEXP, int, int, int)) {
+  SEXP made = vw_made(v);
+  if (made != R_NilValue) Rprintf(" fstx string subset, %.0f rows, made\n", (double)Rf_xlength(made));
+  else Rprintf(" fstx string subset, %.0f rows of a %.0f-row column, not made yet\n", (double)Rf_xlength(vw_rows(v)),
+               (double)hold(R_altrep_data1(v))->rows);
+  return TRUE;
+}
 
 // x[i], vctrs::vec_slice (dplyr::filter, arrange, joins, rbind).
 // - Complete column: R's own subset rule (NA or out-of-range index -> NA) read straight from the full vector, so a
 //   finished column subsets at plain-vector speed instead of one Elt call per element.
-// - Unfinished column: a subset of 2 to half the rows is made straight from the decoded bytes, without making
-//   the pages it touches (half: past that, making the whole column is the better deal, since later ops find it
-//   made). Anything else (NA or out-of-range indices, larger subsets) goes to R's default, which uses Elt /
-//   Dataptr.
-// The unfinished-column subset is made inside a helper ALTREP's Dataptr call (R's collector off there, as in Elt).
+// - Unfinished column: a subset of 2 to half the rows becomes a view (above): its R strings are made only if it
+//   is used, straight from the decoded bytes, without making the pages it touches (half: past that, making the
+//   whole column is the better deal, since later ops find it made). Anything else (NA or out-of-range indices,
+//   larger subsets) goes to R's default, which uses Elt / Dataptr.
 SEXP str_extract_subset(SEXP x, SEXP indx, SEXP) {
   Holder* h = hold(x);
-  const bool is_int = TYPEOF(indx) == INTSXP;
-  if (!is_int && TYPEOF(indx) != REALSXP) return nullptr;
-  const R_xlen_t k = Rf_xlength(indx);
-  const int* ii = is_int ? INTEGER(indx) : nullptr;
-  const double* di = is_int ? nullptr : REAL(indx);
-  if (h->s_done) {
-    const R_xlen_t nx = (R_xlen_t)h->rows;
-    SEXP out = PROTECT(Rf_allocVector(STRSXP, k));
-    const SEXP* fp = h->s_fp;
-    for (R_xlen_t j = 0; j < k; ++j) {  // same tests as R's ExtractSubset (subset.c)
-      R_xlen_t r;
-      if (is_int) {
-        r = ii[j] > 0 && (R_xlen_t)ii[j] <= nx ? (R_xlen_t)ii[j] - 1 : -1;
-      } else {
-        const double d = di[j];  // R: (R_xlen_t)(d - 1) in [0, nx), tested before the cast
-        r = R_FINITE(d) && d > 0 && d < (double)nx + 1 ? (R_xlen_t)(d - 1) : -1;
-      }
-      SET_STRING_ELT(out, j, r < 0 ? NA_STRING : fp[r]);
-    }
-    UNPROTECT(1);
-    return out;
-  }
+  if (TYPEOF(indx) != INTSXP && TYPEOF(indx) != REALSXP) return nullptr;
+  if (h->s_done) return subset_of_ptr(h->s_fp, (R_xlen_t)h->rows, indx);
   if (!h->src) return nullptr;
   // one element (x[i], often in a loop): R's default asks Elt, which makes and keeps the page, so the next
   // calls on that page cost what they cost on a plain vector. Zero elements: nothing to make.
+  const R_xlen_t k = Rf_xlength(indx);
   if (k < 2) return nullptr;
   const double n = (double)h->rows;
-  if ((double)k > n / 2) return nullptr;
-  for (R_xlen_t j = 0; j < k; ++j) {
-    if (is_int ? (ii[j] == NA_INTEGER || ii[j] < 1 || (double)ii[j] > n)
-               : (ISNAN(di[j]) || di[j] < 1 || di[j] > n || di[j] != std::floor(di[j])))
-      return nullptr;
-  }
-  SEXP out = PROTECT(Rf_allocVector(STRSXP, k));
-  SEXP st = PROTECT(Rf_allocVector(VECSXP, 2));
-  SET_VECTOR_ELT(st, 0, indx);
-  SET_VECTOR_ELT(st, 1, out);
-  SEXP hx = PROTECT(R_new_altrep(cls_sub, x, st));
-  (void)STRING_PTR_RO(hx);  // runs str_subset_fill through sub_dataptr
-  UNPROTECT(3);
-  return out;
+  if ((double)k > n / 2 || !rows_valid(indx, n)) return nullptr;
+  return view_new(x, indx);
 }
 
 int str_no_na(SEXP x) { return hold(x)->nulls == 0 ? 1 : 0; }
@@ -619,8 +751,9 @@ SEXP fstx_altrep_new(SEXP xp) {
   return R_new_altrep(c, xp, R_NilValue);
 }
 
-SEXP fstx_str_plain(SEXP x) {
+SEXP fstx_str_plain(SEXP x, bool gc_on) {
   if (!ALTREP(x) || !R_altrep_inherits(x, cls_str)) Rf_error("fstx: internal error, not an fstx string column");
+  if (gc_on) return str_complete(x);  // the collector may run (str_dict_fill allocates the full vector last)
   (void)STRING_PTR_RO(x);  // Dataptr: every page made, with R's collector off
   return st_full(x);
 }
@@ -637,9 +770,14 @@ void fstx_init_altrep(DllInfo* dll) {
   R_set_altstring_Set_elt_method(cls_str, str_set_elt);
   R_set_altstring_No_NA_method(cls_str, str_no_na);
   R_set_altvec_Extract_subset_method(cls_str, str_extract_subset);
-  cls_sub = R_make_altstring_class("fstx_sub", "fstx", dll);
-  R_set_altrep_Length_method(cls_sub, sub_length);
-  R_set_altvec_Dataptr_method(cls_sub, sub_dataptr);
+  cls_view = R_make_altstring_class("fstx_view", "fstx", dll);
+  R_set_altrep_Length_method(cls_view, vw_length);
+  R_set_altrep_Inspect_method(cls_view, vw_inspect);
+  R_set_altvec_Dataptr_method(cls_view, vw_dataptr);
+  R_set_altvec_Dataptr_or_null_method(cls_view, vw_dataptr_or_null);
+  R_set_altvec_Extract_subset_method(cls_view, vw_extract_subset);
+  R_set_altstring_Elt_method(cls_view, vw_elt);
+  R_set_altstring_Set_elt_method(cls_view, vw_set_elt);
 
   cls_int = R_make_altinteger_class("fstx_int", "fstx", dll);
   cls_dbl = R_make_altreal_class("fstx_dbl", "fstx", dll);

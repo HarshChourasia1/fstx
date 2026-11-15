@@ -548,19 +548,20 @@ SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads
     if (!lazy) {
       Holder* h = fstx_holder_of(xp);
       if (fstx_colsrc_load(h->src, nullptr, threads, &err) != FSTX_OK) stop_err(err);
-      if (how[j] == 1 && fstx_colsrc_detach(h->src, &err) != FSTX_OK) stop_err(err);
       // M6.1: strings = "auto" returns an all-dictionary (low-cardinality) column as a plain vector at once. It
       // costs one R string per dictionary entry plus a pointer per row, and later ops (table, factor, split,
       // grouping) then skip the ALTREP layer, which costs them about 2x on a finished column.
-      if (mode == 3) {
-        fstx_colsrc_info si;
-        fstx_colsrc_info_get(h->src, &si);
-        plain = si.all_dict != 0;
-      }
+      // 1.0: such a column (auto or eager) is made in one pass straight from the codes (str_dict_fill in
+      // r_lazy.cpp, inside Dataptr with R's collector off); it skips the detach copy, as it is made at once.
+      fstx_colsrc_info si;
+      fstx_colsrc_info_get(h->src, &si);
+      if (mode == 3 && si.all_dict) plain = true;
+      if (how[j] == 1 && !plain && fstx_colsrc_detach(h->src, &err) != FSTX_OK) stop_err(err);
     }
     cpp11::sexp a = cpp11::safe[fstx_altrep_new](xp);
     if (plain) {
-      out[(R_xlen_t)j] = cpp11::safe[fstx_str_plain](a);  // a plain STRSXP; the ALTREP shell is dropped
+      // a plain STRSXP; the ALTREP shell is dropped. Auto (all-dictionary): made with the collector on; eager: off
+      out[(R_xlen_t)j] = cpp11::safe[fstx_str_plain](a, how[j] != 4);
     } else {
       out[(R_xlen_t)j] = a;
     }
