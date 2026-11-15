@@ -272,7 +272,7 @@ HWY_INLINE void NaBitmapT(const uint64_t* HWY_RESTRICT w, size_t nw, U* HWY_REST
     uint64_t m = w[k];
     if (!m) continue;
     U* o = out + k * 64;
-    if (__builtin_popcountll(m) <= 8) {  // few NAs in this word: the bit loop is faster (measured)
+    if (hwy::PopCount(m) <= 8) {  // few NAs in this word: the bit loop is faster (measured)
       while (m) {
         o[__builtin_ctzll(m)] = na;
         m &= m - 1;
