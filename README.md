@@ -7,17 +7,11 @@ run on all cores.
 
 ## Install
 
-From R-universe (binary packages for Windows and macOS, source for Linux):
-
-```r
-install.packages("fstx", repos = c("https://GITHUB_USERNAME.r-universe.dev", "https://cloud.r-project.org"))
-```
-
-From source (needs Rtools on Windows, a C++17 compiler elsewhere), with the release tarball or a copy of
-the source folder:
+Needs R 4.4.0 or newer and a C++17 compiler (Rtools on Windows). From the source tarball or a copy of the
+source folder:
 
 ```
-R CMD INSTALL fstx_0.7.0.tar.gz
+R CMD INSTALL fstx_1.0.0.tar.gz
 R CMD INSTALL fstx
 ```
 
@@ -67,5 +61,18 @@ fstx_compact("sales.fstx")   # drop what appends leave behind; merge = TRUE rewr
 fstx_simd()                  # SIMD target in use (SSE2 / SSE4 / AVX2, chosen at run time)
 ```
 
-See `?read_fstx`, `?write_fstx` and `?fstx` for every argument. Third-party code bundled under
-`src/vendor/` and its licences are listed in `inst/COPYRIGHTS`.
+## File format and older files
+
+fstx 1.0 writes fstx format 1.0 (format version 3 inside the file). The format is fixed: every later fstx
+reads these files. Its specification ships with the package:
+`system.file("spec", "fstx-format-1.0.md", package = "fstx")`.
+
+- Files written by fstx 0.7 (format 2) are read as they are. Appending to one, or `fstx_compact()` with the
+  default page copy, keeps it in format 2, so fstx 0.7 can still read it. `fstx_compact(merge = TRUE)`
+  writes a fresh file in format 3, which fstx 0.7 cannot read.
+- A file from a later fstx that needs something this version does not know is refused with a message that
+  names it and ends "Update fstx". It is not called corrupt.
+- `fstx_features()` lists what this build reads and writes.
+
+See `?fstx` for a short guide, and `?read_fstx` and `?write_fstx` for every argument. Third-party code bundled
+under `src/vendor/` and its licences are listed in `inst/COPYRIGHTS`.

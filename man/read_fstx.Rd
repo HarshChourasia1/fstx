@@ -21,10 +21,10 @@ read_fstx(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads()
     ALTREP vector backed by the memory-mapped file and decoded a page at a time when it is used, so RAM
     covers only the columns (and pages) that are touched. The file stays open (and cannot be overwritten
     from this session) until those columns are fully used or garbage collected.}
-  \item{strings}{\code{"auto"} (default since 0.6.0) decodes string pages in parallel, closes the file at
+  \item{strings}{\code{"auto"} (default) decodes string pages in parallel, closes the file at
     once and returns each character column as an ALTREP vector whose R strings are made a page at a time
     on first use (the first page used alone, later pages into one full vector, which becomes the column
-    once every page is made). Since 0.6.1 a column whose pages are all dictionary-coded (few distinct
+    once every page is made). A column whose pages are all dictionary-coded (few distinct
     values) is made during the read and returned as a plain character vector, as that costs little.
     \code{saveRDS()} / \code{serialize()} write such columns in R's standard format, so the file reads
     back without fstx. \code{"deferred"} (alias \code{"altrep"}) is the same, but keeps dictionary
@@ -46,6 +46,12 @@ read_fstx(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads()
     \code{between()}, \code{is.na()}, \code{!is.na()} or a logical column. Pages are skipped by their
     min / max / NA count, then the remaining rows are tested exactly; rows where the condition is
     \code{NA} are dropped, as \code{subset()} does. Applied within \code{from} / \code{to}.}
+}
+\details{
+Reads files in fstx format 1.0 (version 3) and files written by fstx 0.7 (format 2). A file written by a
+later fstx that uses something this version does not know (a column type, codec or file feature) is refused
+with a message that names it and ends "Update fstx", rather than reported as damaged. A damaged file gives
+an R error; with \code{verify = TRUE} (the default) every page checksum is checked as well.
 }
 \value{a data frame with the class it was written with (data.frame, data.table or tibble).}
 \seealso{\code{\link{write_fstx}}, \code{\link{fstx_which}}, \code{\link{fstx_explain}}}

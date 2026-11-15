@@ -21,7 +21,11 @@ write_fstx(x, path, profile = c("balanced", "fast", "small"), compress = NULL,
     of an existing file (a missing file is simply written). Columns must match the file's in names, order,
     type and class; factor levels may grow (the file's levels first, new ones after; ordered factors need
     the same levels); POSIXct columns need the same time zone; files with stored row names cannot be
-    appended to. The profile defaults to the file's. An interrupted append leaves the old table readable.}
+    appended to. The profile defaults to the file's (a profile written by a later fstx: the new rows are
+    encoded as \code{"balanced"} and the file keeps its stored value). An interrupted append leaves the old
+    table readable. The file keeps its format version: a file written by fstx 0.7 stays format 2. A file
+    with an optional feature this fstx does not know cannot be appended to ("Update fstx to change this
+    file; reading works").}
   \item{.encoding}{for tests only: force one encoding on every page where it applies, plus any of the flags
     \code{"dict_codes"}, \code{"fsst_dict"} and \code{"keep_codec"}.}
   \item{.crash}{for tests only.}
@@ -32,6 +36,8 @@ delta, run-length, dictionary, ALP for doubles, FSST for strings); the profile d
 Columns may be logical, integer, double or character vectors. Factors (and ordered factors), Date and
 POSIXct are stored natively; any other attributes (classes, units, labels) are kept and restored on read.
 Matrix and list columns are not supported. Strings are stored as UTF-8.
+
+New files are written in fstx format 1.0 (format version 3 inside the file), which fstx 0.7 cannot read.
 }
 \value{\code{x}, invisibly.}
 \seealso{\code{\link{read_fstx}}, \code{\link{fstx_compact}}}

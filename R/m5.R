@@ -58,7 +58,8 @@
 #' Appends leave the old footers (and anything an interrupted append wrote) inside the file. fstx_compact()
 #' copies the pages into a fresh file without re-encoding them, then replaces the original. With merge = TRUE
 #' it reads the whole table and writes it again (same profile), so the small row groups that appends add are
-#' merged into full ones.
+#' merged into full ones. Page copy keeps the file's format version (a 0.7 file stays format 2); merge = TRUE
+#' writes a fresh file in the current format 3 and drops unknown optional features and a newer profile.
 #'
 #' @param path file path.
 #' @param merge FALSE (default): copy the pages; TRUE: rewrite the table.
