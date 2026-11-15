@@ -81,24 +81,54 @@ SEXP fstx_features_impl(SEXP args) {
   }
   cpp11::writable::integers cid;
   cpp11::writable::strings cname;
-  cpp11::writable::logicals cread;
+  cpp11::writable::logicals cread, cwrite;
   for (int c = 0; c < 128; ++c) {
     const char* n = fstx::codec_name(c);
     if (!n) continue;
     cid.push_back(c);
     cname.push_back(n);
     cread.push_back(cpp11::r_bool(fstx::codec_supported(c)));
+    // the codecs the writer takes (core_writer.cpp configure()); a codec could be read-only in a later build
+    cwrite.push_back(cpp11::r_bool(fstx::codec_supported(c) && c >= FSTX_CODEC_NONE && c <= FSTX_CODEC_ZSTD));
   }
   cpp11::writable::integers fr({(int)fstx::kFormatOldest, (int)fstx::kFormatVersion});
   return cpp11::writable::list({"version"_nm = cpp11::writable::strings({fstx::kVersion}),
                                 "format_read"_nm = fr,
                                 "format_write"_nm = cpp11::writable::integers({(int)fstx::kFormatVersion}),
                                 "feature_bit"_nm = fbit, "feature_name"_nm = fname, "feature_read"_nm = fknown,
-                                "codec_id"_nm = cid, "codec_name"_nm = cname, "codec_read"_nm = cread});
+                                "codec_id"_nm = cid, "codec_name"_nm = cname, "codec_read"_nm = cread, "codec_write"_nm = cwrite});
 }
 
+// fstx_upgrade(): page-copy compaction of a format 2 file into `tmp` with the format version set to 3. Pages are
+// copied unchanged (checksums checked); format 2 files have no feature fields, so the new footer has none.
+// Returns the source file's format version (nothing is written when it is already 3).
 [[cpp11::register]]
 SEXP fstx_upgrade_impl(SEXP args) {
-  (void)args;
-  cpp11::stop("fstx_upgrade(): not available in this build");
+  const std::string src = CHAR(STRING_ELT(arg(args, "path"), 0)), tmp = CHAR(STRING_ELT(arg(args, "tmp"), 0));
+  const bool in_place = Rf_asLogical(arg(args, "in_place")) == TRUE;
+  std::string msg;
+  int version = 0;
+  try {
+    if (in_place && fstx::registry_has(fstx::file_id_of_path(src)))
+      fstx::fail(FSTX_ERR_IO,
+                 "cannot upgrade '%s': it is open in this R session, memory-mapped by a lazy read_fstx() result that "
+                 "is still alive. Remove those objects (rm()) first",
+                 src.c_str());
+    {
+      fstx_file F;
+      fstx::open_file(F, src);
+      version = (int)F.version;
+    }
+    if (version < (int)fstx::kFormatVersion) {
+      fstx::Forge g;
+      g.version = (int)fstx::kFormatVersion;
+      fstx::forge_copy(src, tmp, g);
+    }
+  } catch (const fstx::Error& e) {
+    msg = e.msg;
+  } catch (const std::exception& e) {
+    msg = e.what();
+  }
+  if (!msg.empty()) cpp11::stop("fstx_upgrade: %s", msg.c_str());
+  return cpp11::as_sexp(version);
 }
