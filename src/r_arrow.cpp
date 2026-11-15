@@ -256,7 +256,7 @@ SrcPtr open_src(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b) {
 // A fixed-width column (int, double, logical, factor codes, Date, POSIXct) over file rows [a, b); sel (rows
 // relative to a) or NULL for all of them.
 void fixed_column(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b, const uint64_t* sel, uint64_t n,
-                  ArrowArray* out) {
+                  int threads, ArrowArray* out) {
   SrcPtr s = open_src(S, c, a, b);
   fstx_colsrc_info si;
   fstx_colsrc_info_get(s.get(), &si);
@@ -267,7 +267,7 @@ void fixed_column(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b, con
   const bool same = c.out == O_INT32 || c.out == O_FLOAT64 || (c.out == O_DATE && c.phys == FSTX_INT32);
   if (same && !sel) {  // decode straight into the Arrow buffer
     void* dst = array_buf(out, 1, (size_t)n * w);
-    check(fstx_colsrc_load(s.get(), dst, S.threads, &e), e);
+    check(fstx_colsrc_load(s.get(), dst, threads, &e), e);
     if (si.null_count) {
       if (w == 4) {
         const int32_t* x = (const int32_t*)dst;
@@ -284,7 +284,7 @@ void fixed_column(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b, con
     return;
   }
   std::vector<uint8_t> tmp((size_t)(b - a) * w);
-  check(fstx_colsrc_load(s.get(), tmp.data(), S.threads, &e), e);
+  check(fstx_colsrc_load(s.get(), tmp.data(), threads, &e), e);
   s.reset();
   auto at = [&](uint64_t i) { return sel ? sel[i] : i; };
   if (c.phys == FSTX_FLOAT64) {
@@ -388,13 +388,18 @@ void plain_strings(const ColSpec& c, uint64_t n, const std::vector<const char*>&
   }
 }
 
-// A character column over file rows [a, b): plain utf8 / large_utf8, or dictionary indexes into the row group's
-// dictionary when every page of the column is dictionary-coded.
-void string_column(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b, const uint64_t* sel, uint64_t n,
-                   ArrowArray* out) {
+// A character column over file rows [a, b), in two steps: string_load decodes its pages (in parallel on the
+// engine pool), string_column then lays them out as plain utf8 / large_utf8, or as dictionary indexes into the row
+// group's dictionary when every page of the column is dictionary-coded (no pool: may run beside other columns).
+SrcPtr string_load(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b, int threads) {
   SrcPtr s = open_src(S, c, a, b);
   fstx_error e;
-  check(fstx_colsrc_load(s.get(), nullptr, S.threads, &e), e);
+  check(fstx_colsrc_load(s.get(), nullptr, threads, &e), e);
+  return s;
+}
+
+void string_column(const ColSpec& c, SrcPtr s, const uint64_t* sel, uint64_t n, ArrowArray* out) {
+  fstx_error e;
   fstx_colsrc_info si;
   fstx_colsrc_info_get(s.get(), &si);
   const bool dict = c.out == O_DICT_STR;
@@ -450,13 +455,14 @@ void string_column(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b, co
   make_utf8(h->dict, dn, dl, db);
 }
 
+// One column of a batch. String columns come with their pages already decoded (string_load).
 void build_column(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b, const uint64_t* sel, uint64_t n,
-                  ArrowArray* out) {
+                  int threads, SrcPtr loaded, ArrowArray* out) {
   if (c.phys == FSTX_STRING) {
-    string_column(S, c, a, b, sel, n, out);
+    string_column(c, std::move(loaded), sel, n, out);
     return;
   }
-  fixed_column(S, c, a, b, sel, n, out);
+  fixed_column(S, c, a, b, sel, n, threads, out);
   if (c.out == O_FACTOR) {
     ArrayHold* h = (ArrayHold*)out->private_data;
     h->dict = new_child();
@@ -546,8 +552,40 @@ int stream_get_next(ArrowArrayStream* st, ArrowArray* out) {
     for (size_t j = 0; j < S.cols.size(); ++j) h->kids.push_back(new_child());
     res.n_children = (int64_t)h->kids.size();
     res.children = h->kids.empty() ? nullptr : h->kids.data();
-    for (size_t j = 0; j < S.cols.size(); ++j)
-      build_column(S, S.cols[j], a, b, S.by_rows ? sel.data() : nullptr, n, h->kids[j]);
+    // String pages decode first, column by column, each in parallel on the engine pool. Then the columns are laid
+    // out at once on own threads (no pool): fixed-width columns decode there too, one thread each, since their
+    // NA / bool / Date passes are single-threaded per column and dominate a page-parallel decode.
+    const uint64_t* sp = S.by_rows ? sel.data() : nullptr;
+    const size_t nc = S.cols.size();
+    const int k = (int)std::min<size_t>((size_t)S.threads, nc);
+    std::vector<SrcPtr> loaded(nc);
+    for (size_t j = 0; j < nc; ++j)
+      if (S.cols[j].phys == FSTX_STRING) loaded[j] = string_load(S, S.cols[j], a, b, S.threads);
+    if (k <= 1) {
+      for (size_t j = 0; j < nc; ++j)
+        build_column(S, S.cols[j], a, b, sp, n, S.threads, std::move(loaded[j]), h->kids[j]);
+    } else {
+      std::atomic<size_t> nx{0};
+      std::vector<std::exception_ptr> ex((size_t)k);
+      auto work = [&](int id) {
+        try {
+          for (size_t j; (j = nx.fetch_add(1)) < nc;)
+            build_column(S, S.cols[j], a, b, sp, n, 1, std::move(loaded[j]), h->kids[j]);
+        } catch (...) {
+          ex[(size_t)id] = std::current_exception();
+          nx.store(nc);
+        }
+      };
+      std::vector<std::thread> ts;
+      try {
+        for (int i = 1; i < k; ++i) ts.emplace_back(work, i);
+      } catch (...) {  // no more threads: the ones started and this one share the columns
+      }
+      work(0);
+      for (std::thread& t : ts) t.join();
+      for (std::exception_ptr& x : ex)
+        if (x) std::rethrow_exception(x);
+    }
     S.pos = next;
     *out = res;
     return 0;
@@ -602,7 +640,7 @@ extern "C" int fstx_arrow_stream_open(const char* path, const fstx_arrow_args* A
       S->from = S->pos = A->from;
       S->to = A->to;
     }
-    S->threads = A->threads;
+    S->threads = A->threads > 0 ? A->threads : (int)std::max(1u, std::thread::hardware_concurrency());
     S->batch_rows = A->batch_rows;
     S->verify = A->verify;
     // row-group ends from the page directory (row groups may differ in size after appends)
