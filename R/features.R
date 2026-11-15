@@ -15,7 +15,7 @@ fstx_features <- function() {
 }
 
 # Tests only: copy a file through compaction with header, footer or first-page fields overridden, to make the
-# files a newer fstx could write. Fields: hdr_flags, version, phys0, logical0, codec0, kind0, tag0, na0
+# files a newer fstx could write. Fields: hdr_flags, version, phys0, logical0, codec0, kind0, tag0, na0, profile
 # (integers), required, optional (bit numbers), names (feature names).
 .fstx_forge <- function(src, dst, ...) {
   f <- list(src = .path_arg(src), dst = .path_arg(dst), ...)

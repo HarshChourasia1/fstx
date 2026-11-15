@@ -30,7 +30,7 @@ uint64_t codec_feature_bit(int codec) {
   switch (codec) {
     case kCodecZstdDict: return 1ull << kFeatZstdDict;
     case kCodecPcodec: return 1ull << kFeatPcodec;
-    default: return 0;
+    default: return codec >= 128 && codec <= 255 ? 1ull << kFeatExperimental : 0;
   }
 }
 

@@ -24,7 +24,8 @@ test_that("fstx_features() reports what this build reads and writes", {
   expect_identical(f$version, as.character(utils::packageVersion("fstx")))
   expect_identical(f$format_read, c(2L, 3L))
   expect_identical(f$format_write, 3L)
-  expect_identical(f$features$name[match(16:19, f$features$bit)], c("int64", "binary", "zstd_dict", "pcodec"))
+  expect_identical(f$features$bit, c(16:19, 63L))
+  expect_identical(f$features$name, c("int64", "binary", "zstd_dict", "pcodec", "experimental"))
   expect_false(any(f$features$read))
   expect_identical(f$codecs$read, c(TRUE, TRUE, TRUE, FALSE, FALSE))
   expect_identical(f$types$read, c(TRUE, TRUE, TRUE, TRUE, FALSE, FALSE))
@@ -52,6 +53,8 @@ test_that("feature bits: unknown required bits are refused by name, optional one
     nm <- c("int64", "binary", "zstd_dict", "pcodec")[b - 15L]
     expect_error(read_fstx(q), sprintf("'%s' \\(bit %d\\).*Update fstx", nm, b), label = nm)
   }
+  forge(p, q, required = 63L)
+  expect_error(read_fstx(q), "'experimental' \\(bit 63\\).*Update fstx")
   # unknown optional bits do not stop a read
   forge(p, q, optional = c(5L, 50L), names = c("nice", "nicer"))
   expect_identical(read_fstx(q), x)
@@ -63,6 +66,54 @@ test_that("feature bits: unknown required bits are refused by name, optional one
   expect_error(read_fstx(q), "feature fields in a format 2 footer")
   forge(p, q, version = 2L, hdr_flags = 1L)
   expect_error(read_fstx(q), "feature bits in a format 2 file")
+})
+
+test_that("unknown optional bits: reading works, appends and page-copy compaction are refused", {
+  p <- tempfile(fileext = ".fstx")
+  q <- tempfile(fileext = ".fstx")
+  on.exit(unlink(c(p, q, paste0(q, ".fstx-compact"))))
+  x <- small_df()
+  write_fstx(x, p)
+  forge(p, q, optional = 50L, names = "later_index")
+  before <- readBin(q, "raw", file.size(q))
+  msg <- "uses file features this fstx .* does not know. Update fstx to change this file; reading works"
+  expect_error(write_fstx(x, q, append = TRUE), msg)
+  expect_error(fstx_compact(q), msg)
+  expect_identical(readBin(q, "raw", file.size(q)), before)
+  expect_identical(read_fstx(q), x)
+  # merge = TRUE reads the table and writes a fresh file (no feature bits)
+  fstx_compact(q, merge = TRUE)
+  expect_identical(read_fstx(q), x)
+  write_fstx(x, q, append = TRUE)
+  expect_identical(nrow(read_fstx(q)), 2L * nrow(x))
+})
+
+test_that("a profile from a newer fstx reads as 'unknown' and appends and compaction keep it", {
+  p <- tempfile(fileext = ".fstx")
+  q <- tempfile(fileext = ".fstx")
+  on.exit(unlink(c(p, q)))
+  x <- small_df()
+  write_fstx(x, p)
+  for (pr in c(3L, 255L)) {
+    forge(p, q, profile = pr)
+    expect_identical(fstx_meta(q)$profile, "unknown", label = pr)
+    expect_output(print(fstx_meta(q)), "profile unknown")
+    expect_identical(read_fstx(q), x)
+  }
+  write_fstx(x, q, append = TRUE)
+  expect_identical(fstx_meta(q)$profile, "unknown")
+  y <- rbind(x, x)
+  rownames(y) <- NULL
+  expect_identical(read_fstx(q), y)
+  fstx_compact(q)
+  expect_identical(fstx_meta(q)$profile, "unknown")
+  expect_identical(read_fstx(q), y)
+  fstx_compact(q, merge = TRUE)
+  expect_identical(fstx_meta(q)$profile, "balanced")
+  expect_identical(read_fstx(q), y)
+  # format 2 has no room for newer profiles: corrupt
+  forge(p, q, version = 2L, profile = 3L)
+  expect_error(fstx_meta(q), "unknown profile")
 })
 
 test_that("newer format versions and every reserved number get their own message", {

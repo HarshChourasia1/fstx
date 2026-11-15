@@ -73,6 +73,7 @@ fstx_compact <- function(path, merge = FALSE, threads = fstx_hw_threads()) {
   run <- function() {
     if (isTRUE(merge)) {
       prof <- fstx_meta_impl(path)$profile
+      if (prof == "unknown") prof <- "balanced"  # a newer fstx's profile: the rewrite is a fresh balanced file
       x <- read_fstx(path, threads = threads)
       write_fstx(x, tmp, profile = prof, threads = threads)
     } else {

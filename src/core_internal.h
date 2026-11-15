@@ -51,7 +51,7 @@ constexpr uint32_t kMaxDictEntries = 1u << 25;  // entries in one string diction
 // how the header, tail or footer are read; they are also in header bytes 6-7, so a reader refuses them before it
 // reads the footer. Bits 16-63 are for everything else (types, codecs, encodings). This build uses none; the
 // named ones are reserved for later versions.
-enum : int { kFeatInt64 = 16, kFeatBinary = 17, kFeatZstdDict = 18, kFeatPcodec = 19 };
+enum : int { kFeatInt64 = 16, kFeatBinary = 17, kFeatZstdDict = 18, kFeatPcodec = 19, kFeatExperimental = 63 };
 constexpr uint64_t kFeatHeaderMask = 0xffffu;
 const char* feature_name(int bit);  // reserved name of a bit, or nullptr
 uint64_t features_known();          // bits this build can read

@@ -644,8 +644,10 @@ SEXP fstx_meta_impl(SEXP path) {
        "file_size"_nm = cpp11::as_sexp((double)info.file_size), "row_groups"_nm = cpp11::as_sexp((double)info.n_row_groups),
        "pages"_nm = cpp11::as_sexp((double)info.n_pages), "row_group_size"_nm = cpp11::as_sexp((double)info.row_group_size),
        "format_version"_nm = cpp11::as_sexp((double)info.format_version),
-       "profile"_nm = cpp11::as_sexp(info.profile == FSTX_PROFILE_FAST ? "fast"
-                                     : info.profile == FSTX_PROFILE_SMALL ? "small" : "balanced"),
+       "profile"_nm = cpp11::as_sexp(info.profile == FSTX_PROFILE_FAST       ? "fast"
+                                     : info.profile == FSTX_PROFILE_SMALL    ? "small"
+                                     : info.profile == FSTX_PROFILE_BALANCED ? "balanced"
+                                                                             : "unknown"),
        "name"_nm = name, "phys"_nm = phys,
        "logical"_nm = logical, "tzone"_nm = tz, "compressed_bytes"_nm = comp, "raw_bytes"_nm = raw,
        "col_pages"_nm = pages, "n_levels"_nm = nlev, "col_attrs"_nm = attrs,

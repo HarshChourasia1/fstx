@@ -62,7 +62,8 @@ write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compre
       chk <- .append_prepare(x, path)
       x <- chk$x
       file_ta <- chk$table_attrs
-      if (missing(profile)) profile <- chk$profile
+      # a profile from a newer fstx ("unknown"): encode as balanced; the file keeps its stored value
+      if (missing(profile)) profile <- if (chk$profile == "unknown") "balanced" else chk$profile
     }
   }
   profile <- match.arg(profile)
@@ -302,8 +303,8 @@ read_fstx <- function(path, columns = NULL, from = 1, to = NULL, threads = fstx_
 #' Describe an FST-X file without reading its data
 #'
 #' @param path file path.
-#' @return an object of class "fstx_meta": row and column counts, file size, and per column the type,
-#'   class and compressed size.
+#' @return an object of class "fstx_meta": row and column counts, file size, profile ("unknown" for one a
+#'   newer fstx wrote), and per column the type, class and compressed size.
 fstx_meta <- function(path) {
   path <- .path_arg(path)
   m <- fstx_meta_impl(path)

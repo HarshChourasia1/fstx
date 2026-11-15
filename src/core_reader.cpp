@@ -55,6 +55,7 @@ const char* feature_name(int bit) {
     case kFeatBinary: return "binary";
     case kFeatZstdDict: return "zstd_dict";
     case kFeatPcodec: return "pcodec";
+    case kFeatExperimental: return "experimental";
     default: return nullptr;
   }
 }
@@ -78,14 +79,20 @@ void refuse_newer(const std::string& path, const char* fmt, ...) {
   fail(FSTX_ERR_FORMAT, "'%s' uses %s, which this fstx (%s) cannot read. Update fstx.", path.c_str(), what, kVersion);
 }
 
+uint32_t count_bits(uint64_t x) {
+  uint32_t n = 0;
+  for (; x; x &= x - 1) ++n;
+  return n;
+}
+
 // A feature bit the reader lacks: named from the file's own list when it has one, else from the reserved names.
 [[noreturn]] void refuse_feature(const std::string& path, int bit, const fb::Footer* ft) {
   std::string nm;
   if (ft && ft->feature_names()) {
     const uint64_t req = ft->required_features(), opt = ft->optional_features();
     const auto* names = ft->feature_names();
-    const uint32_t i = (uint32_t)__builtin_popcountll(req & ((1ull << bit) - 1));
-    if (names->size() == (uint32_t)(__builtin_popcountll(req) + __builtin_popcountll(opt)) && i < names->size()) {
+    const uint32_t i = count_bits(req & ((1ull << bit) - 1));
+    if (names->size() == count_bits(req) + count_bits(opt) && i < names->size()) {
       const auto* s = names->Get(i);
       for (uint32_t k = 0; k < s->size() && k < 64; ++k) {
         const char ch = s->c_str()[k];
@@ -168,7 +175,8 @@ void open_file(fstx_file& F, const std::string& path) {
   for (int b = 0; b < 64; ++b)
     if ((req >> b & 1u) && !(features_known() >> b & 1u)) refuse_feature(path, b, ft);
   F.profile = (int)ft->profile();
-  if (F.profile > enc::P_SMALL) fail(FSTX_ERR_CORRUPT, "'%s' has an unknown profile", path.c_str());
+  // format 3: a profile above 2 came from a newer fstx; it is informational, so it is read as "unknown"
+  if (F.version == 2 && F.profile > enc::P_SMALL) fail(FSTX_ERR_CORRUPT, "'%s' has an unknown profile", path.c_str());
   const uint64_t rg_size = ft->row_group_size();
   if (rg_size == 0 || rg_size > kMaxRowGroup) fail(FSTX_ERR_CORRUPT, "'%s' has an invalid row group size", path.c_str());
 

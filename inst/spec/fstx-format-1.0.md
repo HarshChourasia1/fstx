@@ -63,10 +63,10 @@ FlatBuffers verifier on it before use.
 | row_groups | [RowGroup] | in row order; their row counts add up to row_count |
 | table_attrs | [u8] | data-frame attributes (class and others), R `serialize()` output; may be empty |
 | created_by | string | `fstx <version>` of the writer |
-| profile | enum u8 | 0 fast, 1 balanced (default), 2 small; informational; above 2 is corrupt |
+| profile | enum u8 | 0 fast, 1 balanced (default), 2 small; informational. Format 3: 3-255 are read and reported as "unknown", and appends and compaction keep the stored value. Format 2: above 2 is corrupt |
 | required_features | u64 | format 3: bits a reader must know (section 5) |
 | optional_features | u64 | format 3: bits a reader may ignore |
-| feature_names | [string] | format 3: one name per set bit, required bits first, then optional, each in ascending bit order |
+| feature_names | [string] | format 3: one name per set bit, required bits first, then optional, each in ascending bit order; each name is ASCII letters, digits and `_`, at most 64 bytes |
 
 ### 4.2 Column
 
@@ -149,15 +149,23 @@ everything else. Named and reserved bits:
 | 17 | binary | binary columns (physical type 5) |
 | 18 | zstd_dict | pages with codec 3 |
 | 19 | pcodec | pages with codec 4 |
+| 63 | experimental | anything not in a release: codecs 128-255 or trial data; set by any build that writes them |
 
 Rules:
 
 - A reader must refuse a file with a required bit it does not know, naming the feature: from
   feature_names when the list has one entry per set bit, else from the table above, else by bit number.
-- A reader must ignore optional bits it does not know.
+- A reader must ignore optional bits it does not know when it reads. A writer must refuse to append to or
+  compact (page copy) a file with an optional bit it does not know ("Update fstx to change this file; reading
+  works"), since the change could make the data that bit describes wrong. A merging compaction reads the
+  table and writes a fresh file, which has no feature bits.
+- Anything a 1.0 reader cannot decode must set a required bit; an optional bit is only for data a reader can
+  skip and still read the table correctly.
+- Whenever a writer sets a bit it also writes the bit's name, so feature_names always has one entry per set
+  bit. Names are ASCII letters, digits and `_`, at most 64 bytes.
 - The low 16 bits of required_features must equal header bytes 6-7.
 - In format 2, a header with feature bits, or a footer with any of the three feature fields, is corrupt.
-- fstx 1.0 knows no feature bits: every file it writes has both fields 0 and no names.
+- fstx 1.0 knows no feature bits: every new file it writes has both fields 0 and no names.
 
 ## 6. Page bodies
 
@@ -268,8 +276,10 @@ Factor levels are not checked when a file is opened, to keep opening fast; they 
    may ignore them.
 5. A new encoding tag, codec, physical type or page kind needs a required feature bit, so an older reader
    names it instead of calling the file corrupt.
-6. Appends and compaction keep the file's own format version and feature fields: a format 2 file stays
-   format 2, so the fstx that wrote it can still read it.
+6. Appends and compaction keep the file's own format version, profile and feature fields: a format 2 file
+   stays format 2, so the fstx that wrote it can still read it.
+7. Writers write all text (names, levels, time zones, strings) as UTF-8. Readers must not rely on it: they
+   check the text that section 8 lists and must not crash or misread a string that is not valid UTF-8.
 
 ### 9.1 Same bytes
 

@@ -19,7 +19,9 @@ fstx_meta(path)
 \code{fstx_meta()} returns an object of class \code{"fstx_meta"}: a list with \code{path}, \code{nrow},
 \code{ncol}, \code{file_size}, \code{row_groups}, \code{pages}, \code{format_version}, \code{profile},
 \code{table_class} and \code{columns}, a data frame with per column the name, stored type, class, time
-zone, compressed and raw bytes and page count. Only the footer is read. The print method returns
+zone, compressed and raw bytes and page count. \code{profile} is \code{"fast"}, \code{"balanced"},
+\code{"small"}, or \code{"unknown"} for a profile a newer fstx wrote (informational; the file reads
+normally). Only the footer is read. The print method returns
 \code{x} invisibly.
 }
 \seealso{\code{\link{fstx_pages}}}

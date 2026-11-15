@@ -77,7 +77,9 @@ struct WriterImpl {
   // feature fields
   uint32_t version = kFormatVersion;
   uint64_t req_features = 0, opt_features = 0;
-  std::vector<std::string> feature_names;
+  std::vector<std::string> feature_names;  // built at close from the bits (forge: given)
+  std::string file_names[64];              // names from the file's own list, by bit
+  int stored_profile = -1;                 // appends and compaction: the file's profile, kept as stored
   const Forge* forge = nullptr;  // tests only (forge_copy)
   std::vector<std::vector<enc::StrChunk>> sch;  // [row group of this append][column]: string chunk plans
   size_t rg0 = 0;                               // first row group of the current append call
@@ -154,18 +156,45 @@ struct WriterImpl {
     }
     total_rows = F.n_rows;
     rg_size = F.footer->row_group_size();
-    profile = F.profile;
+    if (F.profile <= enc::P_SMALL) profile = F.profile;  // a newer profile: encode with the given one
     keep_format(F);
   }
 
   // Appends and compaction keep the file's format version and feature fields.
+  // An optional bit this build does not know may describe data the change would make wrong, so the file is
+  // refused (unknown required bits were already refused when it was opened).
   void keep_format(const fstx_file& F) {
     version = F.version;
-    req_features |= F.footer->required_features();
-    opt_features = F.footer->optional_features();
-    if (const auto* nm = F.footer->feature_names())
-      for (const auto* x : *nm) feature_names.push_back(x->str());
+    stored_profile = F.profile;
+    const uint64_t req = F.footer->required_features(), opt = F.footer->optional_features();
+    if (opt & ~features_known())
+      fail(FSTX_ERR_FORMAT, "'%s' uses file features this fstx (%s) does not know. Update fstx to change this file; reading works.",
+           F.path.c_str(), kVersion);
+    req_features |= req;
+    opt_features = opt;
+    if (const auto* nm = F.footer->feature_names()) {
+      uint32_t n = 0;
+      for (int b = 0; b < 64; ++b) n += (uint32_t)((req >> b & 1u) + (opt >> b & 1u));
+      if (nm->size() == n) {
+        uint32_t i = 0;
+        for (int pass = 0; pass < 2; ++pass)
+          for (int b = 0; b < 64; ++b)
+            if (((pass ? opt : req) >> b) & 1u) file_names[b] = nm->Get(i++)->str();
+      }
+    }
     if (version < 3 && req_features) fail(FSTX_ERR_ARG, "this write needs file features that format 2 files cannot hold");
+  }
+
+  // One name per set bit, required bits first, then optional, each in ascending bit order.
+  void name_features() {
+    feature_names.clear();
+    for (int pass = 0; pass < 2; ++pass)
+      for (int b = 0; b < 64; ++b) {
+        if (!(((pass ? opt_features : req_features) >> b) & 1u)) continue;
+        if (!file_names[b].empty()) feature_names.push_back(file_names[b]);
+        else if (feature_name(b)) feature_names.push_back(feature_name(b));
+        else fail(FSTX_ERR_INTERNAL, "file feature bit %d has no name", b);
+      }
   }
 
   void check_same_columns(const fstx_file& F) {
@@ -639,6 +668,7 @@ struct WriterImpl {
     flatbuffers::Offset<flatbuffers::Vector<uint8_t>> tattrs = 0;
     if (!table_attrs.empty()) tattrs = b.CreateVector(table_attrs);
     auto created = b.CreateString(std::string("fstx ") + kVersion);
+    if (!forge) name_features();
     flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<flatbuffers::String>>> fnames = 0;
     if (!feature_names.empty()) {
       std::vector<flatbuffers::Offset<flatbuffers::String>> v;
@@ -646,7 +676,8 @@ struct WriterImpl {
       fnames = b.CreateVector(v);
     }
     auto footer = fb::CreateFooter(b, (uint16_t)version, total_rows, rg_size, columns, groups, tattrs, created,
-                                   (fb::Profile)profile, req_features, opt_features, fnames);
+                                   (fb::Profile)(stored_profile >= 0 ? stored_profile : profile), req_features,
+                                   opt_features, fnames);
     fb::FinishFooterBuffer(b, footer);
 
     out.pad_to(align_up(out.pos()));
@@ -708,6 +739,7 @@ struct WriterImpl {
       req_features = forge->req;
       opt_features = forge->opt;
       feature_names = forge->names;
+      if (forge->profile >= 0) stored_profile = forge->profile;
       if (forge->phys0 >= 0) cols[0].phys = forge->phys0;
       if (forge->logical0 >= 0) cols[0].logical = forge->logical0;
     }
@@ -737,7 +769,7 @@ struct WriterImpl {
     }
     total_rows = F.n_rows;
     rg_size = F.footer->row_group_size();
-    profile = F.profile;
+    if (F.profile <= enc::P_SMALL) profile = F.profile;
     if (forge && !rgs.empty()) {  // the first page of column 0
       PageMeta& p = rgs[0].chunks[0][0];
       if (forge->codec0 >= 0) p.codec = (uint8_t)forge->codec0;
