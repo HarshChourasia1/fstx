@@ -560,7 +560,8 @@ SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads
     }
     cpp11::sexp a = cpp11::safe[fstx_altrep_new](xp);
     if (plain) {
-      out[(R_xlen_t)j] = cpp11::safe[fstx_str_plain](a);  // a plain STRSXP; the ALTREP shell is dropped
+      // a plain STRSXP; the ALTREP shell is dropped. Auto (all-dictionary): made with the collector on; eager: off
+      out[(R_xlen_t)j] = cpp11::safe[fstx_str_plain](a, how[j] != 4);
     } else {
       out[(R_xlen_t)j] = a;
     }

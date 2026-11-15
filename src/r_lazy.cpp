@@ -750,8 +750,9 @@ SEXP fstx_altrep_new(SEXP xp) {
   return R_new_altrep(c, xp, R_NilValue);
 }
 
-SEXP fstx_str_plain(SEXP x) {
+SEXP fstx_str_plain(SEXP x, bool gc_on) {
   if (!ALTREP(x) || !R_altrep_inherits(x, cls_str)) Rf_error("fstx: internal error, not an fstx string column");
+  if (gc_on) return str_complete(x);  // the collector may run (str_dict_fill allocates the full vector last)
   (void)STRING_PTR_RO(x);  // Dataptr: every page made, with R's collector off
   return st_full(x);
 }
