@@ -32,8 +32,11 @@ Each batch is a record batch, one per row group by default. Column types:
   \item POSIXct: timestamp in microseconds with the column's time zone (none if the column had none), rounded
     to the nearest microsecond.
 }
-Missing values become Arrow nulls. A double \code{NaN} stays \code{NaN}; \code{NaN} and infinite times and
+Text is passed on as stored in the file; it is not checked for valid UTF-8 (factor levels are, when the stream is
+made). Missing values become Arrow nulls. A double \code{NaN} stays \code{NaN}; \code{NaN} and infinite times and
 Dates become nulls. Other attributes and the table class are not carried.
+
+nanoarrow 0.9.0 cannot convert an ordered dictionary (an ordered factor) back to R.
 
 The stream holds the file open until it is released (dropped and garbage-collected). Its callbacks never call
 R, so a consumer may pull batches from its own threads.

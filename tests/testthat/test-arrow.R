@@ -131,6 +131,8 @@ test_that("empty table, zero columns, columns, from / to and where", {
   expect_error(fstx_arrow_stream(p, from = 4000), "beyond the last row")
   expect_error(fstx_arrow_stream(p, batch_rows = 0), "batch_rows")
   expect_error(fstx_arrow_stream(p, where = nope > 1), "^fstx_arrow_stream: ")   # not "read_fstx:"
+  # a huge thread count is capped at the hardware threads (a batch starts its own threads)
+  expect_same_df(arrow_df(fstx_arrow_stream(p, threads = 5000)), y)
 })
 
 test_that("batches follow row groups and batch_rows; dictionaries come per row group", {

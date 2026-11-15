@@ -640,7 +640,9 @@ extern "C" int fstx_arrow_stream_open(const char* path, const fstx_arrow_args* A
       S->from = S->pos = A->from;
       S->to = A->to;
     }
-    S->threads = A->threads > 0 ? A->threads : (int)std::max(1u, std::thread::hardware_concurrency());
+    // at most one thread per hardware thread: a batch starts up to this many (threads = 5000 must not mean 5000)
+    const int hw = (int)std::max(1u, std::thread::hardware_concurrency());
+    S->threads = A->threads > 0 && A->threads < hw ? A->threads : hw;
     S->batch_rows = A->batch_rows;
     S->verify = A->verify;
     // row-group ends from the page directory (row groups may differ in size after appends)
