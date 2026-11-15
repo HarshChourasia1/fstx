@@ -91,6 +91,37 @@ bool fsst_table_ok(const uint8_t* p, size_t len) {
   return total <= 255 && need <= len;
 }
 
+// True when a code byte the table does not have (nsym..254) appears in p[0, n). Escaped literal bytes count too, so
+// a hit only means the exact walk (fsst_codes_ok) must decide. One 16-byte vector pass.
+typedef uint8_t vu16 __attribute__((vector_size(16)));
+bool fsst_maybe_unused(const uint8_t* p, size_t n, uint32_t nsym) {
+  if (nsym >= 255) return false;
+  const uint8_t lo = (uint8_t)nsym, span = (uint8_t)(255 - nsym);
+  vu16 acc = {};
+  size_t i = 0;
+  for (; i + 16 <= n; i += 16) {
+    vu16 x;
+    std::memcpy(&x, p + i, 16);
+    acc |= (vu16)((vu16)(x - lo) < span);
+  }
+  uint8_t hit = 0;
+  for (int k = 0; k < 16; ++k) hit |= acc[k];
+  for (; i < n; ++i) hit |= (uint8_t)(p[i] - lo) < span;
+  return hit != 0;
+}
+
+// The exact walk of one code string: escape (255) takes the next byte as a literal; every other code must be < nsym.
+bool fsst_codes_ok(const uint8_t* p, size_t n, uint32_t nsym) {
+  for (size_t i = 0; i < n; ++i) {
+    if (p[i] == 255) {
+      if (++i == n) return false;
+    } else if (p[i] >= nsym) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // FSST encoding of many strings, byte for byte what libfsst's scalar compressBulk writes (the vendored build has no
 // AVX-512 path): each string in chunks of up to 511 bytes, each chunk followed by the table's terminator byte, then a
 // greedy parse (long symbol from the hash table, else the shortCodes entry). compressBulk walks one string at a time
@@ -164,6 +195,36 @@ __attribute__((always_inline)) inline void fsst_step(const libfsst::SymbolTable&
   c += v >> FSST_LEN_BITS;
 }
 
+// Exact copy of n bytes (nothing read or written outside [0, n)) for the short runs the FSST lanes move: inline loads
+// instead of a library call per string. d and s never overlap.
+__attribute__((always_inline)) inline void copy_short(uint8_t* d, const uint8_t* s, size_t n) {
+  if (n >= 16) {
+    uint8_t t[16];
+    for (size_t i = 0; i + 16 < n; i += 16) {
+      std::memcpy(t, s + i, 16);
+      std::memcpy(d + i, t, 16);
+    }
+    std::memcpy(t, s + n - 16, 16);
+    std::memcpy(d + n - 16, t, 16);
+  } else if (n >= 8) {
+    uint64_t a, b;
+    std::memcpy(&a, s, 8);
+    std::memcpy(&b, s + n - 8, 8);
+    std::memcpy(d, &a, 8);
+    std::memcpy(d + n - 8, &b, 8);
+  } else if (n >= 4) {
+    uint32_t a, b;
+    std::memcpy(&a, s, 4);
+    std::memcpy(&b, s + n - 4, 4);
+    std::memcpy(d, &a, 4);
+    std::memcpy(d + n - 4, &b, 4);
+  } else if (n) {
+    d[0] = s[0];
+    d[n >> 1] = s[n >> 1];
+    d[n - 1] = s[n - 1];
+  }
+}
+
 // dst needs 2 * (total bytes) + 16. Writes the codes of all strings back to back; lo[i] = code bytes of string i.
 size_t fsst_encode(const void* enc, size_t n, const size_t* len, const unsigned char* const* str, uint8_t* dst,
                    size_t* lo) {
@@ -203,7 +264,7 @@ size_t fsst_encode(const void* enc, size_t n, const size_t* len, const unsigned 
     const uint16_t o16 = (uint16_t)(uintptr_t)L.ob;
     for (size_t j = 0; j < L.nch; ++j) {  // cut the last round's chunk outputs out
       const size_t a = j ? (uint16_t)(L.pm[L.tpos[j - 1] + 1u] - o16) : 0, b = (uint16_t)(L.pm[L.tpos[j]] - o16);
-      std::memcpy(L.w, L.ob + a, b - a);
+      copy_short(L.w, L.ob + a, b - a);
       L.w += b - a;
       lo[L.cline[j]] += b - a;
     }
@@ -215,7 +276,7 @@ size_t fsst_encode(const void* enc, size_t n, const size_t* len, const unsigned 
         continue;
       }
       const size_t ch = std::min<size_t>(511, l - L.off);
-      std::memcpy(L.stage + s, str[L.line] + L.off, ch);
+      copy_short(L.stage + s, str[L.line] + L.off, ch);
       s += ch;
       L.stage[s] = term;
       L.tpos[k] = (uint16_t)s++;
@@ -558,6 +619,11 @@ void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n
     if (csum != bb.len || total > 8 * csum || total > kMaxRawPage) corrupt("FSST sizes");
     if (buf.size() < total + 64) buf.resize((size_t)total + 64);
     const unsigned char* src = bb.p;
+    // codes the table does not have would decode to filler text: walk the strings exactly only when a byte in the
+    // unused range shows up anywhere (it may be an escaped literal)
+    uint32_t nsym = 0;
+    for (int l = 0; l < 8; ++l) nsym += tb.p[9 + l];
+    const bool walk = fsst_maybe_unused(bb.p, (size_t)bb.len, nsym);
     uint64_t pos = 0;
     for (uint32_t i = 0; i < n; ++i) {
       const size_t cl = (size_t)lens[i];
@@ -571,6 +637,7 @@ void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n
           while (esc < cl && src[cl - 1 - esc] == 255) ++esc;
           if (esc & 1) corrupt("FSST escape at the end of a string");
         }
+        if (walk && !fsst_codes_ok(src, cl, nsym)) corrupt("FSST code not in the symbol table");
         got = fsst_decompress(&dec, cl, src, (size_t)(total - pos) + 32, buf.data() + pos);
         if (got > total - pos) corrupt("FSST string longer than the page");
       }

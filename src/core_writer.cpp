@@ -837,6 +837,9 @@ struct WriterImpl {
       opt_features = forge->opt;
       feature_names = forge->names;
       if (forge->profile >= 0) stored_profile = forge->profile;
+      const bool page0 = forge->codec0 >= 0 || forge->kind0 >= 0 || forge->na0 >= 0 || forge->tag0 >= 0;
+      if (cols.empty() && (page0 || forge->phys0 >= 0 || forge->logical0 >= 0))
+        fail(FSTX_ERR_ARG, "cannot forge column 0: the file has no columns");
       if (forge->phys0 >= 0) cols[0].phys = forge->phys0;
       if (forge->logical0 >= 0) cols[0].logical = forge->logical0;
     }
@@ -867,7 +870,10 @@ struct WriterImpl {
     total_rows = F.n_rows;
     rg_size = F.footer->row_group_size();
     if (F.profile <= enc::P_SMALL) profile = F.profile;
-    if (forge && !rgs.empty()) {  // the first page of column 0
+    if (forge && !rgs.empty() && (forge->codec0 >= 0 || forge->kind0 >= 0 || forge->na0 >= 0 || forge->tag0 >= 0)) {
+      // the first page of column 0 (a file may have row groups but no columns, or an empty first chunk)
+      if (rgs[0].chunks.empty() || rgs[0].chunks[0].empty())
+        fail(FSTX_ERR_ARG, "cannot forge the first page of column 0: the file has none");
       PageMeta& p = rgs[0].chunks[0][0];
       if (forge->codec0 >= 0) p.codec = (uint8_t)forge->codec0;
       if (forge->kind0 >= 0) p.chain = (p.chain & ~15u) | (uint32_t)forge->kind0;

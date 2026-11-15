@@ -70,6 +70,22 @@ test_that("an FSST string ending in a lone escape byte is refused as corrupt", {
   b[bb + 8 + 1:2] <- as.raw(255)                                      # escape + literal 255 over strings 1-2:
   writeBin(b, p)                                                      # string 1 ends in a lone escape
   expect_error(read_fstx(p, verify = FALSE), "FSST escape at the end")
+  for (k in unique(c(1, n1))) {
+    b <- orig
+    b[bb + 8 + k] <- as.raw(200)                                      # a code the small table does not have
+    writeBin(b, p)
+    expect_error(read_fstx(p, verify = FALSE), "corrupt page .FSST code not in the symbol table", label = k)
+  }
   writeBin(orig, p)
   expect_identical(read_fstx(p, verify = FALSE)$s, x$s)
+})
+
+test_that("forging a file with row groups but no columns does not crash", {
+  p <- tempfile(fileext = ".fstx")
+  q <- tempfile(fileext = ".fstx")
+  on.exit(unlink(c(p, q)))
+  write_fstx(data.frame(row.names = 1:10), p)
+  r <- tryCatch({ fstx:::.fstx_forge(p, q); "ok" }, error = function(e) conditionMessage(e))
+  expect_true(r == "ok" || grepl("fstx", r), label = r)
+  expect_error(fstx:::.fstx_forge(p, q, codec0 = 0), "no columns")
 })
