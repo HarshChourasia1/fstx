@@ -64,6 +64,9 @@ SEXP fstx_altrep_new(SEXP xp);
 // M6s: makes every R string of an fstx string ALTREP vector and returns the plain STRSXP that holds them. The work
 // runs inside R's Dataptr call, where R switches the garbage collector off. R allocation.
 SEXP fstx_str_plain(SEXP x);
+// 1.0: the plain STRSXP of an all-dictionary string column whose pages are all decoded (one R string per dictionary
+// entry, a pointer per row). R allocation; raises R errors.
+SEXP fstx_dict_plain(SEXP xp);
 void fstx_init_altrep(DllInfo* dll);
 
 #endif

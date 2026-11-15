@@ -548,15 +548,18 @@ SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads
     if (!lazy) {
       Holder* h = fstx_holder_of(xp);
       if (fstx_colsrc_load(h->src, nullptr, threads, &err) != FSTX_OK) stop_err(err);
-      if (how[j] == 1 && fstx_colsrc_detach(h->src, &err) != FSTX_OK) stop_err(err);
       // M6.1: strings = "auto" returns an all-dictionary (low-cardinality) column as a plain vector at once. It
       // costs one R string per dictionary entry plus a pointer per row, and later ops (table, factor, split,
       // grouping) then skip the ALTREP layer, which costs them about 2x on a finished column.
-      if (mode == 3) {
-        fstx_colsrc_info si;
-        fstx_colsrc_info_get(h->src, &si);
-        plain = si.all_dict != 0;
+      // 1.0: such a column (auto or eager) is filled straight from the codes, without an ALTREP vector.
+      fstx_colsrc_info si;
+      fstx_colsrc_info_get(h->src, &si);
+      if (si.all_dict && (how[j] == 4 || mode == 3)) {
+        out[(R_xlen_t)j] = cpp11::safe[fstx_dict_plain](xp);
+        h->release();
+        continue;
       }
+      if (how[j] == 1 && fstx_colsrc_detach(h->src, &err) != FSTX_OK) stop_err(err);
     }
     cpp11::sexp a = cpp11::safe[fstx_altrep_new](xp);
     if (plain) {
