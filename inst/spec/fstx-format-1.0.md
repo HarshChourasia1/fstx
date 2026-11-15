@@ -9,6 +9,12 @@ Someone who has never seen the code should be able to write a reader from this d
 fstx 1.0 reads and writes format 3 only. Files with format versions 1 and 2 (fstx 0.x development versions)
 are refused with a message that says so.
 
+A reader must know all ten encoding tags to read ordinary files. The fstx writer often picks ALP (tag 8) or
+ALPRD (tag 9) for double columns (decimal numbers, and dates and times stored as doubles) and FSST (tag 10)
+for text, also for the dictionary page of dictionary-coded text. A reader without them can open every file
+and read its integer, logical and factor columns, but not many of its double and text columns. Which tags a
+file uses is shown only by the per-page chain (4.5).
+
 ## 1. File layout
 
 ```
@@ -78,7 +84,14 @@ checksum.
 A FlatBuffers buffer (standard binary layout, little-endian) with file identifier `FSTX` at footer bytes
 4-7 and root table `Footer`. The schema is appendix A; the same text is `tools/fstx_footer.fbs` in the
 package sources (compiled with flatc 25.12.19). Readers must run a FlatBuffers verifier on the footer before
-they use it; fstx verifies with alignment checks on and a nesting depth limit of 16.
+they use it. It must check, for the root table and everything reachable from it: the file identifier; that
+every offset, vtable, table, string and vector lies inside the footer; that strings end in a zero byte; and
+that every scalar, table and vector length sits on a multiple of its size counted from the first footer byte
+(the footer itself starts on a multiple of 8 in the file, so this is also its alignment in the file). fstx
+uses the FlatBuffers 25.12.19 verifier with alignment checks on and a nesting limit of 16 tables (the root
+counts as 1; this format nests 3 deep: Footer, RowGroup, ColumnChunk). A file has 1 + columns + row groups x
+(1 + columns) tables, which can pass the verifier's default limit of 1,000,000 tables in a legal file, so a
+reader must raise that limit (fstx uses 2^31-1).
 
 Field ids are the order of the fields in the schema, from 0. A table field that is absent reads as its
 default (0, false, empty, or Balanced for `profile`).
@@ -93,7 +106,7 @@ default (0, false, empty, or Balanced for `profile`).
 | 3 | columns | [Column] | schema, in column order; at most 2^24 columns |
 | 4 | row_groups | [RowGroup] | in row order; empty for a table with no rows |
 | 5 | table_attrs | [u8] | data-frame attributes, R serialization (rule 4, section 9); may be absent |
-| 6 | created_by | string | `fstx <version>` of the writer |
+| 6 | created_by | string | `fstx <version>` of the writer (fstx 1.0.0 writes `fstx 1.0.0`). Informational: a reader must not use it to decide how to read the file; a file written by a development build before 1.0.0 may say `fstx 0.99.0` |
 | 7 | profile | enum u8 | 0 fast, 1 balanced (default), 2 small; informational. 3-255 are read and reported as "unknown" |
 | 8 | required_features | u64 | bits a reader must know (section 5) |
 | 9 | optional_features | u64 | bits a reader may ignore |
@@ -119,6 +132,10 @@ Type combinations fstx accepts (anything else is corrupt):
 | 1 factor | 0 int32, with `levels` present | 1-based codes into `levels`; NA = missing. A code outside 1..number of levels is corrupt (checked on the rows read) |
 | 2 Date | 0 int32 or 1 float64 | days since 1970-01-01 |
 | 3 POSIXct | 1 float64 | seconds since 1970-01-01 00:00 UTC |
+
+`levels` on a column that is not a factor, `ordered` on one that is not a factor and `tzone` on one that is
+not POSIXct are ignored when the data is read (fstx still checks the time zone text, and `fstx_meta()` shows
+what is stored). A writer must not write them.
 
 ### 4.3 RowGroup
 
@@ -164,6 +181,12 @@ codes and dictionary pages: no statistics (min = max = 0, flag clear). A reader 
 min/max cannot match a filter only when the flag is set. fstx does not check min, max or flags against the
 data; a writer must not set the flag with a range that leaves out a value.
 
+null_count must equal the number of rows the page's missing-value block marks, and 0 when the mode is 0. A
+writer must write mode 0 when no row is missing; a reader must still accept mode 1 or 2 with no row marked.
+fstx does not compare null_count with the body. It trusts it the way it trusts min and max: to skip pages in
+filters and to tell R and Arrow that a column has no missing values. A wrong count gives wrong answers
+(missing values that are not reported as missing), not a crash.
+
 Pages must lie wholly before the footer; fstx does not check that pages do not overlap one another.
 
 fstx also refuses, as corrupt, a page whose raw_len the codec cannot reach: LZ4, raw_len above comp_len x
@@ -194,8 +217,11 @@ in a known range is corrupt.
 
 The codec applies to the whole page body; the hash is over the stored (compressed) bytes.
 
-- 1, LZ4: one raw LZ4 block (no frame). fstx decodes it with the safe decoder (`LZ4_decompress_safe`) and
-  needs exactly raw_len bytes out.
+- 1, LZ4: one block in the LZ4 block format ("LZ4 Block Format Description", `doc/lz4_Block_format.md` in the
+  lz4 sources), with no frame and no size prefix. The writer follows that document's end-of-block rules (the
+  last sequence is literals only, the last 5 bytes are literals, the last match starts at least 12 bytes
+  before the end). fstx decodes with the safe decoder (`LZ4_decompress_safe`): the block must use exactly
+  comp_len input bytes and give exactly raw_len bytes, else the page is corrupt.
 - 2, Zstandard: exactly one frame, whose header stores the content size, and that size must equal raw_len
   (checked before anything is decoded; a frame without a content size is corrupt). fstx then decodes with
   `ZSTD_decompressDCtx` and needs exactly raw_len bytes out.
@@ -273,6 +299,12 @@ rounded up to 8, and that much must fit in the parent. Inside a payload, "pad" m
 next multiple of 8 counted from the payload start. "u32 + 4" means a u32 followed by 4 zero bytes. Child
 blocks follow one another inside their parent's payload, right after the parent's own fields.
 
+A child block is a value block: it holds a stated number of 32- or 64-bit values and takes part in the depth
+rule. Byte blocks (6.8) are not child blocks.
+
+A writer must not put anything after the last field or child of a payload. fstx ignores such bytes inside a
+payload (section 10); only bytes after the top value block make a page corrupt.
+
 Depth: the top value block is depth 0; the children of a block at depth d are at depth d + 1. A block at
 depth 3 or more is corrupt, and RLE and DICT blocks are allowed only at depth 0 and 1. ALP and ALPRD blocks
 are allowed only as the top value block of a double page.
@@ -281,15 +313,19 @@ are allowed only as the top value block of a double page.
 
 The writer stores missing values out of line and fills their slots in the value block, so the encodings
 never see a missing value: numeric and code pages repeat the previous non-missing value (the first
-non-missing value of the page for leading missing rows); string pages store length 0.
+non-missing value of the page for leading missing rows); string pages store length 0. When every row of a
+numeric or code page is missing, the writer stores 0 in every slot (the page is then CONST 0).
 
 The missing-value block is one of:
 
 - Tag 0x81, bitmap: one bit per row, 1 = missing; row i is bit i % 64 of u64 word i / 64. Payload exactly
   8 x ceil(n / 64) bytes. Bits for rows n and above must be 0 (checked).
-- Tag 0x82, runs: u32 run count + 4, then that many u32 run lengths (pad), alternating not-missing / missing,
-  starting with a not-missing run (which may be 0; others may be 0 too). The lengths must add up to n
-  (checked).
+- Tag 0x82, runs: u32 run count + 4, then that many u32 run lengths, alternating not-missing / missing,
+  starting with a not-missing run (which may be 0; others may be 0 too). The payload length is exactly
+  8 + 4 x run count; the zero padding up to a multiple of 8 is outside it, as for every block. The lengths must
+  add up to n (checked). fstx needs at least 8 + 4 x run count payload bytes and ignores any more.
+
+Both blocks have a = b = c = 0 (written so, not checked).
 
 The block's tag must match the mode in the page header (checked). The writer picks runs when that block is
 smaller than the bitmap (8 + run count x 4, rounded up to 8, against 8 x ceil(n / 64)), else the bitmap.
@@ -303,6 +339,12 @@ What a missing value becomes after decoding:
 | 4 string | NA_character_ | stored length 0 (checked) |
 | 5 codes | code -1 | any value (not checked) |
 
+A writer must not store the missing-value pattern of a page kind (`0x80000000` on int and logical pages,
+`0x7FF00000000007A2` on double pages, -1 on code pages) on a row that the missing-value block does not mark.
+If a file does, the value is still missing for an R reader, since R has no other meaning for that pattern,
+but null_count and the missing-value block do not show it; fstx does not check for it. Readers for other
+systems should treat such a value as missing too.
+
 A logical page stores 1 for TRUE and 0 for FALSE; fstx does not check that other values are absent.
 
 ### 6.3 Encoding tags
@@ -311,6 +353,8 @@ Values are either 32-bit (int, logical and code pages; lengths, run lengths and 
 or 64-bit (double pages, which the integer encodings work on as int64 bit patterns; ALP integers; ALPRD
 right parts). "n" is the block's value count: the page's row count for the top block, the counts below for
 children. All arithmetic on values (FOR base, DELTA sums) is on unsigned 32- or 64-bit integers and wraps.
+A decoded 32-bit value is a two's-complement int32 (so code -1 is `0xFFFFFFFF`), a decoded 64-bit value on a
+double page is the IEEE 754 bit pattern of the double.
 
 | tag | name | a, b | payload |
 |---|---|---|---|
@@ -320,7 +364,7 @@ children. All arithmetic on values (FOR base, DELTA sums) is on unsigned 32- or 
 | 4 | DELTA | | bit-packed vectors of deltas (6.4) |
 | 5 | RLE | | u32 run count r + 4; child block of r run values (same value size as the parent); child 32-bit block of r run lengths. r is 1..n, each length at least 1, lengths add up to n |
 | 6 | DICT | | u32 dictionary size d + 4; child block of d values (same value size as the parent); child 32-bit block of n codes, each 0..d-1. d is 1..n. The writer sorts the values (as signed integers); readers must not rely on the order |
-| 7 | SPLIT | a = value size (4 or 8) | byte-split: byte 0 of every value, then byte 1 of every value, ...; payload length exactly n x a |
+| 7 | SPLIT | a = value size, which must equal the value size of this block (4 for a 32-bit block, 8 for a 64-bit block; anything else is corrupt) | byte-split: byte 0 of every value, then byte 1 of every value, ...; payload length exactly n x a |
 | 8 | ALP | a = e, b = f | double pages, top block only (6.6) |
 | 9 | ALPRD | a = left bits, b = dictionary size | double pages, top block only (6.7) |
 | 10 | FSST | | string and dictionary pages only (6.8) |
@@ -388,8 +432,11 @@ The writer sets them to the top tags of the top block's first and second child b
 | ALP | integers q | 0 |
 | ALPRD | dictionary codes | right parts |
 | string PLAIN | byte lengths | 1 (the bytes block) |
-| FSST | compressed lengths | 0 |
+| FSST | compressed lengths (the third block in the payload, after the two byte blocks) | 0 |
 | others | 0 | 0 |
+
+For a string PLAIN page byte 59 is 1, the tag of the bytes block, although that block is a byte block; it is
+the one place where a chain byte names a byte block.
 
 They are informational (for `fstx_pages()`): fstx checks only that they are at most 10 (above 10 is refused
 as an unknown encoding when the file is opened, 4.6) and does not compare them with the body.
@@ -404,7 +451,8 @@ x u64 exception bit patterns
 child 64-bit block of n integers q
 ```
 
-Value i = ((double) q[i] x 10^f) / 10^e, computed as two IEEE double operations (convert q to double,
+q[i] is a two's-complement signed 64-bit integer (negative values have the top bit set), converted to double
+as a signed number. Value i = ((double) q[i] x 10^f) / 10^e, computed as two IEEE double operations (convert q to double,
 multiply, then divide, each rounded to nearest; no fused multiply-add), with 10^k the exact double for 1e0
 to 1e18. Then, for each exception j, the value at row `rows[j]` (which must be below n) is replaced by the
 double with bit pattern `patterns[j]`; the q at that row is ignored. A row listed twice takes the later
@@ -441,6 +489,12 @@ refuses strings over 1 GB. Top block:
   No compressed length may be negative; they must add up to the compressed block's payload length C, with
   T at most 8 x C and at most 2^31-1. String i is the next compressed-length bytes decoded on their own;
   the decoded lengths must add up to T. A missing row has compressed length 0.
+
+The bytes block of a PLAIN string page, and the symbol-table and compressed-bytes blocks of an FSST page,
+are "byte blocks": tag 1 (checked), a = b = c = 0 (written so, not checked), and a payload that is plain
+bytes, with no value count of its own: its length is the sum of the lengths (PLAIN), the table length, or
+the sum of the compressed lengths (FSST). They are not value blocks: the depth rule does not apply to them
+and they have no children. The top PLAIN or FSST block of a string page also has a = b = c = 0.
 
 The writer uses FSST only for pages whose strings add up to at most 64 MB. Kind 5 (codes) pages are 32-bit
 pages of 0-based positions into the chunk's dictionary page, -1 = missing; any other code outside
@@ -513,8 +567,11 @@ Factor levels are not checked when a file is opened, to keep opening fast; they 
    even one this build does not know) and feature fields. A merging compaction (`fstx_compact(merge =
    TRUE)`) reads the table and writes a fresh file, with no feature bits it does not know, and with profile
    balanced when the stored profile is unknown.
-7. Writers write all text (names, levels, time zones, strings) as UTF-8. Readers must not rely on it: they
-   check the text that section 8 lists and must not crash or misread a string that is not valid UTF-8.
+7. Writers write all text (names, levels, time zones, strings) as UTF-8. Readers must not rely on it. Names
+   and time zones that are not valid UTF-8 are corrupt (section 8). A string value that is not valid UTF-8 is
+   not corrupt: fstx returns its bytes unchanged, marked as UTF-8, without checking them (so does its Arrow
+   stream). Another reader may do the same, replace the bad bytes, or refuse the value, but it must not crash
+   and must not let one bad string change its neighbours. A NUL byte in a string value is corrupt.
 
 ### 9.1 Same bytes
 
@@ -523,8 +580,15 @@ setting (no fused multiply-add anywhere).
 
 ### 9.2 Checksums
 
-Header, footer and every page carry XXH3-64 checksums (seed 0). Pages are checked when read unless the
-reader turns checking off; page-copy compaction always checks them.
+Header, footer and every page carry a checksum: XXH3, 64-bit variant, as `XXH3_64bits()` of xxHash 0.8.0 or
+later computes it (default secret, seed 0). The 64-bit result is stored as a little-endian u64; this is not
+the big-endian "canonical" byte order that the xxHash tools print. A header is 24 bytes; footers and stored
+pages can be any length from 8 bytes up, so a reader needs the whole algorithm, not only the long-input path.
+Pages are checked when read unless the reader turns checking off; page-copy compaction always checks them.
+
+Test vectors: the empty input gives `0x2D06800538D394C2` (to be confirmed). The 24 header bytes
+`46 53 54 58 03 00 00 00 04 03 02 01 00 00 00 00 00 00 00 00 00 00 00 00` (every fstx 1.0 file that is not
+in the middle of an append starts with them) give the 8 bytes found at offset 24 of any such file: `<fill in>`.
 
 ### 9.3 Appends
 
@@ -534,6 +598,9 @@ end, writes the new pages, a new footer (describing old and new row groups) and 
 them, and only then rewrites the header with 0 in bytes 16-23. A reader that finds a committed end treats
 the file as ending there (its tail is the 32 bytes before it) and ignores anything after it. The old footer
 and tail stay in the file, unreferenced, until compaction.
+
+The pages of an append start on the next 64-byte boundary at or after the committed end, with zero bytes in
+between, and follow the layout rules of section 1 from there.
 
 A new factor level may be added by an append only after the file's levels (the file's levels must be the
 first levels of the new rows' factor).
@@ -547,10 +614,15 @@ Things a strict reading of the rules above would refuse that fstx 1.0 accepts (a
 input; a writer following this document never produces them):
 
 - Chain bytes 58-59 are not compared with the body (6.5).
-- Bytes 2-3 of the page header, the u32 + 4 padding bytes and padding inside payloads are not checked.
+- Bytes 2-3 of the page header, the u32 + 4 padding bytes, padding inside payloads, and the a, b, c bytes of
+  missing-value blocks and byte blocks are not checked.
 - Values under missing rows of numeric and code pages are not checked (6.2); logical values other than
   0 and 1 are not refused.
-- Dictionary page first_row, page min/max/flags and overlapping pages are not checked.
+- Dictionary page first_row, page min / max / flags, null_count against the missing-value block, and
+  overlapping pages are not checked.
+- Extra bytes at the end of a runs block payload are ignored.
+- Bytes after the last child of an RLE, DICT, ALP or ALPRD payload, and after the packed vectors of a FOR or
+  DELTA payload, are ignored.
 - Anything after the bytes block of a string PLAIN payload, or after the lengths block of an FSST payload,
   is ignored.
 - FSST: an unused code decodes to `corrupt` plus a zero byte and is not refused.
