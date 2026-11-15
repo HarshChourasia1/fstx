@@ -84,6 +84,7 @@ test_that("TRUE/FALSE arguments refuse other values and errors name the function
   expect_error(fstx::write_fstx(data.frame(a = 1), p, compress = "gzip"), "write_fstx: 'compress' should be one of")
   expect_error(fstx_simd(1), "fstx_simd: 'target' must be one string")
   expect_identical(nrow(read_fstx(p, verify = FALSE, threads = 1)), 10L)
+  expect_identical(read_fstx(p, strings = NULL, threads = 1), fstx::write_fstx(data.frame(a = 1:10), p, profile = NULL, threads = 1))  # NULL = default, as match.arg
   expect_identical(fstx::write_fstx(data.frame(a = 1), p, profile = "sm", threads = 1), data.frame(a = 1))  # partial match kept
 })
 

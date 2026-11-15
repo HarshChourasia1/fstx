@@ -38,7 +38,7 @@ NULL
 
 # match.arg() with the function and argument named in the error (same exact-then-partial matching)
 .pick <- function(x, choices, what, fn = NULL) {
-  if (identical(x, choices)) return(choices[1L])
+  if (is.null(x) || identical(x, choices)) return(choices[1L])   # as match.arg(): NULL gives the default
   k <- if (is.character(x) && length(x) == 1L && !is.na(x)) pmatch(x, choices) else NA_integer_
   if (is.na(k)) .err(fn, "'%s' should be one of %s", what, paste0('"', choices, '"', collapse = ", "))
   choices[k]
@@ -48,12 +48,12 @@ NULL
 # set; tests/testthat/helper-fstx.R points the tests' write_fstx at it.
 .test_hooks <- new.env(parent = emptyenv())
 .write_fstx <- function(..., .encoding = NULL, .crash = 0L) {
-  .test_hooks$encoding <- .encoding
-  .test_hooks$crash <- .crash
-  on.exit({
+  on.exit({   # registered first: an error while a hook is evaluated leaves neither set
     .test_hooks$encoding <- NULL
     .test_hooks$crash <- NULL
   })
+  .test_hooks$encoding <- .encoding
+  .test_hooks$crash <- .crash
   write_fstx(...)
 }
 
