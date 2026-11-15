@@ -38,6 +38,14 @@ test_that("all-dictionary columns come back as plain vectors equal to an eager r
   z$grp[3] <- "changed"                                           # a plain vector: R copies or changes it as usual
   expect_identical(z$grp[3], "changed")
   expect_identical(read_fstx(p)$grp, x$grp)
+  for (m in c("deferred", "lazy")) {                              # left as ALTREP: made whole in one pass on use
+    z <- if (m == "lazy") read_fstx(p, lazy = TRUE) else read_fstx(p, strings = m)
+    g <- z$grp
+    g[7] <- "set"                                                 # R copies g first: Dataptr with nothing made yet
+    expect_identical(g, replace(x$grp, 7, "set"), info = m)
+    expect_identical(z$grp, x$grp, info = m)
+    expect_true(col_state(z$grp)$materialised, info = m)
+  }
 })
 
 test_that("a subset of up to half an unfinished column is a view; it equals the eager subset", {
@@ -136,6 +144,9 @@ test_that("the new paths are correct under gctorture", {
   on.exit(gctorture(FALSE), add = TRUE)
   gctorture(TRUE)
   a <- read_fstx(p, columns = "grp", from = 14000, to = 16020)$grp   # dictionary fill
+  d <- read_fstx(p, columns = "grp", strings = "deferred")$grp
+  d2 <- d
+  d2[1] <- "q"                                                      # duplicate: Dataptr, dictionary fill in one pass
   v <- z$key[i]                                                     # view
   w <- v[c(4, 1, 2)]                                                # view of a view
   vn <- nchar(w)                                                    # w made
@@ -144,6 +155,8 @@ test_that("the new paths are correct under gctorture", {
   bb <- b[2:1]                                                      # view of a made column
   gctorture(FALSE)
   expect_identical(a, x$grp[14000:16020])
+  expect_identical(d, x$grp)
+  expect_identical(d2, replace(x$grp, 1, "q"))
   expect_identical(w, x$key[i][c(4, 1, 2)])
   expect_identical(vn, nchar(x$key[i][c(4, 1, 2)]))
   expect_identical(v, x$key[i])

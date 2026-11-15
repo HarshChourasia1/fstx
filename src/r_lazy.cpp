@@ -139,6 +139,35 @@ void str_make_into_full(SEXP x, Holder* h, uint32_t p) {
   if (h->s_made == (uint32_t)h->made.size()) str_finish(x, h);
 }
 
+// 1.0: an all-dictionary column with nothing made yet, made whole in one pass straight from the codes. Every
+// dictionary is made first and the full vector is allocated last; nothing is allocated while the rows are written,
+// so the full vector is the newest object on R's heap and plain pointer stores need no write barrier (R's own
+// duplicate() copies string vectors the same way). Called from Dataptr, so R's collector is also off.
+void str_dict_fill(SEXP x, Holder* h, const fstx_colsrc_info& ci) {
+  for (uint32_t d = 0; d < ci.n_dicts; ++d) str_dict(x, h, (int32_t)d);
+  SEXP dc = VECTOR_ELT(R_altrep_data2(x), 2);
+  SEXP full = str_full_vec(x, h);  // allocated last
+  SEXP* o = (SEXP*)STRING_PTR_RO(full);
+  fstx_error err;
+  for (uint32_t p = 0; p < ci.n_pages; ++p) {
+    const int32_t* codes;
+    const char* bytes;
+    int32_t d;
+    if (fstx_colsrc_str_page(h->src, p, &codes, &bytes, &d, &err) != FSTX_OK) raise_err(&err);
+    uint64_t first;
+    uint32_t n;
+    fstx_colsrc_page_span(h->src, p, &first, &n);
+    const SEXP* dp = STRING_PTR_RO(VECTOR_ELT(dc, d));  // codes are checked against the dictionary at decode
+    SEXP* to = o + first;
+    for (uint32_t i = 0; i < n; ++i) to[i] = codes[i] < 0 ? NA_STRING : dp[codes[i]];
+    h->made[p] = 1;
+    fstx_colsrc_drop(h->src, p);
+    if (p < h->offs.size()) std::vector<uint64_t>().swap(h->offs[p]);
+  }
+  h->s_made = ci.n_pages;
+  str_finish(x, h);
+}
+
 // Makes every remaining page; returns the full vector.
 SEXP str_complete(SEXP x) {
   Holder* h = hold(x);
@@ -149,6 +178,10 @@ SEXP str_complete(SEXP x) {
   if (!ci.detached && ci.pages_ready + h->s_made + (h->p0 != UINT32_MAX ? 1u : 0u) < ci.n_pages) {
     // lazy column: decode the pages not made yet in parallel first
     if (fstx_colsrc_load(h->src, nullptr, h->threads, &err) != FSTX_OK) raise_err(&err);
+  }
+  if (ci.all_dict && h->s_made == 0 && h->p0 == UINT32_MAX && ci.n_pages > 0) {
+    str_dict_fill(x, h, ci);
+    return st_full(x);
   }
   str_full_vec(x, h);
   for (uint32_t p = 0; p < ci.n_pages && !h->s_done; ++p)
@@ -715,47 +748,6 @@ SEXP fstx_altrep_new(SEXP xp) {
                        : h->phys == FSTX_LOGICAL     ? cls_lgl
                                                      : cls_int;
   return R_new_altrep(c, xp, R_NilValue);
-}
-
-SEXP fstx_dict_plain(SEXP xp) {
-  Holder* h = fstx_holder_of(xp);
-  if (!h || !h->src) Rf_error("fstx: internal error, column source is missing");
-  fstx_colsrc_info ci;
-  fstx_colsrc_info_get(h->src, &ci);
-  if (!ci.all_dict) Rf_error("fstx: internal error, column is not dictionary-coded");
-  fstx_error err;
-  SEXP dl = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)ci.n_dicts));
-  for (uint32_t d = 0; d < ci.n_dicts; ++d) {
-    uint32_t n;
-    const int32_t* lens;
-    const char* bytes;
-    if (fstx_colsrc_dict(h->src, d, &n, &lens, &bytes, &err) != FSTX_OK) raise_err(&err);
-    SEXP v = Rf_allocVector(STRSXP, (R_xlen_t)n);
-    SET_VECTOR_ELT(dl, (R_xlen_t)d, v);
-    for (uint32_t i = 0; i < n; ++i) {
-      const int32_t l = lens[i] < 0 ? 0 : lens[i];
-      SET_STRING_ELT(v, (R_xlen_t)i, Rf_mkCharLenCE(bytes, l, CE_UTF8));
-      bytes += l;
-    }
-  }
-  // Allocated last, and nothing is allocated until the last row is written: the vector is the newest object on
-  // R's heap, so plain pointer stores need no write barrier (R's own allocVector fills string vectors this way).
-  SEXP out = PROTECT(Rf_allocVector(STRSXP, (R_xlen_t)h->rows));
-  SEXP* o = (SEXP*)STRING_PTR_RO(out);
-  for (uint32_t p = 0; p < ci.n_pages; ++p) {
-    const int32_t* codes;
-    const char* bytes;
-    int32_t d;
-    if (fstx_colsrc_str_page(h->src, p, &codes, &bytes, &d, &err) != FSTX_OK) raise_err(&err);
-    uint64_t first;
-    uint32_t n;
-    fstx_colsrc_page_span(h->src, p, &first, &n);
-    const SEXP* dp = STRING_PTR_RO(VECTOR_ELT(dl, d));  // codes are checked against the dictionary at decode
-    SEXP* to = o + first;
-    for (uint32_t i = 0; i < n; ++i) to[i] = codes[i] < 0 ? NA_STRING : dp[codes[i]];
-  }
-  UNPROTECT(2);
-  return out;
 }
 
 SEXP fstx_str_plain(SEXP x) {
