@@ -157,6 +157,7 @@ test_that("files from fstx 0.x (format versions 1 and 2) are refused by every en
     expect_error(read_fstx(q), msg, label = lab)
     expect_error(read_fstx(q, lazy = TRUE), msg, label = lab)
     expect_error(fstx_which(q, id > 5), msg, label = lab)
+    expect_error(fstx_explain(q, id > 5), msg, label = lab)
     expect_error(write_fstx(x, q, append = TRUE), msg, label = lab)
     expect_error(fstx_compact(q), msg, label = lab)
     expect_error(fstx_compact(q, merge = TRUE), msg, label = lab)
@@ -164,6 +165,16 @@ test_that("files from fstx 0.x (format versions 1 and 2) are refused by every en
   }
   m1 <- test_path("fixtures", "m1_format1.fstx")
   expect_error(read_fstx(m1), "written by fstx 0\\.x \\(file format 1\\); not supported by fstx 1\\.0 or later")
+})
+
+test_that("fstx_arrow_stream refuses a file from fstx 0.x", {
+  skip_if_not_installed("nanoarrow")
+  p <- tempfile(fileext = ".fstx")
+  q <- tempfile(fileext = ".fstx")
+  on.exit(unlink(c(p, q)))
+  write_fstx(small_df(), p)
+  forge(p, q, version = 2L)
+  expect_error(fstx_arrow_stream(q), "written by fstx 0\\.x \\(file format 2\\); not supported by fstx 1\\.0 or later")
 })
 
 test_that("the writer refuses column names and time zones that are not UTF-8 text", {

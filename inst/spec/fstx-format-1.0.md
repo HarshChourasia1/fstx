@@ -55,7 +55,8 @@ fstx checks, in this order (the first failure decides the message):
 7. Header feature bits: a bit this reader does not know is refused by number (section 5).
 8. Tail (section 3), footer checksum, the FlatBuffers verifier, then the footer checks of section 4.8.
 
-Every refusal of something newer says "Update fstx"; every other failure says the file is corrupt.
+A refusal of something newer says "Update fstx". A file of fstx 0.x says so. A file that is not an fstx file,
+or has the other byte order, says so. Every other failure says the file is corrupt.
 
 ## 3. Tail (32 bytes, the last 32 bytes before the committed end)
 
@@ -165,6 +166,10 @@ data; a writer must not set the flag with a range that leaves out a value.
 
 Pages must lie wholly before the footer; fstx does not check that pages do not overlap one another.
 
+fstx also refuses, as corrupt, a page whose raw_len the codec cannot reach: LZ4, raw_len above comp_len x
+255 + 64; Zstandard, raw_len above comp_len x 32,768 + 131,072; and, for int, double, logical and codes pages
+with any codec, raw_len above row_count x value size x 64 + 65,536 (value size 8 for double pages, else 4).
+
 ### 4.6 Numbers and their reserved ranges
 
 | what | read and written | reserved | a reader that meets a reserved or unknown number |
@@ -191,8 +196,9 @@ The codec applies to the whole page body; the hash is over the stored (compresse
 
 - 1, LZ4: one raw LZ4 block (no frame). fstx decodes it with the safe decoder (`LZ4_decompress_safe`) and
   needs exactly raw_len bytes out.
-- 2, Zstandard: the writer stores one frame. fstx decodes with `ZSTD_decompressDCtx`, which also accepts
-  several frames one after another (and skippable frames), and needs exactly raw_len bytes out.
+- 2, Zstandard: exactly one frame, whose header stores the content size, and that size must equal raw_len
+  (checked before anything is decoded; a frame without a content size is corrupt). fstx then decodes with
+  `ZSTD_decompressDCtx` and needs exactly raw_len bytes out.
 
 The writer keeps a codec on a page only when it saves at least 10% (profiles balanced and small; profile
 fast writes no codec).
@@ -202,8 +208,10 @@ fast writes no codec).
 After the verifier, fstx checks, in this order: footer version equals the header; low 16 bits of
 required_features equal header bytes 6-7; no unknown required bit (section 5); row_group_size 1 to 2^31; at most 2^24 columns;
 per column: name and time zone are valid UTF-8 without NUL (section 8), physical and logical type are known
-(4.6), the type combination is allowed (4.2); row_count at most 2^62; per row group and column: the rules of
-4.3 to 4.5 and of 4.6 for each page entry. Factor levels are checked only when used.
+(4.6), the type combination is allowed (4.2); row_count at most 2^62; per row group and column: the first
+Page of every pages vector must sit on a multiple of 8 counted from the footer start (the FlatBuffers verifier
+does not check this), and the rules of 4.3 to 4.5 and of 4.6 for each page entry. Factor levels are checked
+only when used.
 
 ## 5. Feature bits
 
@@ -457,9 +465,9 @@ ignored.
 Codes are given in this order: first every 2-byte symbol (count at byte 10), then 3-byte, ..., 8-byte
 (count at byte 16), then 1-byte symbols (count at byte 9); the first symbol gets code 0. A compressed
 string is a sequence of codes: a code below 255 writes its symbol's bytes; code 255 (escape) writes the
-next byte as it is. A writer must not end a compressed string with a lone escape and must not use a code
-at or above the symbol count other than 255. (The fstx 1.0 decoder writes the 8 bytes `corrupt` and a zero
-byte for an unused code and does not check for a lone escape at the end; see section 10.)
+next byte as it is. A writer must not end a compressed string with a lone escape (fstx checks this:
+corrupt) and must not use a code at or above the symbol count other than 255. (The fstx 1.0 decoder writes
+the 8 bytes `corrupt` and a zero byte for an unused code; see section 10.)
 
 ## 7. Legal combinations
 
@@ -545,9 +553,7 @@ input; a writer following this document never produces them):
 - Dictionary page first_row, page min/max/flags and overlapping pages are not checked.
 - Anything after the bytes block of a string PLAIN payload, or after the lengths block of an FSST payload,
   is ignored.
-- FSST: an unused code decodes to `corrupt` plus a zero byte; a compressed string that ends with a lone
-  escape byte makes the vendored decoder read code 255's slot, which lies just past its 255-entry tables
-  (an 8-byte read past the decoder structure). Neither is refused.
+- FSST: an unused code decodes to `corrupt` plus a zero byte and is not refused.
 
 ## Appendix A. Footer schema (`tools/fstx_footer.fbs`)
 

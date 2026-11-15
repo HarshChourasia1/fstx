@@ -1,6 +1,6 @@
 // FST-X core engine: open (header, tail, footer checks), plan (which pages a request needs) and read
 // (parallel decode straight into host memory; strings, string dictionaries and dictionary codes handed to
-// the host on the calling thread). File formats 2 and 3 (encoded pages, enc.h). No R headers.
+// the host on the calling thread). File format 3 (encoded pages, enc.h). No R headers.
 #include <algorithm>
 #include <atomic>
 #include <limits>
