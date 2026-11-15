@@ -1,5 +1,10 @@
 # Synthetic test data only.
 
+# The test hooks .encoding and .crash are not arguments of the exported write_fstx(); fstx:::.write_fstx() is
+# write_fstx() with them. Every test calls write_fstx() through it, so write_fstx(x, p, .encoding = "for")
+# works in any test file. test-api.R checks the exported function itself.
+write_fstx <- fstx:::.write_fstx
+
 # Thread counts for tests: n, but never more than the package default allows (at most 2 under R CMD check).
 test_threads <- function(n) as.integer(max(1L, min(n, fstx:::fstx_hw_threads())))
 roundtrip <- function(x, ...) {

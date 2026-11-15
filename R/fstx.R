@@ -15,47 +15,66 @@ NULL
 # an FSST-coded dictionary page, and the codec kept on every page
 .encoding_flags <- c(dict_codes = 256L, fsst_dict = 512L, keep_codec = 1024L)
 
-.path_arg <- function(path, what = "path") {
+# Argument checks. `fn` names the exported function in the message; it defaults to none so that callers in
+# files other workstreams own keep working.
+.err <- function(fn, fmt, ...) stop(paste0(if (!is.null(fn)) paste0(fn, ": "), sprintf(fmt, ...)), call. = FALSE)
+
+.path_arg <- function(path, what = "path", fn = NULL) {
   if (!is.character(path) || length(path) != 1L || is.na(path) || !nzchar(path))
-    stop(sprintf("'%s' must be a single non-empty string", what), call. = FALSE)
+    .err(fn, "'%s' must be a single non-empty string", what)
   enc2utf8(normalizePath(path.expand(path), winslash = "/", mustWork = FALSE))
 }
 
-.whole <- function(x, what, min = -Inf) {
+.whole <- function(x, what, min = -Inf, fn = NULL) {
   if (!is.numeric(x) || length(x) != 1L || is.na(x) || x != round(x) || x < min)
-    stop(sprintf("'%s' must be a single whole number%s", what,
-                 if (is.finite(min)) sprintf(" >= %s", min) else ""), call. = FALSE)
+    .err(fn, "'%s' must be a single whole number%s", what, if (is.finite(min)) sprintf(" >= %s", min) else "")
   as.integer(x)
 }
 
-#' Write a data frame to an FST-X file
+.flag <- function(x, what, fn = NULL) {
+  if (!is.logical(x) || length(x) != 1L || is.na(x)) .err(fn, "'%s' must be TRUE or FALSE", what)
+  x
+}
+
+# match.arg() with the function and argument named in the error (same exact-then-partial matching)
+.pick <- function(x, choices, what, fn = NULL) {
+  if (is.null(x) || identical(x, choices)) return(choices[1L])   # as match.arg(): NULL gives the default
+  k <- if (is.character(x) && length(x) == 1L && !is.na(x)) pmatch(x, choices) else NA_integer_
+  if (is.na(k)) .err(fn, "'%s' should be one of %s", what, paste0('"', choices, '"', collapse = ", "))
+  choices[k]
+}
+
+# Tests only: the write_fstx test hooks. .write_fstx(..., .encoding = , .crash = ) is write_fstx() with them
+# set; tests/testthat/helper-fstx.R points the tests' write_fstx at it.
+.test_hooks <- new.env(parent = emptyenv())
+.write_fstx <- function(..., .encoding = NULL, .crash = 0L) {
+  on.exit({   # registered first: an error while a hook is evaluated leaves neither set
+    .test_hooks$encoding <- NULL
+    .test_hooks$crash <- NULL
+  })
+  .test_hooks$encoding <- .encoding
+  .test_hooks$crash <- .crash
+  write_fstx(...)
+}
+
+#' Write a data frame to an fstx file
 #'
 #' Every page is encoded with the lightweight encoding that fits it best (bit-packing, frame-of-reference,
 #' delta, run-length, dictionary, ALP for doubles, FSST for strings); the profile decides what goes on top.
+#' The help page man/write_fstx.Rd is the full text. Test hooks: see .write_fstx().
 #'
-#' @param x a data.frame (data.table and tibble keep their class).
-#' @param path file path.
-#' @param profile "balanced" (default: encodings plus ZSTD level 3 where it saves at least 10%),
-#'   "fast" (encodings only, no codec: fastest reads) or "small" (encodings plus ZSTD level 9).
-#' @param compress outer codec per page, overriding the profile: "zstd", "lz4" or "none".
-#' @param level ZSTD level (ignored for lz4 and none); default 3, or 9 for profile "small".
-#' @param threads number of threads (default: all cores; at most 2 under R CMD check core limits).
-#' @param append FALSE (default) replaces the file. TRUE adds the rows of x at the end of an existing file
-#'   (a missing file is simply written). Columns must match the file's in names, order, type and class;
-#'   factor levels may grow (the file's levels first, new ones after; ordered factors need the same levels);
-#'   POSIXct columns need the same time zone; files with stored row names cannot be appended to. The
-#'   profile defaults to the file's. An interrupted append leaves the old table readable.
-#' @param .encoding for tests only: force one encoding on every page where it applies, plus any of the flags
-#'   "dict_codes", "fsst_dict" and "keep_codec".
-#' @param .crash for tests only.
-#' @return x, invisibly.
+#' @return x as given, invisibly.
 write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compress = NULL, level = NULL,
-                       threads = fstx_hw_threads(), append = FALSE, .encoding = NULL, .crash = 0L) {
-  if (!is.data.frame(x)) stop("write_fstx: 'x' must be a data frame", call. = FALSE)
-  if (!is.logical(append) || length(append) != 1L || is.na(append)) stop("write_fstx: 'append' must be TRUE or FALSE", call. = FALSE)
+                       threads = fstx_hw_threads(), append = FALSE) {
+  fn <- "write_fstx"
+  .encoding <- .test_hooks$encoding
+  .crash <- if (is.null(.test_hooks$crash)) 0L else .test_hooks$crash
+  if (!is.data.frame(x)) .err(fn, "'x' must be a data frame")
+  .flag(append, "append", fn)
+  x_in <- x
   file_ta <- NULL
   if (append) {
-    path <- .path_arg(path)
+    path <- .path_arg(path, fn = fn)
     if (!file.exists(path)) {
       append <- FALSE
     } else {
@@ -66,28 +85,27 @@ write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compre
       if (missing(profile)) profile <- if (chk$profile == "unknown") "balanced" else chk$profile
     }
   }
-  profile <- match.arg(profile)
+  profile <- .pick(profile, c("balanced", "fast", "small"), "profile", fn)
   keep_pct <- 0L
   if (is.null(compress)) {
     compress <- if (profile == "fast") "none" else "zstd"
     if (profile == "balanced") keep_pct <- 10L
   } else {
-    compress <- match.arg(compress, c("zstd", "lz4", "none"))
+    compress <- .pick(compress, c("zstd", "lz4", "none"), "compress", fn)
   }
   if (is.null(level)) level <- if (profile == "small") .small_level else .balanced_level
-  level <- .whole(level, "level")
+  level <- .whole(level, "level", fn = fn)
   force <- 0L
   if (!is.null(.encoding)) {
     tag <- .encoding[.encoding %in% names(.encoding_ids)]
     if (!is.character(.encoding) || length(.encoding) < 1L || length(tag) > 1L ||
         !all(.encoding %in% c(names(.encoding_ids), names(.encoding_flags))))
-      stop(sprintf("write_fstx: '.encoding' must be one of %s, plus any of %s",
-                   paste(names(.encoding_ids), collapse = ", "), paste(names(.encoding_flags), collapse = ", ")),
-           call. = FALSE)
+      .err(fn, "'.encoding' must be one of %s, plus any of %s",
+           paste(names(.encoding_ids), collapse = ", "), paste(names(.encoding_flags), collapse = ", "))
     force <- as.integer(sum(.encoding_ids[tag], .encoding_flags[unique(setdiff(.encoding, tag))]))
   }
-  threads <- .whole(threads, "threads", 1)
-  path <- .path_arg(path)
+  threads <- .whole(threads, "threads", 1, fn)
+  path <- .path_arg(path, fn = fn)
   nr <- .row_names_info(x, 2L)
 
   cols <- unclass(x)
@@ -102,7 +120,7 @@ write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compre
   ok <- types %in% c("integer", "double", "logical", "character")
   if (!all(ok)) {
     i <- which(!ok)[1L]
-    stop(sprintf("write_fstx: column '%s' has type '%s' (class '%s'), which FST-X cannot store yet",
+    stop(sprintf("write_fstx: column '%s' has type '%s' (class '%s'), which fstx cannot store yet",
                  nm[i], types[i], paste(class(cols[[i]]), collapse = "/")), call. = FALSE)
   }
   lens <- lengths(cols)
@@ -123,7 +141,7 @@ write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compre
     a <- ats[[i]]
     cl <- a[["class"]]
     if (!is.null(a[["dim"]]))
-      stop(sprintf("write_fstx: column '%s' is a matrix or array, which FST-X cannot store yet", nm[i]), call. = FALSE)
+      stop(sprintf("write_fstx: column '%s' is a matrix or array, which fstx cannot store yet", nm[i]), call. = FALSE)
     if (types[i] == "integer" && (identical(cl, "factor") || identical(cl, c("ordered", "factor"))) &&
         is.character(a[["levels"]]) && !anyNA(a[["levels"]])) {
       logical[i] <- 1L
@@ -163,63 +181,35 @@ write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compre
       gc()   # lazy results nobody can reach any more close the file in their finalisers
       k <- w()
     }
-    if (k == 0L) return(invisible(x))
+    if (k == 0L) return(invisible(x_in))
     cols[[k]] <- enc2utf8(cols[[k]])   # non-UTF-8 strings: convert this column and try again
   }
   stop("write_fstx: could not convert strings to UTF-8", call. = FALSE)
 }
 
-#' Read an FST-X file
+#' Read an fstx file
 #'
-#' @param path file path.
-#' @param columns NULL (all), column names, or column positions.
-#' @param from,to first and last row to read (1-based, inclusive); to = NULL reads to the end.
-#' @param threads number of threads (default: all cores; at most 2 under R CMD check core limits).
-#' @param verify check every page's checksum (header and footer checksums are always checked). Lazy
-#'   columns check a page when it is decoded.
-#' @param lazy FALSE (default) reads the data now. TRUE returns at once: every column is an ALTREP vector
-#'   backed by the memory-mapped file and decoded a page at a time when it is used, so RAM covers only the
-#'   columns (and pages) that are touched. The file stays open (and cannot be overwritten from this session)
-#'   until those columns are fully used or garbage collected.
-#' @param strings "auto" (default since 0.6.0) decodes string pages in parallel, closes the file at once and
-#'   returns each character column as an ALTREP vector whose R strings are made a page at a time on first
-#'   use (the first page used alone, later pages into one full vector, which becomes the column once every
-#'   page is made). Since 0.6.1 a column whose pages are all dictionary-coded (few distinct values) is
-#'   made during the read and returned as a plain character vector, as that costs little.
-#'   saveRDS() / serialize() write such columns in R's standard format, so the file reads
-#'   back without fstx. "deferred" (alias "altrep") is the same, but an unmade column is serialised in a
-#'   compact form that needs fstx to read back (smaller and faster to write). "eager" makes every R string
-#'   during the read and returns plain character vectors.
-#' @param as_factor FALSE (default), TRUE (every character column whose pages are all dictionary-coded
-#'   becomes a factor, built from the dictionaries without hashing the rows), or column names (those
-#'   columns become factors; ones that are not dictionary-coded go through factor()). Levels are the sorted
-#'   union of the dictionaries read, so a full read gives the same factor as factor(x).
-#' @param rows row numbers to read (1-based, any order, repeats allowed), returned in that order. Only the
-#'   pages that hold them are read. A row list is read eagerly (lazy and strings are ignored, as_factor goes
-#'   through factor()). Cannot be combined with from / to or where.
-#' @param where a condition on the file's columns, such as x > 5 & y == "a" (also a formula ~ cond, or a
-#'   quoted call held in a variable): terms joined by &, each a comparison of a column with a value (==, !=,
-#'   <, <=, >, >=), %in%, between(), is.na(), !is.na() or a logical column. Pages are skipped by their
-#'   min / max / NA count, then the remaining rows are tested exactly; rows where the condition is NA are
-#'   dropped, as subset() does. Applied within from / to.
+#' The help page man/read_fstx.Rd is the full text.
+#'
 #' @return a data frame with the class it was written with.
 read_fstx <- function(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads(), verify = TRUE,
-                      lazy = FALSE, strings = c("auto", "eager", "deferred", "altrep"), as_factor = FALSE,
+                      lazy = FALSE, strings = c("auto", "eager", "deferred"), as_factor = FALSE,
                       rows = NULL, where = NULL) {
-  path <- .path_arg(path)
+  fn <- "read_fstx"
+  path <- .path_arg(path, fn = fn)
+  .flag(verify, "verify", fn)
   wq <- substitute(where)
   if (!is.null(wq)) {
-    if (!is.null(rows)) stop("read_fstx: use either 'rows' or 'where', not both", call. = FALSE)
-    w <- .window(from, to)
-    preds <- .where_preds(path, wq, parent.frame())
-    rows <- fstx_filter_impl(path, preds, w[1L], w[2L], .whole(threads, "threads", 1), isTRUE(verify), FALSE)$rows
+    if (!is.null(rows)) .err(fn, "use either 'rows' or 'where', not both")
+    w <- .window(from, to, fn)
+    preds <- .where_preds(path, wq, parent.frame(), fn)
+    rows <- fstx_filter_impl(path, preds, w[1L], w[2L], .whole(threads, "threads", 1, fn), verify, FALSE)$rows
     from <- 1
     to <- NULL
   }
   if (!is.null(rows)) {
-    if (!is.numeric(rows) || is.object(rows)) stop("read_fstx: 'rows' must be a numeric vector of row numbers", call. = FALSE)
-    if (!isTRUE(all.equal(from, 1)) || !is.null(to))
-      stop("read_fstx: use either 'rows' or 'from' / 'to', not both", call. = FALSE)
+    if (!is.numeric(rows) || is.object(rows)) .err(fn, "'rows' must be a numeric vector of row numbers")
+    if (!isTRUE(all.equal(from, 1)) || !is.null(to)) .err(fn, "use either 'rows' or 'from' / 'to', not both")
     n <- length(rows)
     if (n > 0L && !anyNA(rows) && all(rows == trunc(rows)) && rows[n] - rows[1L] == n - 1 &&
         (n == 1L || all(rows[-1L] - rows[-n] == 1))) {
@@ -230,24 +220,27 @@ read_fstx <- function(path, columns = NULL, from = 1, to = NULL, threads = fstx_
   }
   if (!is.null(columns)) {
     if (is.character(columns)) columns <- enc2utf8(columns)
-    else if (!is.numeric(columns)) stop("'columns' must be NULL, column names or column positions", call. = FALSE)
+    else if (!is.numeric(columns)) .err(fn, "'columns' must be NULL, column names or column positions")
   }
-  if (!is.numeric(from) || length(from) != 1L || is.na(from)) stop("'from' must be a single number", call. = FALSE)
-  if (!is.null(to) && (!is.numeric(to) || length(to) != 1L || is.na(to))) stop("'to' must be NULL or a single number", call. = FALSE)
-  threads <- .whole(threads, "threads", 1)
-  if (!is.logical(lazy) || length(lazy) != 1L || is.na(lazy)) stop("'lazy' must be TRUE or FALSE", call. = FALSE)
-  strings <- match.arg(strings)
+  .window(from, to, fn)
+  threads <- .whole(threads, "threads", 1, fn)
+  .flag(lazy, "lazy", fn)
+  if (identical(strings, "altrep")) {   # the 0.x name, kept working through 1.x
+    warning('read_fstx: strings = "altrep" is now called "deferred"; please use strings = "deferred"', call. = FALSE)
+    strings <- "deferred"
+  }
+  strings <- .pick(strings, c("auto", "eager", "deferred"), "strings", fn)
   if (is.logical(as_factor) && length(as_factor) == 1L && !is.na(as_factor)) {
     if (!as_factor) as_factor <- NULL
   } else if (is.character(as_factor) && !anyNA(as_factor)) {
     as_factor <- enc2utf8(as_factor)
   } else {
-    stop("'as_factor' must be TRUE, FALSE or column names", call. = FALSE)
+    .err(fn, "'as_factor' must be TRUE, FALSE or column names")
   }
   mode <- if (lazy) 2L else switch(strings, eager = 0L, auto = 3L, 1L)
   presize <- if (mode == 0L && isTRUE(getOption("fstx.presize", FALSE))) .presize else NULL
   r <- fstx_read_impl(path, columns, as.double(from), if (is.null(to)) NA_real_ else as.double(to),
-                      threads, isTRUE(verify), mode, as_factor, presize, rows)
+                      threads, verify, mode, as_factor, presize, rows)
   res <- r$columns
   fd <- r$factor_dicts
   for (i in which(!vapply(fd, is.null, NA))) {   # factors straight from the dictionaries
@@ -300,13 +293,13 @@ read_fstx <- function(path, columns = NULL, from = 1, to = NULL, threads = fstx_
   invisible(NULL)
 }
 
-#' Describe an FST-X file without reading its data
+#' Describe an fstx file without reading its data
 #'
 #' @param path file path.
 #' @return an object of class "fstx_meta": row and column counts, file size, profile ("unknown" for one a
 #'   newer fstx wrote), and per column the type, class and compressed size.
 fstx_meta <- function(path) {
-  path <- .path_arg(path)
+  path <- .path_arg(path, fn = "fstx_meta")
   m <- fstx_meta_impl(path)
   cls <- ifelse(m$logical == "", m$phys, m$logical)
   for (i in which(!vapply(m$col_attrs, is.null, NA))) {
@@ -325,14 +318,14 @@ fstx_meta <- function(path) {
 
 #' @export
 print.fstx_meta <- function(x, ...) {
-  cat(sprintf("FST-X file: %s\n%.0f rows x %.0f columns, %.1f MB, %.0f row group(s), %.0f pages, profile %s, class %s\n",
+  cat(sprintf("fstx file: %s\n%.0f rows x %.0f columns, %.1f MB, %.0f row group(s), %.0f pages, profile %s, class %s\n",
               x$path, x$nrow, x$ncol, x$file_size / 2^20, x$row_groups, x$pages, x$profile,
               paste(x$table_class, collapse = "/")))
   print(x$columns, row.names = FALSE)
   invisible(x)
 }
 
-#' List the stored pages of an FST-X file
+#' List the stored pages of an fstx file
 #'
 #' One row per page (string dictionary pages included) with its column, rows, sizes, codec and the
 #' encoding the writer chose.
@@ -340,7 +333,7 @@ print.fstx_meta <- function(x, ...) {
 #' @param path file path.
 #' @return a data frame.
 fstx_pages <- function(path) {
-  path <- .path_arg(path)
+  path <- .path_arg(path, fn = "fstx_pages")
   m <- fstx_meta_impl(path)
   p <- fstx_pages_impl(path)
   p <- as.data.frame(p, stringsAsFactors = FALSE)
@@ -362,7 +355,8 @@ fstx_pages <- function(path) {
 #' @return A list: simd (on or off), target (in use), cpu (targets this CPU runs), compiled (targets built in).
 fstx_simd <- function(target = NULL) {
   if (!is.null(target)) {
-    stopifnot(is.character(target), length(target) == 1L, !is.na(target))
+    if (!is.character(target) || length(target) != 1L || is.na(target))
+      .err("fstx_simd", "'target' must be one string, such as \"auto\" or \"scalar\"")
     fstx_simd_set_impl(target)
   }
   fstx_simd_info_impl()

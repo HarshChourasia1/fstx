@@ -1,9 +1,9 @@
 \name{fstx_meta}
 \alias{fstx_meta}
 \alias{print.fstx_meta}
-\title{Describe an FST-X file without reading its data}
+\title{Describe an fstx file without reading its data}
 \description{
-Reads the footer of an FST-X file and reports its size, layout and columns without reading any data.
+Reads the footer of an fstx file and reports its size, layout and columns without reading any data.
 }
 \usage{
 fstx_meta(path)
