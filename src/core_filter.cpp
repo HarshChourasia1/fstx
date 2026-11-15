@@ -10,6 +10,7 @@
 #include <unordered_set>
 
 #include "core_file.h"
+#include "hwy/base.h"  // hwy::PopCount: portable (no compiler extension)
 
 namespace fb = fstx::fb;
 
@@ -258,7 +259,7 @@ struct Filter {
     uint64_t c = 0;
     for (uint64_t w = 0; w < nw; ++w) {
       bits[w].store(cur[w], std::memory_order_relaxed);
-      c += (uint64_t)__builtin_popcountll(cur[w]);
+      c += (uint64_t)hwy::PopCount(cur[w]);
     }
     st.rows_candidate = c;
   }
@@ -389,7 +390,7 @@ struct Filter {
   void collect(std::vector<uint64_t>& rows) {
     const uint64_t nw = bits.size();
     uint64_t c = 0;
-    for (uint64_t w = 0; w < nw; ++w) c += (uint64_t)__builtin_popcountll(bits[w].load(std::memory_order_relaxed));
+    for (uint64_t w = 0; w < nw; ++w) c += (uint64_t)hwy::PopCount(bits[w].load(std::memory_order_relaxed));
     rows.resize(c);
     uint64_t k = 0;
     for (uint64_t w = 0; w < nw; ++w) {

@@ -47,6 +47,7 @@ struct Task {
 struct Slot {
   enc::Buf raw;
   std::vector<uint8_t> comp;
+  std::vector<uint8_t> probe;  // slices of a numeric page for the codec probe
   const uint8_t* out = nullptr;
   size_t out_len = 0;
   PageMeta meta;
@@ -56,11 +57,110 @@ struct Slot {
 
 const int32_t kNaInt = std::numeric_limits<int32_t>::min();
 
-inline bool is_r_na_real(double x) {
-  if (!std::isnan(x)) return false;
-  uint64_t bits;
-  std::memcpy(&bits, &x, 8);
-  return (uint32_t)(bits & 0xffffffffu) == 1954u;
+// Codec probe for numeric data pages of 64 KB and more: the codec first runs on 4 slices of 8 KB spread over the
+// page, and when they save under half of keep_pct the page is stored as it is, without the full pass. Bit-packed
+// ALP / ALP-RD / FOR pages of noisy values give the codec nothing and used to cost a full pass each.
+constexpr size_t kProbeMin = 65536, kProbeSlice = 8192, kProbeSlices = 4;
+
+// Page statistics in 16-byte vectors (GCC / Clang vector extensions: SSE2 on x86-64, NEON on arm64), 8 values a step
+// in 4 independent chains; GCC's -O2 cost model did not vectorize the plain loops. Blends are bitwise (masks from the
+// compares). NaNs fail every compare, so they never become min or max; a min or max of zero gets the sign of the
+// first zero, as the sequential loop gave. NA count: NaNs whose low word is 1954 (R's NA_real_), counted in a second
+// pass only when the page has a NaN.
+typedef double vd2 __attribute__((vector_size(16)));
+typedef int64_t vl2 __attribute__((vector_size(16)));
+typedef int32_t vi4 __attribute__((vector_size(16)));
+inline vd2 vsel(vl2 m, vd2 a, vd2 b) { return (vd2)(((vl2)a & m) | ((vl2)b & ~m)); }
+inline vi4 vsel(vi4 m, vi4 a, vi4 b) { return (a & m) | (b & ~m); }
+
+void dbl_stats(const double* x, uint32_t n, double& mn, double& mx, uint32_t& na) {
+  const double inf = std::numeric_limits<double>::infinity();
+  vd2 a[4], b[4];
+  vl2 c[4];
+  for (int k = 0; k < 4; ++k) {
+    a[k] = vd2{inf, inf};
+    b[k] = vd2{-inf, -inf};
+    c[k] = vl2{0, 0};
+  }
+  uint32_t i = 0;
+  for (; i + 8 <= n; i += 8)
+    for (int k = 0; k < 4; ++k) {
+      vd2 v;
+      std::memcpy(&v, x + i + 2 * k, 16);
+      a[k] = vsel(v < a[k], v, a[k]);
+      b[k] = vsel(v > b[k], v, b[k]);
+      c[k] -= (vl2)(v != v);
+    }
+  double sa = inf, sb = -inf;
+  int64_t nan = 0;
+  for (; i < n; ++i) {
+    const double v = x[i];
+    sa = v < sa ? v : sa;
+    sb = v > sb ? v : sb;
+    nan += v != v;
+  }
+  mn = sa;
+  mx = sb;
+  for (int k = 0; k < 4; ++k)
+    for (int l = 0; l < 2; ++l) {
+      mn = std::min(mn, a[k][l]);
+      mx = std::max(mx, b[k][l]);
+      nan += c[k][l];
+    }
+  na = 0;
+  if (nan)
+    for (uint32_t j = 0; j < n; ++j) {
+      uint64_t bits;
+      std::memcpy(&bits, &x[j], 8);
+      na += (x[j] != x[j]) & ((uint32_t)bits == 1954u);
+    }
+  if (mn == 0 || mx == 0)
+    for (uint32_t j = 0; j < n; ++j)
+      if (x[j] == 0) {
+        if (mn == 0) mn = x[j];
+        if (mx == 0) mx = x[j];
+        break;
+      }
+}
+
+void int_stats(const int32_t* x, uint32_t n, int32_t& mn, int32_t& mx, uint32_t& na) {
+  const int32_t hi = std::numeric_limits<int32_t>::max(), lo = std::numeric_limits<int32_t>::min();
+  const vi4 vna = {kNaInt, kNaInt, kNaInt, kNaInt}, vhi = {hi, hi, hi, hi};
+  vi4 a[2] = {vhi, vhi}, b[2], c[2];
+  for (int k = 0; k < 2; ++k) {
+    b[k] = vi4{lo, lo, lo, lo};
+    c[k] = vi4{0, 0, 0, 0};
+  }
+  uint32_t i = 0;
+  for (; i + 8 <= n; i += 8)
+    for (int k = 0; k < 2; ++k) {
+      vi4 v;
+      std::memcpy(&v, x + i + 4 * k, 16);
+      const vi4 m = v == vna;
+      const vi4 w = vsel(m, vhi, v);  // NA (the smallest int32) never the min
+      c[k] -= m;
+      a[k] = vsel(w < a[k], w, a[k]);
+      b[k] = vsel(v > b[k], v, b[k]);
+    }
+  int32_t sa = hi, sb = lo;
+  uint32_t t = 0;
+  for (; i < n; ++i) {
+    const int32_t v = x[i];
+    const bool isna = v == kNaInt;
+    const int32_t w = isna ? hi : v;
+    t += isna;
+    sa = w < sa ? w : sa;
+    sb = v > sb ? v : sb;
+  }
+  mn = sa;
+  mx = sb;
+  for (int k = 0; k < 2; ++k)
+    for (int l = 0; l < 4; ++l) {
+      mn = std::min(mn, a[k][l]);
+      mx = std::max(mx, b[k][l]);
+      t += (uint32_t)c[k][l];
+    }
+  na = t;
 }
 
 }  // namespace
@@ -391,21 +491,11 @@ struct WriterImpl {
     if (col.phys == FSTX_FLOAT64) {
       const double* x = (const double*)d.data + t.row_start;
       FSTX_PROF_BEGIN(prof_st, W_STATS);
-      double mn = std::numeric_limits<double>::infinity(), mx = -mn;
-      uint32_t na = 0;
-      bool any = false;
-      for (uint32_t i = 0; i < n; ++i) {
-        double v = x[i];
-        if (std::isnan(v)) {
-          if (is_r_na_real(v)) ++na;
-          continue;
-        }
-        any = true;
-        if (v < mn) mn = v;
-        if (v > mx) mx = v;
-      }
+      double mn, mx;
+      uint32_t na;
+      dbl_stats(x, n, mn, mx, na);
       pm.null_count = na;
-      if (any) {
+      if (mn <= mx) {  // some value is not NaN
         pm.mn = mn;
         pm.mx = mx;
         pm.flags |= kFlagMinMax;
@@ -416,17 +506,9 @@ struct WriterImpl {
     } else if (col.phys == FSTX_INT32 || col.phys == FSTX_LOGICAL) {
       const int32_t* x = (const int32_t*)d.data + t.row_start;
       FSTX_PROF_BEGIN(prof_st, W_STATS);
-      int32_t mn = std::numeric_limits<int32_t>::max(), mx = std::numeric_limits<int32_t>::min();
-      uint32_t na = 0;
-      for (uint32_t i = 0; i < n; ++i) {
-        int32_t v = x[i];
-        if (v == kNaInt) {
-          ++na;
-          continue;
-        }
-        if (v < mn) mn = v;
-        if (v > mx) mx = v;
-      }
+      int32_t mn, mx;
+      uint32_t na;
+      int_stats(x, n, mn, mx, na);
       pm.null_count = na;
       if (na < n) {
         pm.mn = mn;
@@ -455,12 +537,14 @@ struct WriterImpl {
           ptrs.resize(n);
           lens.resize(n);
         }
+        FSTX_PROF_BEGIN(prof_get, W_STR_GET);
         for (uint32_t done = 0; done < n;) {
           uint32_t m = std::min<uint32_t>(kVector, n - done);
           if (d.get_strings(d.ctx, t.row_start + done, m, ptrs.data() + done, lens.data() + done) != 0)
             fail(FSTX_ERR_INTERNAL, "string source changed during write");
           done += m;
         }
+        FSTX_PROF_END(prof_get);
         uint32_t na = 0;
         for (uint32_t i = 0; i < n; ++i) na += lens[i] < 0;
         pm.null_count = na;
@@ -479,13 +563,26 @@ struct WriterImpl {
       size_t cap = compress_bound(codec, raw_len);
       if (s.comp.size() < cap) s.comp.resize(cap);
       FSTX_PROF_SCOPE(W_COMPRESS);
-      size_t cl = compress_page(cc, codec, level, raw, raw_len, s.comp.data(), cap);
-      // keep the codec only when it saves at least keep_pct percent (decoding it costs time)
-      if ((cl < raw_len && (uint64_t)cl * 100 <= (uint64_t)raw_len * (uint64_t)(100 - keep_pct)) ||
-          (keep_codec && cl <= kMaxRawPage)) {
-        s.out = s.comp.data();
-        s.out_len = cl;
-        pm.codec = (uint8_t)codec;
+      bool skip = false;
+      if (!keep_codec && t.what != 1 && raw_len >= kProbeMin &&
+          (col.phys == FSTX_FLOAT64 || col.phys == FSTX_INT32 || col.phys == FSTX_LOGICAL)) {
+        const size_t pn = kProbeSlice * kProbeSlices;
+        if (s.probe.size() < pn) s.probe.resize(pn);
+        for (size_t k = 0; k < kProbeSlices; ++k)
+          std::memcpy(s.probe.data() + k * kProbeSlice, raw + (raw_len - kProbeSlice) * k / (kProbeSlices - 1),
+                      kProbeSlice);
+        const size_t pl = compress_page(cc, codec, level, s.probe.data(), pn, s.comp.data(), cap);
+        skip = (uint64_t)pl * 200 > (uint64_t)pn * (uint64_t)(200 - keep_pct);
+      }
+      if (!skip) {
+        size_t cl = compress_page(cc, codec, level, raw, raw_len, s.comp.data(), cap);
+        // keep the codec only when it saves at least keep_pct percent (decoding it costs time)
+        if ((cl < raw_len && (uint64_t)cl * 100 <= (uint64_t)raw_len * (uint64_t)(100 - keep_pct)) ||
+            (keep_codec && cl <= kMaxRawPage)) {
+          s.out = s.comp.data();
+          s.out_len = cl;
+          pm.codec = (uint8_t)codec;
+        }
       }
     }
     pm.comp_len = (uint32_t)s.out_len;
@@ -740,6 +837,9 @@ struct WriterImpl {
       opt_features = forge->opt;
       feature_names = forge->names;
       if (forge->profile >= 0) stored_profile = forge->profile;
+      const bool page0 = forge->codec0 >= 0 || forge->kind0 >= 0 || forge->na0 >= 0 || forge->tag0 >= 0;
+      if (cols.empty() && (page0 || forge->phys0 >= 0 || forge->logical0 >= 0))
+        fail(FSTX_ERR_ARG, "cannot forge column 0: the file has no columns");
       if (forge->phys0 >= 0) cols[0].phys = forge->phys0;
       if (forge->logical0 >= 0) cols[0].logical = forge->logical0;
     }
@@ -770,7 +870,10 @@ struct WriterImpl {
     total_rows = F.n_rows;
     rg_size = F.footer->row_group_size();
     if (F.profile <= enc::P_SMALL) profile = F.profile;
-    if (forge && !rgs.empty()) {  // the first page of column 0
+    if (forge && !rgs.empty() && (forge->codec0 >= 0 || forge->kind0 >= 0 || forge->na0 >= 0 || forge->tag0 >= 0)) {
+      // the first page of column 0 (a file may have row groups but no columns, or an empty first chunk)
+      if (rgs[0].chunks.empty() || rgs[0].chunks[0].empty())
+        fail(FSTX_ERR_ARG, "cannot forge the first page of column 0: the file has none");
       PageMeta& p = rgs[0].chunks[0][0];
       if (forge->codec0 >= 0) p.codec = (uint8_t)forge->codec0;
       if (forge->kind0 >= 0) p.chain = (p.chain & ~15u) | (uint32_t)forge->kind0;

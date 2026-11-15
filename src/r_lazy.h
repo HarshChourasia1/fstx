@@ -62,8 +62,9 @@ Holder* fstx_holder_of(SEXP xp);
 // The ALTREP vector over xp's holder (string, integer, double or logical by the source). R allocation.
 SEXP fstx_altrep_new(SEXP xp);
 // M6s: makes every R string of an fstx string ALTREP vector and returns the plain STRSXP that holds them. The work
-// runs inside R's Dataptr call, where R switches the garbage collector off. R allocation.
-SEXP fstx_str_plain(SEXP x);
+// runs inside R's Dataptr call, where R switches the garbage collector off; gc_on (1.0) runs it in this call instead,
+// with the collector on (measured faster for the auto open of all-dictionary columns). R allocation.
+SEXP fstx_str_plain(SEXP x, bool gc_on);
 void fstx_init_altrep(DllInfo* dll);
 
 #endif

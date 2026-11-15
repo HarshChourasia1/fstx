@@ -6,6 +6,7 @@
 
 #include "enc.h"
 #include "fsst.h"
+#include "libfsst.hpp"
 
 namespace fstx {
 namespace enc {
@@ -88,6 +89,253 @@ bool fsst_table_ok(const uint8_t* p, size_t len) {
     need += (size_t)c * (size_t)((l & 7) + 1);
   }
   return total <= 255 && need <= len;
+}
+
+// FSST encoding of many strings, byte for byte what libfsst's scalar compressBulk writes (the vendored build has no
+// AVX-512 path): each string in chunks of up to 511 bytes, each chunk followed by the table's terminator byte, then a
+// greedy parse (long symbol from the hash table, else the shortCodes entry). compressBulk walks one string at a time
+// and waits on each lookup; here 4 lanes walk 4 runs of strings at once and each step is branch-free. Lanes copy up to
+// kFsstStage bytes of chunks (terminator after each) into a stage and record where the output stood at every input
+// position, so chunk outputs can be cut out afterwards. Multi-byte symbols never contain the terminator byte, so no
+// match crosses a chunk end and the parse at the terminator is one step; its output is dropped.
+constexpr size_t kFsstLanes = 4;
+constexpr size_t kFsstStage = 4096;
+constexpr size_t kFsstStageCap = kFsstStage + 512 + 16;  // a chunk (511 + terminator) may start just under kFsstStage
+
+struct FsstLane {
+  size_t line = 0, end_line = 0, off = 0;  // next input: line, byte offset in it
+  uint8_t* stage = nullptr;
+  uint8_t* ob = nullptr;    // output of one round, terminator codes included
+  uint16_t* pm = nullptr;   // pm[i]: low 16 bits of the output pointer when the parse reached stage position i
+  uint16_t* tpos = nullptr; // terminator position of each chunk staged this round
+  uint32_t* cline = nullptr;
+  size_t nch = 0;
+  const uint8_t* c = nullptr;
+  const uint8_t* e = nullptr;
+  uint8_t* o = nullptr;
+  uint8_t* w0 = nullptr;    // where this lane's output starts
+  uint8_t* w = nullptr;     // and where the next chunk output goes
+};
+
+// Per-thread scratch kept between pages (the pool threads live on), up to kKeepScratch bytes; bigger asks are freed after
+// use. No zero fill: every byte is written before it is read.
+constexpr size_t kKeepScratch = 4u << 20;
+struct Scratch {
+  std::unique_ptr<uint8_t[]> keep;
+  size_t cap = 0;
+  std::unique_ptr<uint8_t[]> big;
+  uint8_t* get(size_t n) {
+    if (n > kKeepScratch) {
+      big.reset(new uint8_t[n]);
+      return big.get();
+    }
+    big.reset();
+    if (cap < n) {
+      keep.reset(new uint8_t[kKeepScratch]);
+      cap = kKeepScratch;
+    }
+    return keep.get();
+  }
+};
+thread_local Scratch tl_lanes, tl_out;
+
+static_assert(libfsst::SymbolTable::hashTabSize == 1024, "the 32-bit hash below keeps bits 0-24 of FSST_HASH only");
+
+// One greedy step. pmc + 2 * c addresses pm[c - stage]; it gets the low 16 bits of the output pointer (a round writes
+// under 64 KB). The hash uses a 32-bit product: bits 0-9 and 15-24 of FSST_HASH(w & 0xFFFFFF), the same index.
+__attribute__((always_inline)) inline void fsst_step(const libfsst::SymbolTable& st, const uint8_t*& c, uint8_t*& o,
+                                                     uintptr_t pmc) {
+  using libfsst::u32;  // FSST_ICL_FREE uses it
+  *(uint16_t*)(pmc + 2 * (uintptr_t)c) = (uint16_t)(uintptr_t)o;
+  const uint64_t w = libfsst::fsst_unaligned_load(c);
+  const uint64_t sc = st.shortCodes[w & 0xFFFF];
+  const uint32_t hp = ((uint32_t)w & 0xFFFFFFu) * (uint32_t)FSST_HASH_PRIME;
+  const libfsst::Symbol& s = st.hashTab[(hp ^ (hp >> FSST_SHIFT)) & (libfsst::SymbolTable::hashTabSize - 1)];
+  const uint64_t icl = s.icl;
+  const uint64_t hit = (uint64_t)((uint32_t)icl < (uint32_t)FSST_ICL_FREE) &
+                       (uint64_t)(s.load_num() == (w & (0xFFFFFFFFFFFFFFFFull >> (uint8_t)icl)));
+  // After finalize() a hash-table symbol has a code under 256, so icl >> 16 has the shortCodes layout: code in bits 0-8
+  // (bit 8: escape), length from bit FSST_LEN_BITS. One masked select (masks keep the compiler from branching).
+  const uint64_t m = 0 - hit;  // all ones on a long-symbol match
+  const uint64_t v = ((icl >> 16) & m) | (sc & ~m);
+  o[1] = (uint8_t)w;           // the escaped byte, kept only after an escape code
+  o[0] = (uint8_t)v;
+  o += 1 + ((v >> 8) & 1);
+  c += v >> FSST_LEN_BITS;
+}
+
+// Exact copy of n bytes (nothing read or written outside [0, n)) for the short runs the FSST lanes move: inline loads
+// instead of a library call per string. d and s never overlap.
+__attribute__((always_inline)) inline void copy_short(uint8_t* d, const uint8_t* s, size_t n) {
+  if (n >= 16) {
+    uint8_t t[16];
+    for (size_t i = 0; i + 16 < n; i += 16) {
+      std::memcpy(t, s + i, 16);
+      std::memcpy(d + i, t, 16);
+    }
+    std::memcpy(t, s + n - 16, 16);
+    std::memcpy(d + n - 16, t, 16);
+  } else if (n >= 8) {
+    uint64_t a, b;
+    std::memcpy(&a, s, 8);
+    std::memcpy(&b, s + n - 8, 8);
+    std::memcpy(d, &a, 8);
+    std::memcpy(d + n - 8, &b, 8);
+  } else if (n >= 4) {
+    uint32_t a, b;
+    std::memcpy(&a, s, 4);
+    std::memcpy(&b, s + n - 4, 4);
+    std::memcpy(d, &a, 4);
+    std::memcpy(d + n - 4, &b, 4);
+  } else if (n) {
+    d[0] = s[0];
+    d[n >> 1] = s[n >> 1];
+    d[n - 1] = s[n - 1];
+  }
+}
+
+// dst needs 2 * (total bytes) + 16. Writes the codes of all strings back to back; lo[i] = code bytes of string i.
+size_t fsst_encode(const void* enc, size_t n, const size_t* len, const unsigned char* const* str, uint8_t* dst,
+                   size_t* lo) {
+  const libfsst::SymbolTable& st = *((const libfsst::Encoder*)enc)->symbolTable;
+  const uint8_t term = (uint8_t)st.terminator;
+  size_t total = 0;
+  for (size_t i = 0; i < n; ++i) {
+    lo[i] = 0;
+    total += len[i];
+  }
+  if (total == 0) return 0;
+  const size_t nl = total >= 4 * kFsstStage ? kFsstLanes : 1;
+  // per lane: stage, round output (2x), pm (uint16), tpos (uint16), cline (uint32); 8-byte aligned pieces
+  constexpr size_t o_pm = 3 * kFsstStageCap, o_tp = 5 * kFsstStageCap;
+  constexpr size_t o_cl = (o_tp + 2 * (kFsstStage + 1) + 7) & ~(size_t)7;
+  constexpr size_t per = (o_cl + 4 * (kFsstStage + 1) + 7) & ~(size_t)7;
+  FsstLane ln[kFsstLanes];
+  {
+    uint8_t* m = tl_lanes.get(nl * per);
+    size_t i = 0, acc = 0;
+    for (size_t k = 0; k < nl; ++k) {
+      FsstLane& L = ln[k];
+      L.stage = m;
+      L.ob = m + kFsstStageCap;
+      L.pm = (uint16_t*)(m + o_pm);
+      L.tpos = (uint16_t*)(m + o_tp);
+      L.cline = (uint32_t*)(m + o_cl);
+      m += per;
+      L.line = i;
+      L.w0 = L.w = dst + 2 * acc;
+      const size_t want = (k + 1) * total / nl;  // lanes get about equal bytes
+      while (i < n && (k + 1 == nl || acc < want)) acc += len[i++];
+      L.end_line = i;
+    }
+  }
+  auto fill = [&](FsstLane& L) {
+    const uint16_t o16 = (uint16_t)(uintptr_t)L.ob;
+    for (size_t j = 0; j < L.nch; ++j) {  // cut the last round's chunk outputs out
+      const size_t a = j ? (uint16_t)(L.pm[L.tpos[j - 1] + 1u] - o16) : 0, b = (uint16_t)(L.pm[L.tpos[j]] - o16);
+      copy_short(L.w, L.ob + a, b - a);
+      L.w += b - a;
+      lo[L.cline[j]] += b - a;
+    }
+    size_t s = 0, k = 0;
+    while (L.line < L.end_line && s < kFsstStage) {
+      const size_t l = len[L.line];
+      if (l == 0) {
+        ++L.line;
+        continue;
+      }
+      const size_t ch = std::min<size_t>(511, l - L.off);
+      copy_short(L.stage + s, str[L.line] + L.off, ch);
+      s += ch;
+      L.stage[s] = term;
+      L.tpos[k] = (uint16_t)s++;
+      L.cline[k++] = (uint32_t)L.line;
+      L.off += ch;
+      if (L.off == l) {
+        L.off = 0;
+        ++L.line;
+      }
+    }
+    L.nch = k;
+    L.c = L.stage;
+    L.e = L.stage + s;
+    L.o = L.ob;
+    return k > 0;
+  };
+  bool live[kFsstLanes];
+  for (size_t k = 0; k < nl; ++k) live[k] = fill(ln[k]);
+  for (;;) {
+    size_t id[kFsstLanes], m = 0;
+    for (size_t k = 0; k < nl; ++k)
+      if (live[k]) id[m++] = k;
+    if (m == 0) break;
+    // A step eats 1 to 8 bytes and never passes a terminator, so min(e - c) / 8 steps need no end checks.
+    if (m == 4) {
+      FsstLane &A = ln[id[0]], &B = ln[id[1]], &C = ln[id[2]], &D = ln[id[3]];
+      const uint8_t *ca = A.c, *cb = B.c, *cc = C.c, *cd = D.c;
+      const uint8_t *ea = A.e, *eb = B.e, *ec = C.e, *ed = D.e;
+      uint8_t *oa = A.o, *ob = B.o, *oc = C.o, *od = D.o;
+      const uintptr_t xa = (uintptr_t)A.pm - 2 * (uintptr_t)A.stage, xb = (uintptr_t)B.pm - 2 * (uintptr_t)B.stage,
+                      xc = (uintptr_t)C.pm - 2 * (uintptr_t)C.stage, xd = (uintptr_t)D.pm - 2 * (uintptr_t)D.stage;
+      for (;;) {
+        size_t k = std::min(std::min((size_t)(ea - ca), (size_t)(eb - cb)), std::min((size_t)(ec - cc), (size_t)(ed - cd))) >> 3;
+        if (k == 0) break;
+        do {
+          fsst_step(st, ca, oa, xa);
+          fsst_step(st, cb, ob, xb);
+          fsst_step(st, cc, oc, xc);
+          fsst_step(st, cd, od, xd);
+        } while (--k);
+      }
+      while (ca < ea && cb < eb && cc < ec && cd < ed) {
+        fsst_step(st, ca, oa, xa);
+        fsst_step(st, cb, ob, xb);
+        fsst_step(st, cc, oc, xc);
+        fsst_step(st, cd, od, xd);
+      }
+      A.c = ca, B.c = cb, C.c = cc, D.c = cd;
+      A.o = oa, B.o = ob, C.o = oc, D.o = od;
+    } else if (m >= 2) {
+      FsstLane &A = ln[id[0]], &B = ln[id[1]];
+      const uint8_t *ca = A.c, *cb = B.c, *ea = A.e, *eb = B.e;
+      uint8_t *oa = A.o, *ob = B.o;
+      const uintptr_t xa = (uintptr_t)A.pm - 2 * (uintptr_t)A.stage, xb = (uintptr_t)B.pm - 2 * (uintptr_t)B.stage;
+      for (;;) {
+        size_t k = std::min((size_t)(ea - ca), (size_t)(eb - cb)) >> 3;
+        if (k == 0) break;
+        do {
+          fsst_step(st, ca, oa, xa);
+          fsst_step(st, cb, ob, xb);
+        } while (--k);
+      }
+      while (ca < ea && cb < eb) {
+        fsst_step(st, ca, oa, xa);
+        fsst_step(st, cb, ob, xb);
+      }
+      A.c = ca, B.c = cb;
+      A.o = oa, B.o = ob;
+    } else {
+      FsstLane& A = ln[id[0]];
+      const uint8_t *ca = A.c, *ea = A.e;
+      uint8_t* oa = A.o;
+      const uintptr_t xa = (uintptr_t)A.pm - 2 * (uintptr_t)A.stage;
+      while (ca < ea) fsst_step(st, ca, oa, xa);
+      A.c = ca;
+      A.o = oa;
+    }
+    for (size_t j = 0; j < m; ++j) {
+      FsstLane& L = ln[id[j]];
+      if (L.c >= L.e) live[id[j]] = fill(L);
+    }
+  }
+  // lane k wrote from dst + 2 * (bytes before its strings); move the lanes together
+  size_t q = 0;
+  for (size_t k = 0; k < nl; ++k) {
+    const size_t b = (size_t)(ln[k].w - ln[k].w0);
+    if (b && ln[k].w0 != dst + q) std::memmove(dst + q, ln[k].w0, b);
+    q += b;
+  }
+  return q;
 }
 
 }  // namespace
@@ -190,19 +438,17 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
   if (force != T_FSST && sbytes < 4096) return 0;  // too little text to be worth a symbol table
 
   std::unique_ptr<FsstTable> ft(new FsstTable());
+  FSTX_PROF_BEGIN(prof_tab, W_FSST_TABLE);
   ft->enc = fsst_create(sp.size(), sl.data(), sp.data(), 0);
+  FSTX_PROF_END(prof_tab);
   if (!ft->enc) fail(FSTX_ERR_MEMORY, "cannot create an FSST symbol table");
   bool use = force == T_FSST;
   if (!use) {
-    const size_t cap = 2 * sbytes + 8 * (sp.size() + sbytes / 511 + 2) + 64;
-    std::vector<unsigned char> fo(cap);
+    FSTX_PROF_SCOPE(W_STR_CHOOSE);
+    std::unique_ptr<uint8_t[]> fo(new uint8_t[2 * sbytes + 16]);
     std::vector<size_t> lo(sp.size());
-    std::vector<unsigned char*> po(sp.size());
-    const size_t done = fsst_compress((fsst_encoder_t*)ft->enc, sp.size(), sl.data(), sp.data(), cap, fo.data(),
-                                      lo.data(), po.data());
-    if (done == sp.size()) {
-      size_t fbytes = 0;
-      for (size_t k = 0; k < done; ++k) fbytes += lo[k];
+    {
+      size_t fbytes = fsst_encode(ft->enc, sp.size(), sl.data(), sp.data(), fo.get(), lo.data());
       fbytes += FSST_MAXHEADER / 2;  // the symbol table goes into every page
       if (cx.codec == FSTX_CODEC_NONE) {
         use = fbytes * 100 < sbytes * 85;
@@ -212,7 +458,7 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
         for (size_t k = 0; k < sp.size(); ++k) cat.insert(cat.end(), sp[k], sp[k] + sl[k]);
         const size_t zp = zstd_est(cx, cat.data(), cat.size());
         // FSST output is contiguous in fo
-        const size_t zf = std::min(fbytes, zstd_est(cx, fo.data(), fbytes - FSST_MAXHEADER / 2) + FSST_MAXHEADER / 2);
+        const size_t zf = std::min(fbytes, zstd_est(cx, fo.get(), fbytes - FSST_MAXHEADER / 2) + FSST_MAXHEADER / 2);
         use = zf < zp;
       }
     }
@@ -270,30 +516,12 @@ uint32_t encode_str_page(int kind, const char* const* ptrs, const int32_t* lens,
       pi[i] = (const unsigned char*)(l0[i] > 0 ? ptrs[i] : "");
     }
     std::vector<size_t> lo(n);
-    std::vector<unsigned char*> po(n);
-    const size_t cap = 2 * (size_t)total + 8 * ((size_t)n + (size_t)total / 511 + 2) + 64;
     size_t bb = out.open(T_PLAIN);
-    const size_t pos = out.size();
-    out.grow(cap);
-    unsigned char* base = out.v.data() + pos;
-    const size_t done = fsst_compress((fsst_encoder_t*)fs->enc, n, li.data(), pi.data(), cap, base, lo.data(), po.data());
-    if (done != n) fail(FSTX_ERR_INTERNAL, "FSST output buffer too small");
-    size_t clen = 0;
-    bool contiguous = true;
-    for (uint32_t i = 0; i < n; ++i) {
-      if (po[i] != base + clen) contiguous = false;
-      clen += lo[i];
-    }
-    if (!contiguous) {
-      std::vector<unsigned char> tmp(clen);
-      size_t q = 0;
-      for (uint32_t i = 0; i < n; ++i) {
-        if (lo[i]) std::memcpy(tmp.data() + q, po[i], lo[i]);
-        q += lo[i];
-      }
-      if (clen) std::memcpy(base, tmp.data(), clen);
-    }
-    out.v.resize(pos + clen);
+    uint8_t* tmp = tl_out.get(2 * (size_t)total + 16);
+    FSTX_PROF_BEGIN(prof_fe, W_FSST_ENC);
+    const size_t clen = fsst_encode(fs->enc, n, li.data(), pi.data(), tmp, lo.data());
+    FSTX_PROF_END(prof_fe);
+    out.put(tmp, clen);
     out.close(bb);
     std::vector<int32_t> cl(n);
     for (uint32_t i = 0; i < n; ++i) cl[i] = (int32_t)lo[i];
@@ -365,6 +593,14 @@ void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n
       const size_t cl = (size_t)lens[i];
       size_t got = 0;
       if (cl) {
+        // A code string never ends in a lone escape (255): the decoder would read symbol[255], past its table.
+        // Only a string ending in 255 is looked at: the trailing run of 255s starts at a code boundary, so an odd
+        // run means a lone escape.
+        if (src[cl - 1] == 255) {
+          size_t esc = 1;
+          while (esc < cl && src[cl - 1 - esc] == 255) ++esc;
+          if (esc & 1) corrupt("FSST escape at the end of a string");
+        }
         got = fsst_decompress(&dec, cl, src, (size_t)(total - pos) + 32, buf.data() + pos);
         if (got > total - pos) corrupt("FSST string longer than the page");
       }

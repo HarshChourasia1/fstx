@@ -651,25 +651,33 @@ int decode_blk_part(Rd& rd, T* out, uint32_t n, int depth, const uint8_t* vm) {
 // ---------------------------------------------------------------- NA section
 template <class T, class IsNa>
 int na_write(const T* x, uint32_t n, IsNa isna, Buf& out, uint32_t& nna) {
-  nna = 0;
-  for (uint32_t i = 0; i < n; ++i) nna += isna(x[i]) ? 1u : 0u;
-  if (!nna) return NA_NONE;
-  // runs alternate non-NA / NA, starting with a (possibly empty) non-NA run
-  std::vector<uint32_t> runs;
-  bool cur = false;
-  uint32_t len = 0;
+  // one pass, no branches: NA count and the number of NA / non-NA changes (runs = changes + 1)
+  uint32_t cnt = 0, chg = 0, prev = 0;
   for (uint32_t i = 0; i < n; ++i) {
-    const bool a = isna(x[i]);
-    if (a != cur) {
-      runs.push_back(len);
-      len = 0;
-      cur = a;
-    }
-    ++len;
+    const uint32_t a = isna(x[i]) ? 1u : 0u;
+    cnt += a;
+    chg += a ^ prev;
+    prev = a;
   }
-  runs.push_back(len);
-  const size_t bm = 8 * (((size_t)n + 63) / 64), rs = 8 + a8(4 * runs.size());
+  nna = cnt;
+  if (!nna) return NA_NONE;
+  const size_t bm = 8 * (((size_t)n + 63) / 64), rs = 8 + a8(4 * ((size_t)chg + 1));
   if (rs < bm) {
+    // runs alternate non-NA / NA, starting with a (possibly empty) non-NA run
+    std::vector<uint32_t> runs;
+    runs.reserve((size_t)chg + 1);
+    bool cur = false;
+    uint32_t len = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+      const bool a = isna(x[i]);
+      if (a != cur) {
+        runs.push_back(len);
+        len = 0;
+        cur = a;
+      }
+      ++len;
+    }
+    runs.push_back(len);
     size_t h = out.open(T_NA_RUNS);
     put_u32(out.grow(8), (uint32_t)runs.size());
     out.put(runs.data(), 4 * runs.size());
@@ -678,8 +686,12 @@ int na_write(const T* x, uint32_t n, IsNa isna, Buf& out, uint32_t& nna) {
   }
   size_t h = out.open(T_NA_BITMAP);
   uint64_t* w = (uint64_t*)out.grow(bm);
-  for (uint32_t i = 0; i < n; ++i)
-    if (isna(x[i])) w[i >> 6] |= 1ull << (i & 63);
+  for (uint32_t k = 0; (size_t)k * 64 < n; ++k) {  // whole words, no branches
+    const uint32_t i0 = k * 64, m = std::min<uint32_t>(64, n - i0);
+    uint64_t b = 0;
+    for (uint32_t j = 0; j < m; ++j) b |= (uint64_t)(isna(x[i0 + j]) ? 1u : 0u) << j;
+    w[k] = b;
+  }
   out.close(h);
   return NA_BITMAP;
 }
@@ -950,13 +962,14 @@ void alprd_search(const double* x, uint32_t n, RdParams& p) {
   const uint32_t ns = std::min<uint32_t>(n, 256);
   std::vector<uint64_t> s(ns);
   for (uint32_t k = 0; k < ns; ++k) std::memcpy(&s[k], &x[(uint64_t)k * n / ns], 8);
+  // sorted once: the top lb bits of sorted 64-bit words are sorted too, for every lb
+  std::sort(s.begin(), s.end());
   std::vector<uint16_t> left(ns);
   std::vector<std::pair<uint32_t, uint16_t>> cnt;
   size_t best = std::numeric_limits<size_t>::max();
   for (int lb = 1; lb <= 16; ++lb) {
     const int rb = 64 - lb;
     for (uint32_t k = 0; k < ns; ++k) left[k] = (uint16_t)(s[k] >> rb);
-    std::sort(left.begin(), left.end());
     cnt.clear();
     for (uint32_t k = 0; k < ns;) {
       uint32_t j = k;
@@ -964,10 +977,12 @@ void alprd_search(const double* x, uint32_t n, RdParams& p) {
       cnt.push_back({j - k, left[k]});
       k = j;
     }
-    std::sort(cnt.begin(), cnt.end(), [](const std::pair<uint32_t, uint16_t>& a, const std::pair<uint32_t, uint16_t>& b) {
-      return a.first != b.first ? a.first > b.first : a.second < b.second;
-    });
     const int nd = (int)std::min<size_t>(8, cnt.size());
+    // only the first nd count: the order is total (values are distinct), so this is the full sort's prefix
+    std::partial_sort(cnt.begin(), cnt.begin() + nd, cnt.end(),
+                      [](const std::pair<uint32_t, uint16_t>& a, const std::pair<uint32_t, uint16_t>& b) {
+                        return a.first != b.first ? a.first > b.first : a.second < b.second;
+                      });
     uint32_t covered = 0;
     for (int k = 0; k < nd; ++k) covered += cnt[(size_t)k].first;
     const size_t cost = (size_t)ns * (size_t)(rb + bits_of((uint64_t)(nd - 1))) + (size_t)(ns - covered) * 48;
@@ -1235,6 +1250,45 @@ uint32_t encode_top_dbl(const double* x, uint32_t n, const EncCtx& cx0, Buf& out
   }
 }
 
+// Is there any NA (int) / NaN (double) at all? 16-byte vectors (GCC / Clang vector extensions), 64 values between
+// tests. Pages without one skip na_write's scans, which would write nothing for them.
+typedef double vd2 __attribute__((vector_size(16)));
+typedef int64_t vl2 __attribute__((vector_size(16)));
+typedef int32_t vi4 __attribute__((vector_size(16)));
+
+bool any_int_na(const int32_t* x, uint32_t n, int32_t na_value) {
+  const vi4 vna = {na_value, na_value, na_value, na_value};
+  uint32_t i = 0;
+  for (; i + 64 <= n; i += 64) {
+    vi4 acc = {0, 0, 0, 0};
+    for (uint32_t k = 0; k < 64; k += 4) {
+      vi4 v;
+      std::memcpy(&v, x + i + k, 16);
+      acc |= v == vna;
+    }
+    if (acc[0] | acc[1] | acc[2] | acc[3]) return true;
+  }
+  for (; i < n; ++i)
+    if (x[i] == na_value) return true;
+  return false;
+}
+
+bool any_nan(const double* x, uint32_t n) {
+  uint32_t i = 0;
+  for (; i + 64 <= n; i += 64) {
+    vl2 acc = {0, 0};
+    for (uint32_t k = 0; k < 64; k += 2) {
+      vd2 v;
+      std::memcpy(&v, x + i + k, 16);
+      acc |= (vl2)(v != v);
+    }
+    if (acc[0] | acc[1]) return true;
+  }
+  for (; i < n; ++i)
+    if (x[i] != x[i]) return true;
+  return false;
+}
+
 void write_header(Buf& out, int kind, uint32_t n) {
   uint8_t* h = out.grow(8);
   h[0] = (uint8_t)kind;
@@ -1274,7 +1328,7 @@ uint32_t encode_int_page(const int32_t* x, uint32_t n, int kind, int32_t na_valu
   uint32_t nna;
   auto isna = [na_value](int32_t v) { return v == na_value; };
   FSTX_PROF_BEGIN(prof_na, W_NA);
-  const int na = na_write(x, n, isna, out, nna);
+  const int na = any_int_na(x, n, na_value) ? na_write(x, n, isna, out, nna) : NA_NONE;
   out.v[1] = (uint8_t)na;
   std::vector<int32_t> filled;
   if (na) na_fill(x, n, isna, filled);
@@ -1300,7 +1354,7 @@ uint32_t encode_dbl_page(const double* x, uint32_t n, const EncCtx& cx, Buf& out
     return b == kNaRealBits;
   };
   FSTX_PROF_BEGIN(prof_na, W_NA);
-  const int na = na_write(x, n, isna, out, nna);
+  const int na = any_nan(x, n) ? na_write(x, n, isna, out, nna) : NA_NONE;  // R's NA is a NaN
   out.v[1] = (uint8_t)na;
   std::vector<double> filled;
   if (na) na_fill(x, n, isna, filled);
