@@ -61,15 +61,12 @@ fstx_compact("sales.fstx")   # drop what appends leave behind; merge = TRUE rewr
 fstx_simd()                  # SIMD target in use (SSE2 / SSE4 / AVX2, chosen at run time)
 ```
 
-## File format and older files
+## File format
 
 fstx 1.0 writes fstx format 1.0 (format version 3 inside the file). The format is fixed: every later fstx
 reads these files. Its specification ships with the package:
 `system.file("spec", "fstx-format-1.0.md", package = "fstx")`.
 
-- Files written by fstx 0.7 (format 2) are read as they are. Appending to one, or `fstx_compact()` with the
-  default page copy, keeps it in format 2, so fstx 0.7 can still read it. `fstx_compact(merge = TRUE)`
-  writes a fresh file in format 3, which fstx 0.7 cannot read.
 - A file from a later fstx that needs something this version does not know is refused with a message that
   names it and ends "Update fstx". It is not called corrupt.
 - `fstx_features()` lists what this build reads and writes.

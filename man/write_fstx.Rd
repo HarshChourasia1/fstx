@@ -22,8 +22,7 @@ write_fstx(x, path, profile = c("balanced", "fast", "small"), compress = NULL,
     the same levels); POSIXct columns need the same time zone; files with stored row names cannot be
     appended to. The profile defaults to the file's (a profile written by a later fstx: the new rows are
     encoded as \code{"balanced"} and the file keeps its stored value). An interrupted append leaves the old
-    table readable. The file keeps its format version: a file written by fstx 0.7 stays format 2. A file
-    with an optional feature this fstx does not know cannot be appended to ("Update fstx to change this
+    table readable. A file with an optional feature this fstx does not know cannot be appended to ("Update fstx to change this
     file; reading works").}
 }
 \details{
@@ -33,7 +32,7 @@ Columns may be logical, integer, double or character vectors. Factors (and order
 POSIXct are stored natively; any other attributes (classes, units, labels) are kept and restored on read.
 Matrix and list columns are not supported. Strings are stored as UTF-8.
 
-New files are written in fstx format 1.0 (format version 3 inside the file), which fstx 0.7 cannot read.
+Files are written in fstx format 1.0 (format version 3 inside the file).
 }
 \value{\code{x} as it was passed in, invisibly (also after an append that added factor levels).}
 \seealso{\code{\link{read_fstx}}, \code{\link{fstx_compact}}}

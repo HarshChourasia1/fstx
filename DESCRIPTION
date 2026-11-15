@@ -21,8 +21,7 @@ Description: Reads and writes data frames in a column-store file format built
     columns whose R strings are made on first use, factors built from string
     dictionaries, partial reads by row list, filters that skip pages by their
     statistics, crash-safe appends and compaction. The file format (fstx
-    format 1.0) is written down in a specification shipped with the package,
-    and files written by 'fstx' 0.7 are read as they are.
+    format 1.0) is written down in a specification shipped with the package.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Depends: R (>= 4.4.0)

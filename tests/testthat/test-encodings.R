@@ -187,8 +187,8 @@ test_that("files are byte-identical at 1 and many threads for every profile", {
 test_that("a file written by fstx 0.1 (format 1) gives a clear error", {
   m1 <- test_path("fixtures", "m1_format1.fstx")
   skip_if_not(file.exists(m1))
-  expect_error(read_fstx(m1), "older FST-X version")
-  expect_error(fstx_meta(m1), "older FST-X version")
+  expect_error(read_fstx(m1), "written by fstx 0\\.x \\(file format 1\\)")
+  expect_error(fstx_meta(m1), "written by fstx 0\\.x \\(file format 1\\)")
 })
 
 # ---------------------------------------------------------------- decoder fuzz

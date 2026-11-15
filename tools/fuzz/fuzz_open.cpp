@@ -17,12 +17,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     if (!std::memchr(err.message, 0, sizeof err.message)) fz::fail("error message not terminated");
     return 0;
   }
-  // format rules: an opened file has no unknown required bit; format 2 has no feature fields; format 3 profile
-  // 3-255 is read as is
+  // format rules: an opened file is format 3 (fstx 0.x files, versions 1 and 2, must be refused) and has no
+  // unknown required bit; profile 3-255 is read as is
   const fz::Facts x = fz::facts_of(b);
   if (x.ok) {
     if (x.req & ~fstx::features_known()) fz::fail("a file with an unknown required bit was opened");
-    if (x.version == 2 && (x.req || x.opt || x.n_names || x.profile > 2)) fz::fail("format 2 rule broken at open");
+    if (x.version != 3) fz::fail("a file that is not format 3 was opened");
   }
   fstx_file_info fi;
   fstx_file_info_get(f, &fi);

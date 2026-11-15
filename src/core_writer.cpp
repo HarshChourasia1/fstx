@@ -173,8 +173,8 @@ struct WriterImpl {
   int profile = enc::P_BALANCED, keep_pct = 10, force_num = 0, force_str = 0;
   int force_codes = 0;     // tests: encoding forced on string dictionary code pages
   bool keep_codec = false;  // tests: keep the codec on every page, even when it does not save space
-  // format of the file written: version 3 for new files; appends and compaction keep the file's version and
-  // feature fields
+  // format of the file written: always version 3 (the forge alone may set another); appends and compaction keep
+  // the file's feature fields
   uint32_t version = kFormatVersion;
   uint64_t req_features = 0, opt_features = 0;
   std::vector<std::string> feature_names;  // built at close from the bits (forge: given)
@@ -257,14 +257,13 @@ struct WriterImpl {
     total_rows = F.n_rows;
     rg_size = F.footer->row_group_size();
     if (F.profile <= enc::P_SMALL) profile = F.profile;  // a newer profile: encode with the given one
-    keep_format(F);
+    keep_features(F);
   }
 
-  // Appends and compaction keep the file's format version and feature fields.
-  // An optional bit this build does not know may describe data the change would make wrong, so the file is
-  // refused (unknown required bits were already refused when it was opened).
-  void keep_format(const fstx_file& F) {
-    version = F.version;
+  // Appends and compaction keep the file's profile (as stored) and feature fields. Only format 3 files get here
+  // (open refuses others). An optional bit this build does not know may describe data the change would make
+  // wrong, so the file is refused (unknown required bits were already refused when it was opened).
+  void keep_features(const fstx_file& F) {
     stored_profile = F.profile;
     const uint64_t req = F.footer->required_features(), opt = F.footer->optional_features();
     if (opt & ~features_known())
@@ -282,7 +281,6 @@ struct WriterImpl {
             if (((pass ? opt : req) >> b) & 1u) file_names[b] = nm->Get(i++)->str();
       }
     }
-    if (version < 3 && req_features) fail(FSTX_ERR_ARG, "this write needs file features that format 2 files cannot hold");
   }
 
   // One name per set bit, required bits first, then optional, each in ascending bit order.
@@ -830,7 +828,7 @@ struct WriterImpl {
       cols.push_back(std::move(d));
     }
     if (const auto* a = F.footer->table_attrs()) table_attrs.assign(a->begin(), a->end());
-    keep_format(F);
+    keep_features(F);
     if (forge) {
       if (forge->version >= 0) version = (uint32_t)forge->version;
       req_features = forge->req;

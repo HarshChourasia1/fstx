@@ -1,4 +1,4 @@
-# fstx format 1.0 golden files (WS8): files written by fstx 1.0 and 0.7.0 that every later fstx must read the
+# fstx format 1.0 golden files (WS8): files written by fstx 1.0 that every later fstx must read the
 # same way (fixtures/golden-1.0, made by make_golden.R there), and the spec's worked bit-packing example.
 # Synthetic data only.
 
@@ -96,15 +96,4 @@ test_that("the golden mix files hold all 294 legal mixes", {
             grid("string", c("plain", "fsst")), grid("dictionary", c("plain", "fsst"), "none"))
   expect_identical(length(want), 294L)
   expect_identical(setdiff(want, seen), character(0))
-})
-
-test_that("golden format 2 files upgrade to format 3 with the same content", {
-  skip_if_not(have_golden, "golden files not generated yet (fixtures/golden-1.0/make_golden.R)")
-  for (f in list.files(gdir, "^m7_.*\\.fstx$", full.names = TRUE)) {
-    q <- tempfile(fileext = ".fstx")
-    expect_identical(fstx_upgrade(f, dest = q), c(old = 2L, new = 3L), label = basename(f))
-    expect_identical(fstx_meta(q)$format_version, 3, label = basename(f))
-    expect_identical(read_fstx(q), read_fstx(f), label = basename(f))
-    unlink(q)
-  }
 })

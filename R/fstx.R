@@ -1,4 +1,4 @@
-# FST-X: a column-store file format for R data frames (milestone M3, file format 2).
+# FST-X: a column-store file format for R data frames (file format 3, "fstx format 1.0").
 
 #' @useDynLib fstx, .registration = TRUE
 NULL

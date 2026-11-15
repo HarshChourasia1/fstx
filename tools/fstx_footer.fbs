@@ -1,5 +1,5 @@
-// FST-X footer schema, format version 3 ("fstx format 1.0"; format 2 is the same without the last three Footer
-// fields). Rules for later versions: fields are only ever added at the end of a table; the Page struct never
+// FST-X footer schema, format version 3 ("fstx format 1.0"). Rules for later versions: fields are only ever
+// added at the end of a table; the Page struct never
 // changes (new per-page facts go into new lists in ColumnChunk, one entry per page).
 // Compiled once with flatc (google/flatbuffers v25.12.19, Windows release binary):
 //   flatc --cpp --scoped-enums -o ../src fstx_footer.fbs

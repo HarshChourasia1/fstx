@@ -6,10 +6,8 @@ against the code of fstx 1.0 (`src/core_reader.cpp`, `src/core_writer.cpp`, `src
 every writer and reader; "fstx checks" says what the fstx 1.0 reader does; anything else is description.
 Someone who has never seen the code should be able to write a reader from this document alone.
 
-fstx 1.0 writes format 3 and reads formats 2 and 3. Format 2 (fstx 0.2 to 0.7) is format 3 without the
-header feature bits, the tail version and the three footer feature fields; page bodies are the same. Format 1
-(fstx 0.1) is refused with a message that says so. `fstx_upgrade()` rewrites a format 2 file as format 3
-(section 9.4).
+fstx 1.0 reads and writes format 3 only. Files with format versions 1 and 2 (fstx 0.x development versions)
+are refused with a message that says so.
 
 ## 1. File layout
 
@@ -34,8 +32,8 @@ not depend on them; compaction drops them.
 | bytes | type | meaning |
 |---|---|---|
 | 0-3 | char[4] | `FSTX` |
-| 4-5 | u16 | format version: 3; 2 for a file kept in format 2 (rule 6, section 9) |
-| 6-7 | u16 | required feature bits 0-15 (section 5); 0 in format 2 |
+| 4-5 | u16 | format version: 3 |
+| 6-7 | u16 | required feature bits 0-15 (section 5) |
 | 8-11 | u32 | endian mark `0x01020304` (bytes `04 03 02 01`) |
 | 12-15 | u32 | 0; readers ignore it |
 | 16-23 | u64 | committed end while an append is running or was cut off, else 0 (section 9.3) |
@@ -52,10 +50,9 @@ fstx checks, in this order (the first failure decides the message):
 4. The header checksum matches; else corrupt.
 5. Committed end (bytes 16-23): when not 0 it must be at least 96 and at most the file size (else corrupt),
    and the file is then treated as ending there.
-6. Format version: 0 is corrupt; 1 is refused as too old ("read it with fstx 0.1.x and write it again");
-   above 3 is refused with "Update fstx".
-7. Header feature bits: in format 2 any bit set is corrupt; in format 3 a bit this reader does not know is
-   refused by number (section 5).
+6. Format version: 0 is corrupt; 1 and 2 are refused as written by fstx 0.x ("not supported by fstx 1.0 or
+   later"); above 3 is refused with "Update fstx".
+7. Header feature bits: a bit this reader does not know is refused by number (section 5).
 8. Tail (section 3), footer checksum, the FlatBuffers verifier, then the footer checks of section 4.8.
 
 Every refusal of something newer says "Update fstx"; every other failure says the file is corrupt.
@@ -67,11 +64,11 @@ Every refusal of something newer says "Update fstx"; every other failure says th
 | 0-7 | u64 | footer offset |
 | 8-15 | u64 | footer length |
 | 16-23 | u64 | XXH3-64 (seed 0) of the footer bytes |
-| 24-27 | u32 | format version; in format 3 it must equal header bytes 4-5 (format 2 readers ignore it) |
+| 24-27 | u32 | format version; must equal header bytes 4-5 |
 | 28-31 | char[4] | `FSTX` |
 
 The writer puts the footer on a 64-byte boundary, right before the tail. fstx checks: the end marker (else
-"truncated or incomplete"); in format 3, the tail version; footer offset at least 64 and a multiple of 8;
+"truncated or incomplete"); the tail version; footer offset at least 64 and a multiple of 8;
 the footer ends exactly where the tail starts; footer length at least 8 and below 2^31-1; then the footer
 checksum.
 
@@ -96,10 +93,10 @@ default (0, false, empty, or Balanced for `profile`).
 | 4 | row_groups | [RowGroup] | in row order; empty for a table with no rows |
 | 5 | table_attrs | [u8] | data-frame attributes, R serialization (rule 4, section 9); may be absent |
 | 6 | created_by | string | `fstx <version>` of the writer |
-| 7 | profile | enum u8 | 0 fast, 1 balanced (default), 2 small; informational. Format 3: 3-255 are read and reported as "unknown". Format 2: above 2 is corrupt |
-| 8 | required_features | u64 | format 3: bits a reader must know (section 5) |
-| 9 | optional_features | u64 | format 3: bits a reader may ignore |
-| 10 | feature_names | [string] | format 3: one name per set bit, required bits first, then optional, each in ascending bit order |
+| 7 | profile | enum u8 | 0 fast, 1 balanced (default), 2 small; informational. 3-255 are read and reported as "unknown" |
+| 8 | required_features | u64 | bits a reader must know (section 5) |
+| 9 | optional_features | u64 | bits a reader may ignore |
+| 10 | feature_names | [string] | one name per set bit, required bits first, then optional, each in ascending bit order |
 
 ### 4.2 Column
 
@@ -202,14 +199,13 @@ fast writes no codec).
 
 ### 4.8 Footer checks
 
-After the verifier, fstx checks, in this order: footer version equals the header; in format 2, none of the
-three feature fields is present; low 16 bits of required_features equal header bytes 6-7; no unknown
-required bit (section 5); profile (format 2: at most 2); row_group_size 1 to 2^31; at most 2^24 columns;
+After the verifier, fstx checks, in this order: footer version equals the header; low 16 bits of
+required_features equal header bytes 6-7; no unknown required bit (section 5); row_group_size 1 to 2^31; at most 2^24 columns;
 per column: name and time zone are valid UTF-8 without NUL (section 8), physical and logical type are known
 (4.6), the type combination is allowed (4.2); row_count at most 2^62; per row group and column: the rules of
 4.3 to 4.5 and of 4.6 for each page entry. Factor levels are checked only when used.
 
-## 5. Feature bits (format 3)
+## 5. Feature bits
 
 Bits 0-15 are for features that change how the header, tail or footer are read; they are also stored in
 header bytes 6-7 and checked before the footer is read, so a reader cannot name them. Bits 16-63 are for
@@ -237,7 +233,6 @@ Rules:
   bit. Names are ASCII letters, digits and `_`, at most 64 bytes. fstx does not check the names it reads;
   it only uses them in messages.
 - The low 16 bits of required_features must equal header bytes 6-7.
-- In format 2, a header with feature bits, or a footer with any of the three feature fields, is corrupt.
 - fstx 1.0 knows no feature bits: every file it writes has both fields 0 and no names.
 
 ## 6. Page bodies
@@ -506,11 +501,10 @@ Factor levels are not checked when a file is opened, to keep opening fast; they 
    that are not R may ignore both.
 5. A new encoding tag, codec, physical type or page kind needs a required feature bit, so an older reader
    names it instead of calling the file corrupt.
-6. Appends and page-copy compaction keep the file's own format version, profile (as stored, even one this
-   build does not know) and feature fields: a format 2 file stays format 2, so the fstx that wrote it can
-   still read it. A merging compaction (`fstx_compact(merge = TRUE)`) reads the table and writes a fresh
-   file in the current format (format 3 from fstx 1.0, also for a format 2 file), with no feature bits it
-   does not know, and with profile balanced when the stored profile is unknown.
+6. Compaction always writes format 3. Appends and page-copy compaction keep the file's profile (as stored,
+   even one this build does not know) and feature fields. A merging compaction (`fstx_compact(merge =
+   TRUE)`) reads the table and writes a fresh file, with no feature bits it does not know, and with profile
+   balanced when the stored profile is unknown.
 7. Writers write all text (names, levels, time zones, strings) as UTF-8. Readers must not rely on it: they
    check the text that section 8 lists and must not crash or misread a string that is not valid UTF-8.
 
@@ -538,12 +532,6 @@ first levels of the new rows' factor).
 
 Page-copy compaction (`fstx_compact()`) copies every page's stored bytes unchanged, checksum checked, into a
 fresh file: per row group, per column, the dictionary page first, then the data pages.
-
-### 9.4 Upgrading format 2 files
-
-`fstx_upgrade()` is page-copy compaction with the format version set to 3: header and tail say 3, the
-footer is written again with format_version 3 and no feature fields (format 2 files have none), and every
-page is copied unchanged. A format 3 file is left as it is (copied when the output is another path).
 
 ## 10. Where this document and fstx 1.0 differ
 

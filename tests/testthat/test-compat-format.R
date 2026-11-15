@@ -22,7 +22,7 @@ test_that("new files are format 3 and record the real package version", {
 test_that("fstx_features() reports what this build reads and writes", {
   f <- fstx_features()
   expect_identical(f$version, as.character(utils::packageVersion("fstx")))
-  expect_identical(f$format_read, c(2L, 3L))
+  expect_identical(f$format_read, 3L)
   expect_identical(f$format_write, 3L)
   expect_identical(f$features$bit, c(16:19, 63L))
   expect_identical(f$features$name, c("int64", "binary", "zstd_dict", "pcodec", "experimental"))
@@ -30,7 +30,6 @@ test_that("fstx_features() reports what this build reads and writes", {
   expect_identical(f$codecs$read, c(TRUE, TRUE, TRUE, FALSE, FALSE))
   expect_identical(f$codecs$write, c(TRUE, TRUE, TRUE, FALSE, FALSE))
   expect_identical(f$types$read, c(TRUE, TRUE, TRUE, TRUE, FALSE, FALSE))
-  expect_error(fstx_upgrade(tempfile()), "does not exist")
 })
 
 test_that("feature bits: unknown required bits are refused by name, optional ones ignored", {
@@ -62,11 +61,6 @@ test_that("feature bits: unknown required bits are refused by name, optional one
   # header and footer must agree on bits 0-15
   forge(p, q, required = 2L, hdr_flags = 0L)
   expect_error(read_fstx(q), "header and footer feature bits differ")
-  # format 2 files cannot hold feature fields
-  forge(p, q, version = 2L, required = 40L)
-  expect_error(read_fstx(q), "feature fields in a format 2 footer")
-  forge(p, q, version = 2L, hdr_flags = 1L)
-  expect_error(read_fstx(q), "feature bits in a format 2 file")
 })
 
 test_that("unknown optional bits: reading works, appends and page-copy compaction are refused", {
@@ -112,9 +106,6 @@ test_that("a profile from a newer fstx reads as 'unknown' and appends and compac
   fstx_compact(q, merge = TRUE)
   expect_identical(fstx_meta(q)$profile, "balanced")
   expect_identical(read_fstx(q), y)
-  # format 2 has no room for newer profiles: corrupt
-  forge(p, q, version = 2L, profile = 3L)
-  expect_error(fstx_meta(q), "unknown profile")
 })
 
 test_that("newer format versions and every reserved number get their own message", {
@@ -149,95 +140,30 @@ test_that("newer format versions and every reserved number get their own message
   expect_identical(read_fstx(q), read_fstx(p))
 })
 
-test_that("appends and compaction keep a format 2 file in format 2", {
+test_that("files from fstx 0.x (format versions 1 and 2) are refused by every entry point", {
   p <- tempfile(fileext = ".fstx")
   q <- tempfile(fileext = ".fstx")
-  on.exit(unlink(c(p, q)))
+  on.exit(unlink(c(p, q, paste0(q, ".fstx-compact"))))
   x <- small_df()
   write_fstx(x, p)
-  forge(p, q, version = 2L)
-  expect_identical(fstx_meta(q)$format_version, 2)
-  expect_identical(read_fstx(q), x)
-  write_fstx(x, q, append = TRUE)
-  expect_identical(fstx_meta(q)$format_version, 2)
-  fstx_compact(q)
-  expect_identical(fstx_meta(q)$format_version, 2)
-  y <- rbind(x, x)
-  expect_identical(read_fstx(q), y)
-  write_fstx(x, p, append = TRUE)
-  expect_identical(fstx_meta(p)$format_version, 3)
-})
-
-test_that("fstx_upgrade() moves a format 2 file to format 3 by copying its pages", {
-  p <- tempfile(fileext = ".fstx")
-  q <- tempfile(fileext = ".fstx")
-  r <- tempfile(fileext = ".fstx")
-  on.exit(unlink(c(p, q, r)))
-  x <- small_df()
-  write_fstx(x, p, profile = "small")
-  forge(p, q, version = 2L)
-  write_fstx(x, q, append = TRUE)  # old footer and tail stay in the file until a rewrite
-  expect_identical(fstx_meta(q)$format_version, 2)
-  pg2 <- fstx_pages(q)
-  size2 <- file.size(q)
-  # to another path: the source is left alone
-  expect_identical(fstx_upgrade(q, dest = r), c(old = 2L, new = 3L))
-  expect_identical(fstx_meta(q)$format_version, 2)
-  expect_identical(file.size(q), size2)
-  m <- fstx_meta(r)
-  expect_identical(m$format_version, 3)
-  expect_identical(m$profile, "small")
-  expect_identical(read_fstx(r), rbind(x, x))
-  pg3 <- fstx_pages(r)
-  keep <- setdiff(names(pg2), "offset")
-  expect_identical(pg3[keep], pg2[keep])  # the same pages, unchanged
-  expect_lt(file.size(r), size2)
-  # in place
-  expect_identical(fstx_upgrade(q), c(old = 2L, new = 3L))
-  expect_identical(fstx_meta(q)$format_version, 3)
-  expect_identical(unname(tools::md5sum(q)), unname(tools::md5sum(r)))
-  expect_false(file.exists(paste0(q, ".fstx-upgrade")))
-  # format 3 already: nothing is written
-  before <- readBin(q, "raw", file.size(q))
-  expect_identical(fstx_upgrade(q), c(old = 3L, new = 3L))
-  expect_identical(readBin(q, "raw", file.size(q)), before)
-  # the upgraded file is an ordinary format 3 file
-  write_fstx(x, q, append = TRUE)
-  expect_identical(fstx_meta(q)$format_version, 3)
-  expect_identical(read_fstx(q), rbind(x, x, x))
-})
-
-test_that("fstx_upgrade() will not replace a dest that a lazy result still maps", {
-  p <- tempfile(fileext = ".fstx")
-  q <- tempfile(fileext = ".fstx")
-  on.exit(unlink(c(p, q)))
-  write_fstx(small_df(), p)
-  write_fstx(data.frame(a = 1:5), q)
-  before <- readBin(q, "raw", file.size(q))
-  z <- read_fstx(q, lazy = TRUE)
-  expect_error(fstx_upgrade(p, dest = q), "open in this R session")  # format 3 source, copy to dest
-  expect_identical(readBin(q, "raw", file.size(q)), before)
-  expect_false(file.exists(paste0(q, ".fstx-upgrade")))
-  rm(z)
-  gc()
-  expect_identical(fstx_upgrade(p, dest = q), c(old = 3L, new = 3L))
-  expect_identical(readBin(q, "raw", file.size(q)), readBin(p, "raw", file.size(p)))
-  expect_false(file.exists(paste0(q, ".fstx-upgrade")))
-})
-
-test_that("fstx_upgrade() leaves the file alone when it cannot read it", {
-  p <- tempfile(fileext = ".fstx")
-  q <- tempfile(fileext = ".fstx")
-  on.exit(unlink(c(p, q)))
-  write_fstx(small_df(), p)
-  forge(p, q, version = 2L)
-  b <- readBin(q, "raw", file.size(q))
-  b[length(b) - 40L] <- as.raw(bitwXor(as.integer(b[length(b) - 40L]), 1L))  # inside the footer
-  writeBin(b, q)
-  expect_error(fstx_upgrade(q), "fstx_upgrade: .*checksum")
-  expect_identical(readBin(q, "raw", file.size(q)), b)
-  expect_false(file.exists(paste0(q, ".fstx-upgrade")))
-  expect_error(fstx_upgrade(test_path("fixtures", "m1_format1.fstx"), dest = tempfile()), "older FST-X version")
+  msg <- "written by fstx 0\\.x \\(file format 2\\); not supported by fstx 1\\.0 or later"
+  # a plain format 2 file, and the format 2 forms the fuzz seeds use (newer profile, feature fields, header bits)
+  for (k in list(list(), list(profile = 3L), list(required = 40L), list(hdr_flags = 1L))) {
+    do.call(forge, c(list(p, q, version = 2L), k))
+    lab <- paste(c("version 2", names(k)), collapse = " ")
+    before <- readBin(q, "raw", file.size(q))
+    expect_error(fstx_meta(q), msg, label = lab)
+    expect_error(fstx_pages(q), msg, label = lab)
+    expect_error(read_fstx(q), msg, label = lab)
+    expect_error(read_fstx(q, lazy = TRUE), msg, label = lab)
+    expect_error(fstx_which(q, id > 5), msg, label = lab)
+    expect_error(write_fstx(x, q, append = TRUE), msg, label = lab)
+    expect_error(fstx_compact(q), msg, label = lab)
+    expect_error(fstx_compact(q, merge = TRUE), msg, label = lab)
+    expect_identical(readBin(q, "raw", file.size(q)), before, label = lab)
+  }
+  m1 <- test_path("fixtures", "m1_format1.fstx")
+  expect_error(read_fstx(m1), "written by fstx 0\\.x \\(file format 1\\); not supported by fstx 1\\.0 or later")
 })
 
 test_that("the writer refuses column names and time zones that are not UTF-8 text", {

@@ -19,7 +19,6 @@ Main functions:
   \item \code{\link{fstx_which}} and \code{\link{fstx_explain}} run a filter and show how it is served.
   \item \code{\link{fstx_compact}} removes what appends leave behind.
   \item \code{\link{fstx_arrow_stream}} reads a file as an Arrow stream.
-  \item \code{\link{fstx_upgrade}} rewrites a file written by fstx 0.7 in the current format.
   \item \code{\link{fstx_features}} lists what this build can read and write.
   \item \code{\link{fstx_simd}} shows or chooses the SIMD instruction set of the decoder.
 }
@@ -45,12 +44,10 @@ behind, and \code{merge = TRUE} also merges small row groups into full ones.
 \strong{Arrow.} \code{fstx_arrow_stream()} hands the data to Arrow-based tools without making R
 strings; see its help page.
 
-\strong{File format and older files.} New files are written in fstx format 1.0 (format version 3 inside
-the file). Its specification ships with the package:
-\code{system.file("spec", "fstx-format-1.0.md", package = "fstx")}. Files written by fstx 0.7 (format 2)
-are read as they are; appends and the default \code{fstx_compact()} keep them in format 2, so fstx 0.7 can
-still read them, while \code{fstx_compact(merge = TRUE)} and \code{\link{fstx_upgrade}} write format 3.
-A file from a later fstx that needs something this version does not know is refused with a message that
+\strong{File format.} Files are written in fstx format 1.0 (format version 3 inside the file). Its
+specification ships with the package:
+\code{system.file("spec", "fstx-format-1.0.md", package = "fstx")}. Files from fstx 0.x development
+versions are not read. A file from a later fstx that needs something this version does not know is refused with a message that
 names it and ends "Update fstx".
 }
 \section{Options}{

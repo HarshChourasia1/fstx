@@ -49,8 +49,8 @@ read_fstx(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads()
     \code{NA} are dropped, as \code{subset()} does. Applied within \code{from} / \code{to}.}
 }
 \details{
-Reads files in fstx format 1.0 (version 3) and files written by fstx 0.7 (format 2). A file written by a
-later fstx that uses something this version does not know (a column type, codec or file feature) is refused
+Reads files in fstx format 1.0 (format version 3); files from fstx 0.x development versions are
+refused. A file written by a later fstx that uses something this version does not know (a column type, codec or file feature) is refused
 with a message that names it and ends "Update fstx", rather than reported as damaged. A damaged file gives
 an R error; with \code{verify = TRUE} (the default) every page checksum is checked as well.
 }

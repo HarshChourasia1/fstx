@@ -15,7 +15,6 @@ api_snapshot <- list(
                    threads = "fstx_hw_threads()"),
   fstx_which = c(path = "", where = "", from = "1", to = "NULL", threads = "fstx_hw_threads()"),
   fstx_features = character(),
-  fstx_upgrade = c(path = "", dest = "NULL"),
   fstx_arrow_stream = c(path = "", columns = "NULL", from = "1", to = "NULL", where = "NULL",
                         threads = "fstx_hw_threads()", batch_rows = "NULL")
 )

@@ -133,24 +133,23 @@ void open_file(fstx_file& F, const std::string& path) {
   }
   F.size = size;
   if (F.version == 0) fail(FSTX_ERR_CORRUPT, "'%s' has a corrupt header (format version 0)", path.c_str());
-  if (F.version < kFormatOldest)
+  if (F.version < kFormatVersion)
     fail(FSTX_ERR_FORMAT,
-         "'%s' was written by an older FST-X version (file format %u); this version reads formats %u and %u. "
-         "Read it with fstx 0.1.x and write it again.",
-         path.c_str(), F.version, kFormatOldest, kFormatVersion);
+         "'%s' was written by fstx 0.x (file format %u); not supported by fstx 1.0 or later, which read file "
+         "format %u only. Read it with the fstx 0.x that wrote it and write it again.",
+         path.c_str(), F.version, kFormatVersion);
   if (F.version > kFormatVersion)
     fail(FSTX_ERR_FORMAT, "'%s' uses FSTX format version %u; this reader supports up to %u. Update fstx.",
          path.c_str(), F.version, kFormatVersion);
-  // Header bytes 6..7: required feature bits 0..15, checked before the footer is read (always 0 in format 2).
+  // Header bytes 6..7: required feature bits 0..15, checked before the footer is read.
   const uint16_t hflags = get_u16(d + 6);
-  if (F.version == 2 && hflags) fail(FSTX_ERR_CORRUPT, "'%s' has a corrupt header (feature bits in a format 2 file)", path.c_str());
   for (int b = 0; b < 16; ++b)
     if ((hflags >> b & 1u) && !(features_known() >> b & 1u)) refuse_feature(path, b, nullptr);
 
   const uint8_t* tail = d + size - kTailSize;
   if (std::memcmp(tail + 28, "FSTX", 4) != 0)
     fail(FSTX_ERR_CORRUPT, "'%s' is truncated or incomplete (end marker missing)", path.c_str());
-  if (F.version >= 3 && get_u32(tail + 24) != F.version)
+  if (get_u32(tail + 24) != F.version)
     fail(FSTX_ERR_CORRUPT, "'%s' has a corrupt tail (format version)", path.c_str());
   const uint64_t foff = get_u64(tail), flen = get_u64(tail + 8);
   if (foff < kDataStart || foff % 8 != 0 || foff > size - kTailSize || flen != size - kTailSize - foff || flen < 8 ||
@@ -168,16 +167,13 @@ void open_file(fstx_file& F, const std::string& path) {
   F.footer_off = foff;
   const fb::Footer* ft = F.footer;
   if (ft->format_version() != F.version) fail(FSTX_ERR_CORRUPT, "'%s': header and footer versions differ", path.c_str());
-  // ---- feature bits (format 3): unknown required bits are refused, unknown optional bits ignored
+  // ---- feature bits: unknown required bits are refused, unknown optional bits ignored
   const uint64_t req = ft->required_features();
-  if (F.version == 2 && (req || ft->optional_features() || ft->feature_names()))
-    fail(FSTX_ERR_CORRUPT, "'%s' is corrupt (feature fields in a format 2 footer)", path.c_str());
   if ((req & kFeatHeaderMask) != hflags) fail(FSTX_ERR_CORRUPT, "'%s': header and footer feature bits differ", path.c_str());
   for (int b = 0; b < 64; ++b)
     if ((req >> b & 1u) && !(features_known() >> b & 1u)) refuse_feature(path, b, ft);
   F.profile = (int)ft->profile();
-  // format 3: a profile above 2 came from a newer fstx; it is informational, so it is read as "unknown"
-  if (F.version == 2 && F.profile > enc::P_SMALL) fail(FSTX_ERR_CORRUPT, "'%s' has an unknown profile", path.c_str());
+  // a profile above 2 came from a newer fstx; it is informational, so it is read as "unknown"
   const uint64_t rg_size = ft->row_group_size();
   if (rg_size == 0 || rg_size > kMaxRowGroup) fail(FSTX_ERR_CORRUPT, "'%s' has an invalid row group size", path.c_str());
 

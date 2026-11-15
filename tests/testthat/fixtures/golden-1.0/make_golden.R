@@ -1,6 +1,6 @@
 # Makes the fstx format 1.0 golden files (WS8). Synthetic data only.
 #
-#   Rscript make_golden.R <out dir> <library with fstx 1.0> <library with fstx 0.7.0>
+#   Rscript make_golden.R <out dir> <library with fstx 1.0>
 #
 # Run once, from the released 1.0 code, with <out dir> = this folder; commit the .fstx files, files.csv and
 # expected.csv. test-compat-golden.R then checks that every later fstx reads them the same way. The files:
@@ -12,17 +12,15 @@
 #   types.fstx          every column type and attribute fstx stores, with stored row names
 #   empty.fstx, zero_cols.fstx, zero_cols_rows.fstx   no rows; no columns; no columns but rows
 #   nonascii.fstx       non-ASCII column names, strings and factor levels
-#   m7_*.fstx           format 2 files written by fstx 0.7.0 (in a separate R process)
 #   reserved_*.fstx     one file per reserved number or unknown feature, made with fstx:::.fstx_forge
 # files.csv: per file its size, MD5, whether it reads or is refused (with the message), format version,
 # profile, rows, columns and table attributes. expected.csv: per column (canon.R).
 # The whole set must stay under 300 KB.
 
 args <- commandArgs(TRUE)
-if (length(args) < 3L) stop("usage: Rscript make_golden.R <out dir> <fstx 1.0 library> <fstx 0.7.0 library>")
+if (length(args) < 2L) stop("usage: Rscript make_golden.R <out dir> <fstx 1.0 library>")
 out <- normalizePath(args[1], winslash = "/", mustWork = FALSE)
 lib1 <- normalizePath(args[2], winslash = "/")
-lib7 <- normalizePath(args[3], winslash = "/")
 me <- sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1])
 source(file.path(dirname(normalizePath(me)), "canon.R"))
 suppressPackageStartupMessages(library(fstx, lib.loc = lib1))
@@ -169,42 +167,6 @@ invisible(file.copy(gpath("appended.fstx"), gpath("compacted.fstx")))
 fstx_compact(gpath("compacted.fstx"))
 add_read("compacted.fstx", x)
 stopifnot(file.size(gpath("compacted.fstx")) < file.size(gpath("appended.fstx")))
-
-# ---------------------------------------------------------------- format 2 files from fstx 0.7.0
-m7 <- list(
-  m7_basic = list(x = types_df(150L)[c("int", "dbl", "lgl", "chr", "fac", "date", "ct")], profile = "balanced"),
-  m7_small = list(x = piece("codes", FALSE), profile = "small"),
-  m7_appended = list(x = ap, profile = "fast")
-)
-attr(m7$m7_basic$x, "note") <- NULL
-rds <- normalizePath(tempfile(fileext = ".rds"), winslash = "/", mustWork = FALSE)
-saveRDS(m7, rds)
-child <- tempfile(fileext = ".R")
-writeLines(c(
-  sprintf('suppressPackageStartupMessages(library(fstx, lib.loc = "%s"))', lib7),
-  'cat("writer", as.character(packageVersion("fstx")), "\\n")',
-  sprintf('m7 <- readRDS("%s"); out <- "%s"', rds, out),
-  'for (nm in names(m7)) { f <- file.path(out, paste0(nm, ".fstx")); x <- m7[[nm]]$x',
-  '  if (is.data.frame(x)) write_fstx(x, f, profile = m7[[nm]]$profile, threads = 1L) else',
-  '    for (k in seq_along(x)) write_fstx(x[[k]], f, profile = m7[[nm]]$profile, threads = 1L, append = k > 1L) }',
-  # 0.7.0 must refuse a format 3 file with its own "Update fstx" message
-  sprintf('e <- tryCatch({ read_fstx("%s"); "read" }, error = function(e) conditionMessage(e)); cat("M7REFUSES", e, "\\n")',
-          gpath("compacted.fstx"))
-), child)
-rs <- file.path(R.home("bin"), if (.Platform$OS.type == "windows") "Rscript.exe" else "Rscript")
-cat(system2(rs, child, stdout = TRUE, stderr = TRUE), sep = "\n")
-unlink(c(rds, child))
-for (nm in names(m7)) {
-  x <- m7[[nm]]$x
-  if (!is.data.frame(x)) {
-    x <- do.call(rbind, x)
-    rownames(x) <- NULL
-  }
-  f <- paste0(nm, ".fstx")
-  if (!file.exists(gpath(f))) stop("fstx 0.7.0 did not write ", f)
-  if (fstx_meta(gpath(f))$format_version != 2) stop(f, " is not format 2")
-  add_read(f, x)
-}
 
 # ---------------------------------------------------------------- reserved numbers and unknown features
 base <- data.frame(id = 1:3, v = c(0.5, 1, 1.5), s = c("a", "b", "c"), stringsAsFactors = FALSE)

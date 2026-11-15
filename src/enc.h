@@ -1,4 +1,4 @@
-// FST-X encodings (file format 2). Clean-room code written from the published ideas (FastLanes-style
+// FST-X encodings (file format 3). Clean-room code written from the published ideas (FastLanes-style
 // 1,024-value vectors, frame-of-reference, delta, run-length, dictionary, ALP, ALP-RD, byte-split); FSST is
 // the vendored cwida library. Plain loops only, no SIMD intrinsics. MIT licence. No R headers.
 //

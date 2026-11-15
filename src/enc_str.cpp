@@ -1,4 +1,4 @@
-// FST-X string encodings (file format 2): row-group dictionaries (hashing the host's string pointers),
+// FST-X string encodings (file format 3): row-group dictionaries (hashing the host's string pointers),
 // FSST pages (vendored cwida/fsst, one symbol table per column chunk, stored in every page) and plain pages
 // (lengths through the integer chain, then the bytes). MIT licence. No R headers.
 #include <algorithm>

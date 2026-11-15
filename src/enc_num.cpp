@@ -1,4 +1,4 @@
-// FST-X encodings for fixed-width values (file format 2).
+// FST-X encodings for fixed-width values (file format 3).
 // Integers (int32, and int64 inside ALP / ALP-RD / double dictionaries): CONST, FOR, DELTA, RLE, DICT,
 // SPLIT, PLAIN. Doubles: CONST, ALP, ALP-RD, DICT, SPLIT, PLAIN (the non-ALP ones work on the bit patterns).
 // Bit-packing works on 1,024-value vectors in a lane-interleaved layout (lanes = 1024 / type bits), written

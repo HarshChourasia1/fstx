@@ -68,10 +68,6 @@ fstx_features_impl <- function(args) {
   .Call(`_fstx_fstx_features_impl`, args)
 }
 
-fstx_upgrade_impl <- function(args) {
-  .Call(`_fstx_fstx_upgrade_impl`, args)
-}
-
 fstx_arrow_stream_impl <- function(args) {
   .Call(`_fstx_fstx_arrow_stream_impl`, args)
 }

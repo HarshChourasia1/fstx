@@ -4,7 +4,7 @@
 //     dictionaries, keep_codec) x codec none / lz4 / zstd, with no NA, scattered NA (bitmap) or NA runs;
 //   - two bigger files with several row groups and pages;
 //   - forged files (fstx::forge_copy, the engine of fstx:::.fstx_forge): header bits, unknown required and optional
-//     feature bits with and without names, reserved bits 16-19 and 63, profile 3-255, format 2, reserved type,
+//     feature bits with and without names, reserved bits 16-19 and 63, profile 3-255, format 2 (must be refused), reserved type,
 //     logical type, codec, page kind, encoding tag and NA mode numbers;
 //   - an interrupted append (committed end in the header, junk after it), factor levels that are not UTF-8 or hold
 //     a NUL, an empty table.

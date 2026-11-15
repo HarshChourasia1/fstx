@@ -1,4 +1,4 @@
-# FST-X 1.0: what this build can read and write (WS1; WS8 adds the upgrade path).
+# FST-X 1.0: what this build can read and write (WS1).
 fstx_features <- function() {
   r <- fstx_features_impl(list())
   list(

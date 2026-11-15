@@ -1,8 +1,8 @@
 // fstx fuzz target "forge": the test-only forge (fstx::forge_copy, behind fstx:::.fstx_forge) as an input surface.
 // The control bytes give the forged fields (header bits, version, feature bits and names, profile, type, codec,
 // page kind, encoding tag, NA mode of the first page); the forged copy is then opened and read. Checks: whatever
-// the forge writes, the reader keeps the format rules (unknown required bit refused, format 2 without feature
-// fields, header and footer bits agree) and never crashes.
+// the forge writes, the reader keeps the format rules (only format 3 opens, unknown required bit refused, header
+// and footer bits agree) and never crashes.
 #include "core_file.h"
 #include "fuzz_common.h"
 
@@ -46,7 +46,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     const fz::Facts x = fz::facts_of(nb);
     if (!x.ok) fz::fail("opened a forged file whose footer does not verify");
     if (x.req & ~fstx::features_known()) fz::fail("opened a forged file with an unknown required bit");
-    if (x.version == 2 && (x.req || x.opt || x.n_names || x.profile > 2)) fz::fail("format 2 rule broken");
+    if (x.version != 3) fz::fail("opened a forged file that is not format 3");
     if ((fstx::get_u16(nb.data() + 6) & 0xffff) != (x.req & 0xffff)) fz::fail("header and footer bits differ");
     if (fz::table_small(f)) {
       fstx_file_info fi;

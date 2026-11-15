@@ -30,8 +30,7 @@ namespace fstx {
 #define FSTX_STR(x) FSTX_STR_(x)
 constexpr const char* kVersion = FSTX_STR(FSTX_VERSION);
 
-constexpr uint32_t kFormatVersion = 3;     // written ("fstx format 1.0"); format 2 (fstx 0.2-0.7) is still read
-constexpr uint32_t kFormatOldest = 2;      // format 1 (fstx 0.1) is refused
+constexpr uint32_t kFormatVersion = 3;     // read and written ("fstx format 1.0"); files of fstx 0.x are refused
 constexpr size_t kHeaderSize = 32;
 constexpr size_t kTailSize = 32;
 constexpr uint64_t kAlign = 64;           // every page (and the footer) starts on a 64-byte boundary
