@@ -16,12 +16,13 @@ exactly the same.
 }
 \details{
 fstx 1.0 reads format 2 files as they are, so upgrading is never needed to read one. Appends
-(\code{write_fstx(append = TRUE)}) and \code{fstx_compact()} keep a file's format, so a format 2 file stays
-readable by the fstx 0.7 that wrote it. \code{fstx_upgrade()} is the one step that moves it to format 3.
+(\code{write_fstx(append = TRUE)}) and page-copy compaction (\code{fstx_compact()}) keep a file's format, so a
+format 2 file stays readable by the fstx 0.7 that wrote it (\code{fstx_compact(merge = TRUE)} writes format 3). \code{fstx_upgrade()} is the one step that moves it to format 3.
 
 The new file is written next to the output path first and checked (it must open and describe the same table)
 before it replaces anything; if any step fails the original is left unchanged. A file that is already
-format 3 is not rewritten (with \code{dest}, it is copied there).
+format 3 is not rewritten (with \code{dest}, it is copied there, through the same temporary file). The
+output path must not be held open by a lazy \code{read_fstx()} result in this session.
 
 After the upgrade the file records this fstx as its writer; its profile, row groups, pages and attributes
 are kept.

@@ -207,6 +207,24 @@ test_that("fstx_upgrade() moves a format 2 file to format 3 by copying its pages
   expect_identical(read_fstx(q), rbind(x, x, x))
 })
 
+test_that("fstx_upgrade() will not replace a dest that a lazy result still maps", {
+  p <- tempfile(fileext = ".fstx")
+  q <- tempfile(fileext = ".fstx")
+  on.exit(unlink(c(p, q)))
+  write_fstx(small_df(), p)
+  write_fstx(data.frame(a = 1:5), q)
+  before <- readBin(q, "raw", file.size(q))
+  z <- read_fstx(q, lazy = TRUE)
+  expect_error(fstx_upgrade(p, dest = q), "open in this R session")  # format 3 source, copy to dest
+  expect_identical(readBin(q, "raw", file.size(q)), before)
+  expect_false(file.exists(paste0(q, ".fstx-upgrade")))
+  rm(z)
+  gc()
+  expect_identical(fstx_upgrade(p, dest = q), c(old = 3L, new = 3L))
+  expect_identical(readBin(q, "raw", file.size(q)), readBin(p, "raw", file.size(p)))
+  expect_false(file.exists(paste0(q, ".fstx-upgrade")))
+})
+
 test_that("fstx_upgrade() leaves the file alone when it cannot read it", {
   p <- tempfile(fileext = ".fstx")
   q <- tempfile(fileext = ".fstx")

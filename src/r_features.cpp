@@ -101,19 +101,22 @@ SEXP fstx_features_impl(SEXP args) {
 
 // fstx_upgrade(): page-copy compaction of a format 2 file into `tmp` with the format version set to 3. Pages are
 // copied unchanged (checksums checked); format 2 files have no feature fields, so the new footer has none.
-// Returns the source file's format version (nothing is written when it is already 3).
+// Returns the source file's format version (nothing is written when it is already 3). Refuses when `out`, the
+// file the result will replace, is still memory-mapped in this session.
 [[cpp11::register]]
 SEXP fstx_upgrade_impl(SEXP args) {
-  const std::string src = CHAR(STRING_ELT(arg(args, "path"), 0)), tmp = CHAR(STRING_ELT(arg(args, "tmp"), 0));
-  const bool in_place = Rf_asLogical(arg(args, "in_place")) == TRUE;
+  const std::string src = CHAR(STRING_ELT(arg(args, "path"), 0)), tmp = CHAR(STRING_ELT(arg(args, "tmp"), 0)),
+                    out = CHAR(STRING_ELT(arg(args, "out"), 0));
   std::string msg;
   int version = 0;
   try {
-    if (in_place && fstx::registry_has(fstx::file_id_of_path(src)))
+    // the output replaces an existing file (the source itself when upgrading in place): refuse one still mapped
+    const fstx::FileId oid = fstx::file_id_of_path(out);
+    if (oid.ok && fstx::registry_has(oid))
       fstx::fail(FSTX_ERR_IO,
-                 "cannot upgrade '%s': it is open in this R session, memory-mapped by a lazy read_fstx() result that "
+                 "cannot replace '%s': it is open in this R session, memory-mapped by a lazy read_fstx() result that "
                  "is still alive. Remove those objects (rm()) first",
-                 src.c_str());
+                 out.c_str());
     {
       fstx_file F;
       fstx::open_file(F, src);
