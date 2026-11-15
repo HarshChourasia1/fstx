@@ -62,34 +62,58 @@ const int32_t kNaInt = std::numeric_limits<int32_t>::min();
 // ALP / ALP-RD / FOR pages of noisy values give the codec nothing and used to cost a full pass each.
 constexpr size_t kProbeMin = 65536, kProbeSlice = 8192, kProbeSlices = 4;
 
-// Page statistics without branches and with 4 independent chains (the plain loops branched on every value). NaNs
-// fail every compare, so they never become min or max; a min or max of zero gets the sign of the first zero, as the
-// sequential loop gave. NA count: NaNs whose low word is 1954 (R's NA_real_).
+// Page statistics in 16-byte vectors (GCC / Clang vector extensions: SSE2 on x86-64, NEON on arm64), 8 values a step
+// in 4 independent chains; GCC's -O2 cost model did not vectorize the plain loops. Blends are bitwise (masks from the
+// compares). NaNs fail every compare, so they never become min or max; a min or max of zero gets the sign of the
+// first zero, as the sequential loop gave. NA count: NaNs whose low word is 1954 (R's NA_real_), counted in a second
+// pass only when the page has a NaN.
+typedef double vd2 __attribute__((vector_size(16)));
+typedef int64_t vl2 __attribute__((vector_size(16)));
+typedef int32_t vi4 __attribute__((vector_size(16)));
+inline vd2 vsel(vl2 m, vd2 a, vd2 b) { return (vd2)(((vl2)a & m) | ((vl2)b & ~m)); }
+inline vi4 vsel(vi4 m, vi4 a, vi4 b) { return (a & m) | (b & ~m); }
+
 void dbl_stats(const double* x, uint32_t n, double& mn, double& mx, uint32_t& na) {
   const double inf = std::numeric_limits<double>::infinity();
-  double a[4] = {inf, inf, inf, inf}, b[4] = {-inf, -inf, -inf, -inf};
-  uint32_t c[4] = {0, 0, 0, 0};
+  vd2 a[4], b[4];
+  vl2 c[4];
+  for (int k = 0; k < 4; ++k) {
+    a[k] = vd2{inf, inf};
+    b[k] = vd2{-inf, -inf};
+    c[k] = vl2{0, 0};
+  }
   uint32_t i = 0;
-  for (; i + 4 <= n; i += 4)
+  for (; i + 8 <= n; i += 8)
     for (int k = 0; k < 4; ++k) {
-      const double v = x[i + k];
-      uint64_t bits;
-      std::memcpy(&bits, &v, 8);
-      a[k] = v < a[k] ? v : a[k];
-      b[k] = v > b[k] ? v : b[k];
-      c[k] += (v != v) & ((uint32_t)bits == 1954u);
+      vd2 v;
+      std::memcpy(&v, x + i + 2 * k, 16);
+      a[k] = vsel(v < a[k], v, a[k]);
+      b[k] = vsel(v > b[k], v, b[k]);
+      c[k] -= (vl2)(v != v);
     }
+  double sa = inf, sb = -inf;
+  int64_t nan = 0;
   for (; i < n; ++i) {
     const double v = x[i];
-    uint64_t bits;
-    std::memcpy(&bits, &v, 8);
-    a[0] = v < a[0] ? v : a[0];
-    b[0] = v > b[0] ? v : b[0];
-    c[0] += (v != v) & ((uint32_t)bits == 1954u);
+    sa = v < sa ? v : sa;
+    sb = v > sb ? v : sb;
+    nan += v != v;
   }
-  mn = std::min(std::min(a[0], a[1]), std::min(a[2], a[3]));
-  mx = std::max(std::max(b[0], b[1]), std::max(b[2], b[3]));
-  na = c[0] + c[1] + c[2] + c[3];
+  mn = sa;
+  mx = sb;
+  for (int k = 0; k < 4; ++k)
+    for (int l = 0; l < 2; ++l) {
+      mn = std::min(mn, a[k][l]);
+      mx = std::max(mx, b[k][l]);
+      nan += c[k][l];
+    }
+  na = 0;
+  if (nan)
+    for (uint32_t j = 0; j < n; ++j) {
+      uint64_t bits;
+      std::memcpy(&bits, &x[j], 8);
+      na += (x[j] != x[j]) & ((uint32_t)bits == 1954u);
+    }
   if (mn == 0 || mx == 0)
     for (uint32_t j = 0; j < n; ++j)
       if (x[j] == 0) {
@@ -100,33 +124,43 @@ void dbl_stats(const double* x, uint32_t n, double& mn, double& mx, uint32_t& na
 }
 
 void int_stats(const int32_t* x, uint32_t n, int32_t& mn, int32_t& mx, uint32_t& na) {
-  int32_t a[4], b[4];
-  uint32_t c[4] = {0, 0, 0, 0};
-  for (int k = 0; k < 4; ++k) {
-    a[k] = std::numeric_limits<int32_t>::max();
-    b[k] = std::numeric_limits<int32_t>::min();
+  const int32_t hi = std::numeric_limits<int32_t>::max(), lo = std::numeric_limits<int32_t>::min();
+  const vi4 vna = {kNaInt, kNaInt, kNaInt, kNaInt}, vhi = {hi, hi, hi, hi};
+  vi4 a[2] = {vhi, vhi}, b[2], c[2];
+  for (int k = 0; k < 2; ++k) {
+    b[k] = vi4{lo, lo, lo, lo};
+    c[k] = vi4{0, 0, 0, 0};
   }
   uint32_t i = 0;
-  for (; i + 4 <= n; i += 4)
-    for (int k = 0; k < 4; ++k) {
-      const int32_t v = x[i + k];
-      const bool isna = v == kNaInt;
-      const int32_t w = isna ? std::numeric_limits<int32_t>::max() : v;  // NA (the smallest int32) never the min
-      c[k] += isna;
-      a[k] = w < a[k] ? w : a[k];
-      b[k] = v > b[k] ? v : b[k];
+  for (; i + 8 <= n; i += 8)
+    for (int k = 0; k < 2; ++k) {
+      vi4 v;
+      std::memcpy(&v, x + i + 4 * k, 16);
+      const vi4 m = v == vna;
+      const vi4 w = vsel(m, vhi, v);  // NA (the smallest int32) never the min
+      c[k] -= m;
+      a[k] = vsel(w < a[k], w, a[k]);
+      b[k] = vsel(v > b[k], v, b[k]);
     }
+  int32_t sa = hi, sb = lo;
+  uint32_t t = 0;
   for (; i < n; ++i) {
     const int32_t v = x[i];
     const bool isna = v == kNaInt;
-    const int32_t w = isna ? std::numeric_limits<int32_t>::max() : v;
-    c[0] += isna;
-    a[0] = w < a[0] ? w : a[0];
-    b[0] = v > b[0] ? v : b[0];
+    const int32_t w = isna ? hi : v;
+    t += isna;
+    sa = w < sa ? w : sa;
+    sb = v > sb ? v : sb;
   }
-  na = c[0] + c[1] + c[2] + c[3];
-  mx = std::max(std::max(b[0], b[1]), std::max(b[2], b[3]));
-  mn = std::min(std::min(a[0], a[1]), std::min(a[2], a[3]));
+  mn = sa;
+  mx = sb;
+  for (int k = 0; k < 2; ++k)
+    for (int l = 0; l < 4; ++l) {
+      mn = std::min(mn, a[k][l]);
+      mx = std::max(mx, b[k][l]);
+      t += (uint32_t)c[k][l];
+    }
+  na = t;
 }
 
 }  // namespace

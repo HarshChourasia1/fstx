@@ -1250,6 +1250,45 @@ uint32_t encode_top_dbl(const double* x, uint32_t n, const EncCtx& cx0, Buf& out
   }
 }
 
+// Is there any NA (int) / NaN (double) at all? 16-byte vectors (GCC / Clang vector extensions), 64 values between
+// tests. Pages without one skip na_write's scans, which would write nothing for them.
+typedef double vd2 __attribute__((vector_size(16)));
+typedef int64_t vl2 __attribute__((vector_size(16)));
+typedef int32_t vi4 __attribute__((vector_size(16)));
+
+bool any_int_na(const int32_t* x, uint32_t n, int32_t na_value) {
+  const vi4 vna = {na_value, na_value, na_value, na_value};
+  uint32_t i = 0;
+  for (; i + 64 <= n; i += 64) {
+    vi4 acc = {0, 0, 0, 0};
+    for (uint32_t k = 0; k < 64; k += 4) {
+      vi4 v;
+      std::memcpy(&v, x + i + k, 16);
+      acc |= v == vna;
+    }
+    if (acc[0] | acc[1] | acc[2] | acc[3]) return true;
+  }
+  for (; i < n; ++i)
+    if (x[i] == na_value) return true;
+  return false;
+}
+
+bool any_nan(const double* x, uint32_t n) {
+  uint32_t i = 0;
+  for (; i + 64 <= n; i += 64) {
+    vl2 acc = {0, 0};
+    for (uint32_t k = 0; k < 64; k += 2) {
+      vd2 v;
+      std::memcpy(&v, x + i + k, 16);
+      acc |= (vl2)(v != v);
+    }
+    if (acc[0] | acc[1]) return true;
+  }
+  for (; i < n; ++i)
+    if (x[i] != x[i]) return true;
+  return false;
+}
+
 void write_header(Buf& out, int kind, uint32_t n) {
   uint8_t* h = out.grow(8);
   h[0] = (uint8_t)kind;
@@ -1289,7 +1328,7 @@ uint32_t encode_int_page(const int32_t* x, uint32_t n, int kind, int32_t na_valu
   uint32_t nna;
   auto isna = [na_value](int32_t v) { return v == na_value; };
   FSTX_PROF_BEGIN(prof_na, W_NA);
-  const int na = na_write(x, n, isna, out, nna);
+  const int na = any_int_na(x, n, na_value) ? na_write(x, n, isna, out, nna) : NA_NONE;
   out.v[1] = (uint8_t)na;
   std::vector<int32_t> filled;
   if (na) na_fill(x, n, isna, filled);
@@ -1315,7 +1354,7 @@ uint32_t encode_dbl_page(const double* x, uint32_t n, const EncCtx& cx, Buf& out
     return b == kNaRealBits;
   };
   FSTX_PROF_BEGIN(prof_na, W_NA);
-  const int na = na_write(x, n, isna, out, nna);
+  const int na = any_nan(x, n) ? na_write(x, n, isna, out, nna) : NA_NONE;  // R's NA is a NaN
   out.v[1] = (uint8_t)na;
   std::vector<double> filled;
   if (na) na_fill(x, n, isna, filled);
