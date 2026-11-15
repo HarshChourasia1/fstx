@@ -130,6 +130,7 @@ test_that("empty table, zero columns, columns, from / to and where", {
   expect_error(fstx_arrow_stream(p, columns = 99), "column positions")
   expect_error(fstx_arrow_stream(p, from = 4000), "beyond the last row")
   expect_error(fstx_arrow_stream(p, batch_rows = 0), "batch_rows")
+  expect_error(fstx_arrow_stream(p, where = nope > 1), "^fstx_arrow_stream: ")   # not "read_fstx:"
 })
 
 test_that("batches follow row groups and batch_rows; dictionaries come per row group", {
