@@ -179,7 +179,8 @@ SEXP str_complete(SEXP x) {
     // lazy column: decode the pages not made yet in parallel first
     if (fstx_colsrc_load(h->src, nullptr, h->threads, &err) != FSTX_OK) raise_err(&err);
   }
-  if (ci.all_dict && h->s_made == 0 && h->p0 == UINT32_MAX && ci.n_pages > 0) {
+  // only into a brand-new full vector: the stores skip the write barrier (an earlier fill may have stopped part way)
+  if (ci.all_dict && h->s_made == 0 && h->p0 == UINT32_MAX && ci.n_pages > 0 && st_full(x) == R_NilValue) {
     str_dict_fill(x, h, ci);
     return st_full(x);
   }
