@@ -651,25 +651,33 @@ int decode_blk_part(Rd& rd, T* out, uint32_t n, int depth, const uint8_t* vm) {
 // ---------------------------------------------------------------- NA section
 template <class T, class IsNa>
 int na_write(const T* x, uint32_t n, IsNa isna, Buf& out, uint32_t& nna) {
-  nna = 0;
-  for (uint32_t i = 0; i < n; ++i) nna += isna(x[i]) ? 1u : 0u;
-  if (!nna) return NA_NONE;
-  // runs alternate non-NA / NA, starting with a (possibly empty) non-NA run
-  std::vector<uint32_t> runs;
-  bool cur = false;
-  uint32_t len = 0;
+  // one pass, no branches: NA count and the number of NA / non-NA changes (runs = changes + 1)
+  uint32_t cnt = 0, chg = 0, prev = 0;
   for (uint32_t i = 0; i < n; ++i) {
-    const bool a = isna(x[i]);
-    if (a != cur) {
-      runs.push_back(len);
-      len = 0;
-      cur = a;
-    }
-    ++len;
+    const uint32_t a = isna(x[i]) ? 1u : 0u;
+    cnt += a;
+    chg += a ^ prev;
+    prev = a;
   }
-  runs.push_back(len);
-  const size_t bm = 8 * (((size_t)n + 63) / 64), rs = 8 + a8(4 * runs.size());
+  nna = cnt;
+  if (!nna) return NA_NONE;
+  const size_t bm = 8 * (((size_t)n + 63) / 64), rs = 8 + a8(4 * ((size_t)chg + 1));
   if (rs < bm) {
+    // runs alternate non-NA / NA, starting with a (possibly empty) non-NA run
+    std::vector<uint32_t> runs;
+    runs.reserve((size_t)chg + 1);
+    bool cur = false;
+    uint32_t len = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+      const bool a = isna(x[i]);
+      if (a != cur) {
+        runs.push_back(len);
+        len = 0;
+        cur = a;
+      }
+      ++len;
+    }
+    runs.push_back(len);
     size_t h = out.open(T_NA_RUNS);
     put_u32(out.grow(8), (uint32_t)runs.size());
     out.put(runs.data(), 4 * runs.size());
@@ -678,8 +686,12 @@ int na_write(const T* x, uint32_t n, IsNa isna, Buf& out, uint32_t& nna) {
   }
   size_t h = out.open(T_NA_BITMAP);
   uint64_t* w = (uint64_t*)out.grow(bm);
-  for (uint32_t i = 0; i < n; ++i)
-    if (isna(x[i])) w[i >> 6] |= 1ull << (i & 63);
+  for (uint32_t k = 0; (size_t)k * 64 < n; ++k) {  // whole words, no branches
+    const uint32_t i0 = k * 64, m = std::min<uint32_t>(64, n - i0);
+    uint64_t b = 0;
+    for (uint32_t j = 0; j < m; ++j) b |= (uint64_t)(isna(x[i0 + j]) ? 1u : 0u) << j;
+    w[k] = b;
+  }
   out.close(h);
   return NA_BITMAP;
 }
@@ -950,13 +962,14 @@ void alprd_search(const double* x, uint32_t n, RdParams& p) {
   const uint32_t ns = std::min<uint32_t>(n, 256);
   std::vector<uint64_t> s(ns);
   for (uint32_t k = 0; k < ns; ++k) std::memcpy(&s[k], &x[(uint64_t)k * n / ns], 8);
+  // sorted once: the top lb bits of sorted 64-bit words are sorted too, for every lb
+  std::sort(s.begin(), s.end());
   std::vector<uint16_t> left(ns);
   std::vector<std::pair<uint32_t, uint16_t>> cnt;
   size_t best = std::numeric_limits<size_t>::max();
   for (int lb = 1; lb <= 16; ++lb) {
     const int rb = 64 - lb;
     for (uint32_t k = 0; k < ns; ++k) left[k] = (uint16_t)(s[k] >> rb);
-    std::sort(left.begin(), left.end());
     cnt.clear();
     for (uint32_t k = 0; k < ns;) {
       uint32_t j = k;
@@ -964,10 +977,12 @@ void alprd_search(const double* x, uint32_t n, RdParams& p) {
       cnt.push_back({j - k, left[k]});
       k = j;
     }
-    std::sort(cnt.begin(), cnt.end(), [](const std::pair<uint32_t, uint16_t>& a, const std::pair<uint32_t, uint16_t>& b) {
-      return a.first != b.first ? a.first > b.first : a.second < b.second;
-    });
     const int nd = (int)std::min<size_t>(8, cnt.size());
+    // only the first nd count: the order is total (values are distinct), so this is the full sort's prefix
+    std::partial_sort(cnt.begin(), cnt.begin() + nd, cnt.end(),
+                      [](const std::pair<uint32_t, uint16_t>& a, const std::pair<uint32_t, uint16_t>& b) {
+                        return a.first != b.first ? a.first > b.first : a.second < b.second;
+                      });
     uint32_t covered = 0;
     for (int k = 0; k < nd; ++k) covered += cnt[(size_t)k].first;
     const size_t cost = (size_t)ns * (size_t)(rb + bits_of((uint64_t)(nd - 1))) + (size_t)(ns - covered) * 48;

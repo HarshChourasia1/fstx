@@ -19,7 +19,7 @@ static const char* kNames[N_EV] = {
     "r_factor_check", "r_copy", "r_release", "r_lazy_page",
     "w_total", "w_prep_str", "w_stats", "w_na", "w_int_top", "w_dbl_top", "w_choose", "w_alp_search",
     "w_alprd_search", "w_forplan", "w_pack", "w_delta_make", "w_alp_enc", "w_split", "w_dict_build", "w_zstd_est",
-    "w_str_enc", "w_compress", "w_hash", "w_put"};
+    "w_str_enc", "w_compress", "w_hash", "w_put", "w_fsst_table", "w_fsst_enc", "w_str_get", "w_str_choose"};
 
 const char* name(int e) { return (e >= 0 && e < N_EV) ? kNames[e] : ""; }
 
