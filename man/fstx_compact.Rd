@@ -1,6 +1,6 @@
 \name{fstx_compact}
 \alias{fstx_compact}
-\title{Compact an FST-X file}
+\title{Compact an fstx file}
 \usage{
 fstx_compact(path, merge = FALSE, threads = fstx_hw_threads())
 }

@@ -1,13 +1,12 @@
 \name{write_fstx}
 \alias{write_fstx}
-\title{Write a data frame to an FST-X file}
+\title{Write a data frame to an fstx file}
 \description{
-Writes a data frame to an FST-X file, or appends its rows to an existing one.
+Writes a data frame to an fstx file, or appends its rows to an existing one.
 }
 \usage{
 write_fstx(x, path, profile = c("balanced", "fast", "small"), compress = NULL,
-           level = NULL, threads = fstx_hw_threads(), append = FALSE, .encoding = NULL,
-           .crash = 0L)
+           level = NULL, threads = fstx_hw_threads(), append = FALSE)
 }
 \arguments{
   \item{x}{a data.frame (data.table and tibble keep their class).}
@@ -26,9 +25,6 @@ write_fstx(x, path, profile = c("balanced", "fast", "small"), compress = NULL,
     table readable. The file keeps its format version: a file written by fstx 0.7 stays format 2. A file
     with an optional feature this fstx does not know cannot be appended to ("Update fstx to change this
     file; reading works").}
-  \item{.encoding}{for tests only: force one encoding on every page where it applies, plus any of the flags
-    \code{"dict_codes"}, \code{"fsst_dict"} and \code{"keep_codec"}.}
-  \item{.crash}{for tests only.}
 }
 \details{
 Every page is encoded with the lightweight encoding that fits it best (bit-packing, frame-of-reference,
@@ -39,7 +35,7 @@ Matrix and list columns are not supported. Strings are stored as UTF-8.
 
 New files are written in fstx format 1.0 (format version 3 inside the file), which fstx 0.7 cannot read.
 }
-\value{\code{x}, invisibly.}
+\value{\code{x} as it was passed in, invisibly (also after an append that added factor levels).}
 \seealso{\code{\link{read_fstx}}, \code{\link{fstx_compact}}}
 \examples{
 p <- tempfile(fileext = ".fstx")

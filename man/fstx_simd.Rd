@@ -9,7 +9,7 @@ fstx_simd(target = NULL)
     \code{"sse4"}, \code{"avx2"}.}
 }
 \description{
-FST-X decodes with SIMD kernels (Google Highway, compiled for SSE2, SSE4 and AVX2 on x86-64, for
+fstx decodes with SIMD kernels (Google Highway, compiled for SSE2, SSE4 and AVX2 on x86-64, for
 Highway's own targets on ARM, and picked at run time) that give the same bytes as its plain loops. \code{fstx_simd()} returns the current state;
 \code{fstx_simd("scalar")} turns the kernels off, \code{fstx_simd("auto")} picks the best target the CPU
 runs, and \code{fstx_simd("avx2")} (or \code{"sse2"}, \code{"sse4"}) limits them to one target. The

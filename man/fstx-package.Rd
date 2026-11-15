@@ -4,7 +4,7 @@
 \docType{package}
 \title{Fast, Safe Column-Store Files for R Data Frames}
 \description{
-Reads and writes data frames in the FST-X column-store format. A file holds row groups of 64-byte
+Reads and writes data frames in the fstx column-store file format. A file holds row groups of 64-byte
 aligned pages; each page gets the lightweight encoding that fits it best (bit-packing,
 frame-of-reference, delta, run-length, dictionary, ALP for doubles, FSST for strings) under an optional
 LZ4 or ZSTD codec. A FlatBuffers footer keeps a page directory with per-page statistics, and every page

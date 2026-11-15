@@ -1,13 +1,13 @@
 \name{read_fstx}
 \alias{read_fstx}
-\title{Read an FST-X file}
+\title{Read an fstx file}
 \description{
-Reads all or part of an FST-X file into a data frame: chosen columns, a row window, a row list or
+Reads all or part of an fstx file into a data frame: chosen columns, a row window, a row list or
 the rows that match a filter, eagerly or lazily.
 }
 \usage{
 read_fstx(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads(),
-          verify = TRUE, lazy = FALSE, strings = c("auto", "eager", "deferred", "altrep"),
+          verify = TRUE, lazy = FALSE, strings = c("auto", "eager", "deferred"),
           as_factor = FALSE, rows = NULL, where = NULL)
 }
 \arguments{
@@ -16,7 +16,7 @@ read_fstx(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads()
   \item{from, to}{first and last row to read (1-based, inclusive); \code{to = NULL} reads to the end.}
   \item{threads}{number of threads (default: all cores; see \code{\link{fstx-package}} for limits).}
   \item{verify}{check every page's checksum (header and footer checksums are always checked). Lazy
-    columns check a page when it is decoded.}
+    columns check a page when it is decoded. Must be \code{TRUE} or \code{FALSE}.}
   \item{lazy}{\code{FALSE} (default) reads the data now. \code{TRUE} returns at once: every column is an
     ALTREP vector backed by the memory-mapped file and decoded a page at a time when it is used, so RAM
     covers only the columns (and pages) that are touched. The file stays open (and cannot be overwritten
@@ -27,10 +27,11 @@ read_fstx(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads()
     once every page is made). A column whose pages are all dictionary-coded (few distinct
     values) is made during the read and returned as a plain character vector, as that costs little.
     \code{saveRDS()} / \code{serialize()} write such columns in R's standard format, so the file reads
-    back without fstx. \code{"deferred"} (alias \code{"altrep"}) is the same, but keeps dictionary
+    back without fstx. \code{"deferred"} is the same, but keeps dictionary
     columns deferred too, and an unmade column is serialised in a compact form that needs fstx to read
     back (smaller and faster to write). \code{"eager"} makes every R string during the read and returns
-    plain character vectors.}
+    plain character vectors. The old name \code{"altrep"} still works as \code{"deferred"}, with a
+    warning, through fstx 1.x.}
   \item{as_factor}{\code{FALSE} (default), \code{TRUE} (every character column whose pages are all
     dictionary-coded becomes a factor, built from the dictionaries without hashing the rows), or column
     names (those columns become factors; ones that are not dictionary-coded go through \code{factor()}).

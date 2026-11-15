@@ -53,7 +53,7 @@
 }
 
 # ---------------------------------------------------------------- compact
-#' Compact an FST-X file
+#' Compact an fstx file
 #'
 #' Appends leave the old footers (and anything an interrupted append wrote) inside the file. fstx_compact()
 #' copies the pages into a fresh file without re-encoding them, then replaces the original. With merge = TRUE
@@ -66,13 +66,16 @@
 #' @param threads threads for merge = TRUE.
 #' @return a named vector: file size before and after, invisibly.
 fstx_compact <- function(path, merge = FALSE, threads = fstx_hw_threads()) {
-  path <- .path_arg(path)
-  if (!file.exists(path)) stop(sprintf("fstx_compact: '%s' does not exist", path), call. = FALSE)
+  fn <- "fstx_compact"
+  path <- .path_arg(path, fn = fn)
+  .flag(merge, "merge", fn)
+  threads <- .whole(threads, "threads", 1, fn)
+  if (!file.exists(path)) .err(fn, "'%s' does not exist", path)
   before <- file.size(path)
   tmp <- paste0(path, ".fstx-compact")
   on.exit(if (file.exists(tmp)) unlink(tmp), add = TRUE)
   run <- function() {
-    if (isTRUE(merge)) {
+    if (merge) {
       prof <- fstx_meta_impl(path)$profile
       if (prof == "unknown") prof <- "balanced"  # a newer fstx's profile: the rewrite is a fresh balanced file
       x <- read_fstx(path, threads = threads)
@@ -87,7 +90,7 @@ fstx_compact <- function(path, merge = FALSE, threads = fstx_hw_threads()) {
     gc()
     run()
   }
-  if (!file.rename(tmp, path)) stop(sprintf("fstx_compact: could not replace '%s'", path), call. = FALSE)
+  if (!file.rename(tmp, path)) .err(fn, "could not replace '%s'", path)
   invisible(c(before = before, after = file.size(path)))
 }
 
@@ -98,13 +101,13 @@ fstx_compact <- function(path, merge = FALSE, threads = fstx_hw_threads()) {
 
 # A `where` argument as an expression: a captured call, a formula (its right side) or a quoted call held in
 # a variable.
-.where_expr <- function(wq, env, cols) {
+.where_expr <- function(wq, env, cols, fn = "read_fstx") {
   if (is.call(wq) && identical(wq[[1L]], as.name("~"))) return(wq[[length(wq)]])
   if (is.name(wq) && !(as.character(wq) %in% cols)) {
     v <- eval(wq, env)
     if (inherits(v, "formula")) return(v[[length(v)]])
     if (is.call(v) || is.name(v)) return(v)
-    stop("read_fstx: 'where' must be a condition such as x > 5 & y == \"a\"", call. = FALSE)
+    .err(fn, "'where' must be a condition such as x > 5 & y == \"a\"")
   }
   wq
 }
@@ -112,13 +115,13 @@ fstx_compact <- function(path, merge = FALSE, threads = fstx_hw_threads()) {
 .is_col <- function(e, cols) is.name(e) && as.character(e) %in% cols
 
 # Splits a condition into simple terms joined by &: list(list(col, op, value)) with op one of .op_ids names.
-.where_terms <- function(e, cols, env) {
-  bad <- function(why) stop(sprintf("read_fstx: 'where' %s: %s", why, paste(deparse(e), collapse = " ")), call. = FALSE)
+.where_terms <- function(e, cols, env, fn = "read_fstx") {
+  bad <- function(why) .err(fn, "'where' %s: %s", why, paste(deparse(e), collapse = " "))
   if (.is_col(e, cols)) return(list(list(col = as.character(e), op = "==", value = TRUE)))
   if (!is.call(e)) bad("is not a condition on the file's columns")
   f <- paste(deparse(e[[1L]]), collapse = "")
-  if (f == "(") return(.where_terms(e[[2L]], cols, env))
-  if (f %in% c("&", "&&")) return(c(.where_terms(e[[2L]], cols, env), .where_terms(e[[3L]], cols, env)))
+  if (f == "(") return(.where_terms(e[[2L]], cols, env, fn))
+  if (f %in% c("&", "&&")) return(c(.where_terms(e[[2L]], cols, env, fn), .where_terms(e[[3L]], cols, env, fn)))
   if (f %in% c("|", "||", "xor")) bad("supports only & between conditions, not |")
   if (f == "is.na" && length(e) == 2L && .is_col(e[[2L]], cols))
     return(list(list(col = as.character(e[[2L]]), op = "isna", value = NULL)))
@@ -153,12 +156,12 @@ fstx_compact <- function(path, merge = FALSE, threads = fstx_hw_threads()) {
 }
 
 # One term -> one engine predicate, with the value converted to what the column stores.
-.term_pred <- function(t, proto) {
+.term_pred <- function(t, proto, fn = "read_fstx") {
   x <- proto[[t$col]]
   cl <- oldClass(x)
   op <- t$op
   v <- t$value
-  bad <- function(why) stop(sprintf("read_fstx: 'where' on column '%s': %s", t$col, why), call. = FALSE)
+  bad <- function(why) .err(fn, "'where' on column '%s': %s", t$col, why)
   p <- list(col = enc2utf8(t$col), op = .op_ids[[op]])
   if (op %in% c("isna", "notna")) return(p)
   cmp <- op %in% c("<", "<=", ">", ">=")
@@ -215,17 +218,17 @@ fstx_compact <- function(path, merge = FALSE, threads = fstx_hw_threads()) {
   c(p, list(value = num))
 }
 
-.where_preds <- function(path, wq, env) {
+.where_preds <- function(path, wq, env, fn = "read_fstx") {
   cols <- fstx_meta_impl(path)$name
-  e <- .where_expr(wq, env, cols)
-  terms <- .where_terms(e, cols, env)
+  e <- .where_expr(wq, env, cols, fn)
+  terms <- .where_terms(e, cols, env, fn)
   proto <- read_fstx(path, columns = unique(vapply(terms, `[[`, "", "col")), from = 1, to = 0, threads = 1L)
-  lapply(terms, .term_pred, proto = proto)
+  lapply(terms, .term_pred, proto = proto, fn = fn)
 }
 
-.window <- function(from, to) {
-  if (!is.numeric(from) || length(from) != 1L || is.na(from)) stop("'from' must be a single number", call. = FALSE)
-  if (!is.null(to) && (!is.numeric(to) || length(to) != 1L || is.na(to))) stop("'to' must be NULL or a single number", call. = FALSE)
+.window <- function(from, to, fn = NULL) {
+  if (!is.numeric(from) || length(from) != 1L || is.na(from)) .err(fn, "'from' must be a single number")
+  if (!is.null(to) && (!is.numeric(to) || length(to) != 1L || is.na(to))) .err(fn, "'to' must be NULL or a single number")
   c(as.double(from), if (is.null(to)) NA_real_ else as.double(to))
 }
 
@@ -239,20 +242,25 @@ fstx_compact <- function(path, merge = FALSE, threads = fstx_hw_threads()) {
 #'   (ruled out by min / max / NA count or the dictionary), pages_pruned (ruled out by other conditions),
 #'   pages_all (every row matches), pages_read (decoded), rows_window, rows_candidate, rows_matched.
 fstx_explain <- function(path, where, from = 1, to = NULL, exact = FALSE, threads = fstx_hw_threads()) {
-  path <- .path_arg(path)
-  w <- .window(from, to)
-  preds <- .where_preds(path, substitute(where), parent.frame())
-  r <- fstx_filter_impl(path, preds, w[1L], w[2L], .whole(threads, "threads", 1), TRUE, !isTRUE(exact))
+  fn <- "fstx_explain"
+  path <- .path_arg(path, fn = fn)
+  w <- .window(from, to, fn)
+  .flag(exact, "exact", fn)
+  threads <- .whole(threads, "threads", 1, fn)
+  preds <- .where_preds(path, substitute(where), parent.frame(), fn)
+  r <- fstx_filter_impl(path, preds, w[1L], w[2L], threads, TRUE, !exact)
   r$stats
 }
 
-#' Rows of an FST-X file that match a condition
+#' Rows of an fstx file that match a condition
 #'
 #' @inheritParams fstx_explain
 #' @return the matching row numbers (1-based, ascending, double).
 fstx_which <- function(path, where, from = 1, to = NULL, threads = fstx_hw_threads()) {
-  path <- .path_arg(path)
-  w <- .window(from, to)
-  preds <- .where_preds(path, substitute(where), parent.frame())
-  fstx_filter_impl(path, preds, w[1L], w[2L], .whole(threads, "threads", 1), TRUE, FALSE)$rows
+  fn <- "fstx_which"
+  path <- .path_arg(path, fn = fn)
+  w <- .window(from, to, fn)
+  threads <- .whole(threads, "threads", 1, fn)
+  preds <- .where_preds(path, substitute(where), parent.frame(), fn)
+  fstx_filter_impl(path, preds, w[1L], w[2L], threads, TRUE, FALSE)$rows
 }

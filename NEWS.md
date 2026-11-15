@@ -31,6 +31,26 @@
 
 * `fstx_features()` lists what this build can read and write: format versions, file feature names, codecs
   and column types.
+* `fstx_upgrade(path, dest = NULL)` rewrites a file written by fstx 0.7 in the current format; `dest` is
+  the output file (`NULL` replaces the file).
+
+## API changes (the R API is fixed from 1.0.0)
+
+* `write_fstx()` no longer has the test-only arguments `.encoding` and `.crash`. They were never meant for
+  users; a call that passes them now gets R's "unused argument" error.
+* `read_fstx(strings = "altrep")` is now called `strings = "deferred"`. The old name still works through
+  fstx 1.x but gives a warning.
+* `verify` in `read_fstx()`, `exact` in `fstx_explain()` and `merge` in `fstx_compact()` must be `TRUE` or
+  `FALSE`. Before, any other value (such as `1` or `NA`) quietly counted as `FALSE`, so `verify = 1` turned
+  checksum checks off.
+* Errors about arguments now start with the name of the function, for example
+  `read_fstx: 'threads' must be a single whole number >= 1`. `fstx_simd()` gives a plain message for a bad
+  `target`.
+* `write_fstx(append = TRUE)` returns `x` as it was passed in. Before, an append that added factor levels
+  returned the rows re-coded to the file's levels.
+* Help pages, the messages of the R functions and the `fstx_meta()` print-out say "fstx" instead of
+  "FST-X". The print-out now
+  starts with "fstx file:".
 
 # fstx 0.7.0
 
