@@ -298,7 +298,6 @@ test_that("a page that declares a 2 GB body is refused before the 2 GB is alloca
   # raw_len before decompressing, so a 4.7 KB file makes every read allocate (and zero) 2 GB per damaged page.
   # Remove this skip when open (LZ4: raw_len above what comp_len can expand to) or page_body (zstd: frame content
   # size differs from raw_len) refuses the page first.
-  skip("R6-1: raw_len memory bomb not fixed yet (WS4)")
   for (nm in c("bomb_raw_lz4", "bomb_raw_zstd")) {
     p <- craft_path(nm)
     expect_true(all(craft_outcomes(p)[-(1:2)] == "error"), info = nm)
@@ -311,7 +310,6 @@ test_that("an FSST string that ends in a lone escape is refused; an unused code 
   # decoder reads symbol[255] / len[255] (8 bytes past the stack decoder) for a string whose last code is the
   # escape 255, and decodes codes the symbol table does not have as junk. Without ASan this reads stack bytes
   # silently, so the test can only check the outcome once decode_str_page (enc_str.cpp) refuses the lone escape.
-  skip("R6-2: FSST lone escape / unused code not refused yet (WS3)")
   p <- craft_path("fsst_lone_escape0")
   expect_error(read_fstx(p, verify = FALSE), "corrupt")
   expect_error(read_fstx(p), "corrupt")
@@ -328,7 +326,6 @@ test_that("the forge on a file with row groups but no columns never crashes", {
   # takes rgs[0].chunks[0][0] when forging without checking that the file has a column, so it writes through a
   # null reference (a crash in R). The file (forge_no_columns, from the fuzzer) passes open; the forge is
   # test-only (fstx:::.fstx_forge). Remove this skip when compact_from checks for an empty chunk list.
-  skip("R6-4: forge on a file with no columns not guarded yet (WS3)")
   p <- craft_path("forge_no_columns")
   q <- tempfile(fileext = ".fstx")
   r <- tryCatch({ fstx:::.fstx_forge(p, q); "ok" }, error = function(e) "error")
