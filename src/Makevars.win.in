@@ -1,0 +1,49 @@
+# FST-X build. Vendored: zstd 1.5.7, lz4 1.10.0 (block API only), xxHash 0.8.3 (header-only, inlined),
+# FlatBuffers 25.12.19 runtime headers, FSST (cwida/fsst, scalar path only), Highway 1.4.0. The footer header
+# (fstx_footer_generated.h) is pre-generated.
+CXX_STD = CXX17
+PKG_CPPFLAGS = -I. -Ivendor/flatbuffers/include -Ivendor/fsst -Ivendor/highway -DZSTD_DISABLE_ASM \
+  -DHWY_DISABLED_TARGETS=25956824
+# 25956824 = Highway targets left out: x86 SSSE3 | AVX3 | AVX3_DL | AVX3_ZEN4 | AVX3_SPR | AVX10_2 (= 4568; SSE2,
+# SSE4, AVX2 kept) and ARM SVE | SVE2 | SVE_256 | SVE2_128 (the kernels keep arrays of vectors, which SVE's sizeless
+# types do not allow; ARM uses the NEON targets).
+# AVX3 (AVX-512) is off until it is tested on a CPU that has it (0.6.1).
+# @FSTX_CXXFLAGS@ is filled in by ./configure.win: -ffp-contract=off when the compiler takes it (no fused
+# multiply-add anywhere, so SIMD and plain code round the same and files are byte-identical on every CPU),
+# and, with GCC on x86-64 only, -Wa,-muse-unaligned-vector-move: GCC on Win64 cannot align the stack for
+# 32-byte vectors (GCC bug 54412); the assembler then writes unaligned moves, as fast on CPUs with AVX.
+PKG_CXXFLAGS = @FSTX_CXXFLAGS@
+
+
+
+OBJECTS = \
+  vendor/zstd/common/debug.o \
+  vendor/zstd/common/entropy_common.o \
+  vendor/zstd/common/error_private.o \
+  vendor/zstd/common/fse_decompress.o \
+  vendor/zstd/common/pool.o \
+  vendor/zstd/common/threading.o \
+  vendor/zstd/common/xxhash.o \
+  vendor/zstd/common/zstd_common.o \
+  vendor/zstd/compress/fse_compress.o \
+  vendor/zstd/compress/hist.o \
+  vendor/zstd/compress/huf_compress.o \
+  vendor/zstd/compress/zstd_compress.o \
+  vendor/zstd/compress/zstd_compress_literals.o \
+  vendor/zstd/compress/zstd_compress_sequences.o \
+  vendor/zstd/compress/zstd_compress_superblock.o \
+  vendor/zstd/compress/zstd_double_fast.o \
+  vendor/zstd/compress/zstd_fast.o \
+  vendor/zstd/compress/zstd_lazy.o \
+  vendor/zstd/compress/zstd_ldm.o \
+  vendor/zstd/compress/zstd_opt.o \
+  vendor/zstd/compress/zstd_preSplit.o \
+  vendor/zstd/compress/zstdmt_compress.o \
+  vendor/zstd/decompress/huf_decompress.o \
+  vendor/zstd/decompress/zstd_ddict.o \
+  vendor/zstd/decompress/zstd_decompress.o \
+  vendor/zstd/decompress/zstd_decompress_block.o \
+  vendor/lz4/lz4.o \
+  vendor/fsst/libfsst.o vendor/fsst/fsst_nosimd.o \
+  vendor/highway/hwy/targets.o vendor/highway/hwy/abort.o \
+  core_util.o enc_num.o enc_str.o core_writer.o core_reader.o core_filter.o core_colsrc.o prof.o simd_kernels.o kern_test.o r_glue.o r_lazy.o r_m4.o cpp11.o

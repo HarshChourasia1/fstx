@@ -1,0 +1,36 @@
+#!/bin/sh
+# FST-X: writes src/Makevars.win from src/Makevars.win.in. Adds -ffp-contract=off when the C++ compiler
+# accepts it (no fused multiply-add anywhere, so files are byte-identical on every CPU) and, with GCC on
+# x86-64 only, -Wa,-muse-unaligned-vector-move (GCC bug 54412: GCC cannot align the Win64 stack for
+# 32-byte vectors, so the assembler is told to write unaligned vector moves).
+CXX=`"${R_HOME}/bin${R_ARCH_BIN}/R.exe" CMD config CXX17`
+CXXFLAGS=`"${R_HOME}/bin${R_ARCH_BIN}/R.exe" CMD config CXX17FLAGS`
+FLAGS=""
+cat > conftest.cpp <<'EOT'
+int main() { return 0; }
+EOT
+printf "checking whether %s accepts -ffp-contract=off... " "${CXX}"
+if ${CXX} ${CXXFLAGS} -ffp-contract=off -c conftest.cpp -o conftest.o > /dev/null 2>&1; then
+  FLAGS="-ffp-contract=off"
+  echo "yes"
+else
+  echo "no"
+fi
+IS_GCC=no
+if ${CXX} --version 2>/dev/null | grep -qi clang; then :; else IS_GCC=yes; fi
+case "`${CXX} -dumpmachine 2>/dev/null`" in
+  x86_64*)
+    if test "${IS_GCC}" = yes; then
+      printf "checking whether the assembler accepts -muse-unaligned-vector-move... "
+      if ${CXX} ${CXXFLAGS} -Wa,-muse-unaligned-vector-move -c conftest.cpp -o conftest.o > /dev/null 2>&1; then
+        FLAGS="${FLAGS} -Wa,-muse-unaligned-vector-move"
+        echo "yes"
+      else
+        echo "no"
+      fi
+    fi
+    ;;
+esac
+rm -f conftest.cpp conftest.o
+sed "s|@FSTX_CXXFLAGS@|${FLAGS}|" src/Makevars.win.in > src/Makevars.win
+exit 0

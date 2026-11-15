@@ -1,0 +1,3 @@
+useDynLib(fstx, .registration = TRUE)
+export(write_fstx, read_fstx, fstx_meta, fstx_pages, fstx_simd, fstx_compact, fstx_explain, fstx_which)
+S3method(print, fstx_meta)

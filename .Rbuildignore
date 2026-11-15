@@ -1,0 +1,8 @@
+^\.github$
+^\.Rbuildignore$
+^src/Makevars$
+^src/Makevars\.win$
+^src/.*\.o$
+^src/.*\.dll$
+^src/.*\.so$
+DNSCache
