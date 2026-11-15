@@ -1,0 +1,9 @@
+# libFuzzer dictionary for the fstx targets (run_all.sh passes it with -dict)
+fsst_escape="\xff"
+fsst_escape_end="\xff\x01"
+fsst_two_escapes="\xff\xff"
+magic="FSTX"
+u32_max="\xff\xff\xff\x7f"
+u32_all="\xff\xff\xff\xff"
+u64_wrap="\xc0\xff\xff\xff\xff\xff\xff\xff"
+raw_bomb="\xf8\xff\xff\x7f"
