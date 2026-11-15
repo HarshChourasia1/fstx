@@ -1,4 +1,8 @@
 // FST-X core engine: errors, hashing, file I/O and the worker pool (the codecs are in codec_ext.cpp). No R headers.
+// 64-bit off_t for fseeko / ftruncate on 32-bit POSIX systems too (before any system header; no effect on 64-bit).
+#ifndef _FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+#endif
 #include "core_internal.h"
 
 #include <algorithm>
@@ -293,15 +297,26 @@ void MappedFile::open(const std::string& path) {
   id_.ok = true;
   size_ = (uint64_t)st.st_size;
   if (size_ == 0) return;
-  void* v = mmap(nullptr, size_, PROT_READ, MAP_SHARED, fd_, 0);
+  if (size_ != (uint64_t)(size_t)size_) fail(FSTX_ERR_IO, "'%s' is too large to map on this 32-bit system", path.c_str());
+  void* v = mmap(nullptr, (size_t)size_, PROT_READ, MAP_SHARED, fd_, 0);
   if (v == MAP_FAILED) fail(FSTX_ERR_IO, "cannot map '%s'", path.c_str());
   data_ = (const uint8_t*)v;
 }
 
+// madvise needs page-aligned addresses: 4 KB on x86, but 16 KB on Apple silicon and 4-64 KB on Linux ARM
+static uint64_t page_mask() {
+  static const uint64_t m = [] {
+    const long p = sysconf(_SC_PAGESIZE);
+    return (uint64_t)(p > 0 ? p : 4096) - 1;
+  }();
+  return m;
+}
+
 void MappedFile::release(uint64_t off, uint64_t n) const {
   if (!data_ || n == 0 || off >= size_) return;
-  const uint64_t a = off & ~(uint64_t)4095;
-  const uint64_t e = (std::min(size_, off + n) + 4095) & ~(uint64_t)4095;
+  const uint64_t pm = page_mask();
+  const uint64_t a = off & ~pm;
+  const uint64_t e = (std::min(size_, off + n) + pm) & ~pm;
   madvise((void*)(data_ + a), (size_t)(e - a), MADV_DONTNEED);  // read-only file map: refaults from the cache
 }
 
@@ -364,7 +379,12 @@ void OutFile::truncate(uint64_t size) {
 }
 void OutFile::sync() {
   if (!file_) return;
-  if (std::fflush(file_) != 0 || fsync(fileno(file_)) != 0) fail(FSTX_ERR_IO, "cannot flush '%s' to disk", path_.c_str());
+  if (std::fflush(file_) != 0) fail(FSTX_ERR_IO, "cannot flush '%s' to disk", path_.c_str());
+#ifdef F_FULLFSYNC
+  // macOS: fsync() leaves the data in the drive's cache; F_FULLFSYNC flushes it (fsync if the file system refuses)
+  if (fcntl(fileno(file_), F_FULLFSYNC) == 0) return;
+#endif
+  if (fsync(fileno(file_)) != 0) fail(FSTX_ERR_IO, "cannot flush '%s' to disk", path_.c_str());
 }
 #endif
 

@@ -1,4 +1,6 @@
-# R CMD check on GitHub Actions (r-lib/actions). Runs on push and pull request to main / master.
+# R CMD check on GitHub Actions (r-lib/actions), plus the engine test program (tools/coretest) without R.
+# Runs on push and pull request to main / master. Prepared only: not run yet (no GitHub access in 1.0).
+# R 4.4 is the oldest R the package declares; macos-latest and ubuntu-24.04-arm are ARM64 machines.
 on:
   push:
     branches: [main, master]
@@ -20,10 +22,12 @@ jobs:
       fail-fast: false
       matrix:
         config:
-          - {os: ubuntu-latest,  r: 'release'}
-          - {os: ubuntu-latest,  r: 'devel', http-user-agent: 'release'}
-          - {os: macos-latest,   r: 'release'}
-          - {os: windows-latest, r: 'release'}
+          - {os: ubuntu-latest,    r: 'release'}
+          - {os: ubuntu-latest,    r: 'devel', http-user-agent: 'release'}
+          - {os: ubuntu-latest,    r: '4.4'}
+          - {os: ubuntu-24.04-arm, r: 'release'}
+          - {os: macos-latest,     r: 'release'}
+          - {os: windows-latest,   r: 'release'}
 
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
@@ -51,3 +55,18 @@ jobs:
           upload-snapshots: true
           build_args: 'c("--no-manual", "--compact-vignettes=gs+qpdf")'
           args: 'c("--no-manual", "--as-cran")'
+
+  coretest:
+    runs-on: ${{ matrix.os }}
+    name: coretest ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run the engine test program
+        run: |
+          make -C tools/coretest -j4
+          mkdir -p "$RUNNER_TEMP/ct"
+          tools/coretest/build/native/coretest "$RUNNER_TEMP/ct"
