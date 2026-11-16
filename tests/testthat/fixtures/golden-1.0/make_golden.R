@@ -88,7 +88,7 @@ for (kind in names(mixes)) {
       x <- piece(kind, e == "const")
       enc <- if (e == "fsst_dict") c("plain", "fsst_dict") else c(e, mixes[[kind]]$flag)
       if (codec != "none") enc <- c(enc, "keep_codec")
-      write_fstx(x, gpath(f), compress = codec, .encoding = enc, threads = 1L, append = length(parts) > 0L)
+      fstx:::.write_fstx(x, gpath(f), compress = codec, .encoding = enc, threads = 1L, append = length(parts) > 0L)
       parts[[length(parts) + 1L]] <- x
     }
   }
