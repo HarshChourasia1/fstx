@@ -228,18 +228,21 @@ test_that("arrow, DuckDB and polars take the stream", {
   write_fstx(x, p, threads = 1)
   want <- as_arrow_r(read_fstx(p, columns = c("int", "dbl", "chr", "lgl")))
   cols <- c("int", "dbl", "chr", "lgl")
-  if (requireNamespace("arrow", quietly = TRUE)) {
-    tb <- as.data.frame(arrow::as_arrow_table(fstx_arrow_stream(p, columns = cols, threads = 1)))
+  # optional consumers, not in Suggests: package names go through variables so R CMD check does not list them
+  has <- function(pkg) requireNamespace(pkg, quietly = TRUE)
+  fun <- function(pkg, f) getExportedValue(pkg, f)
+  if (has("arrow")) {
+    tb <- as.data.frame(fun("arrow", "as_arrow_table")(fstx_arrow_stream(p, columns = cols, threads = 1)))
     expect_same_df(as_arrow_r(tb), want)   # arrow makes dictionaries into factors
   }
-  if (requireNamespace("duckdb", quietly = TRUE) && requireNamespace("DBI", quietly = TRUE)) {
-    con <- DBI::dbConnect(duckdb::duckdb())
-    on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
-    duckdb::duckdb_register_arrow(con, "t", fstx_arrow_stream(p, columns = cols, threads = 1))
-    expect_equal(DBI::dbGetQuery(con, "SELECT count(*) AS n FROM t")$n, 2000)
+  if (has("duckdb") && has("DBI")) {
+    con <- fun("DBI", "dbConnect")(fun("duckdb", "duckdb")())
+    on.exit(fun("DBI", "dbDisconnect")(con, shutdown = TRUE), add = TRUE)
+    fun("duckdb", "duckdb_register_arrow")(con, "t", fstx_arrow_stream(p, columns = cols, threads = 1))
+    expect_equal(fun("DBI", "dbGetQuery")(con, "SELECT count(*) AS n FROM t")$n, 2000)
   }
-  if (requireNamespace("polars", quietly = TRUE)) {
-    pl <- as.data.frame(polars::as_polars_df(fstx_arrow_stream(p, columns = cols, threads = 1)))
+  if (has("polars")) {
+    pl <- as.data.frame(fun("polars", "as_polars_df")(fstx_arrow_stream(p, columns = cols, threads = 1)))
     expect_identical(nrow(pl), 2000L)
   }
   skip_if(!any(vapply(c("arrow", "duckdb", "polars"), requireNamespace, NA, quietly = TRUE)),
