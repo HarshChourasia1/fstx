@@ -114,8 +114,13 @@ void check_child(const ArrowSchema* sc, const ArrowArray* a, int64_t len, const 
     const uint64_t r = rows[i];
     const int64_t k = a->offset + i;
     const bool present = vbit(a, i);
+    // Spec 6.2: on a page whose null_count is 0 the stream does not look for the missing-value pattern and passes
+    // it on as a value, while the whole read gives NA. Only a crafted file gets there; accepted for 1.0 (16 Nov),
+    // so a present value that is exactly the pattern where the whole read has NA is not a wrong result.
     if (f == "i") {
-      if (present != (col->i[r] != NA) || (present && ((const int32_t*)a->buffers[1])[k] != col->i[r]))
+      const int32_t x = ((const int32_t*)a->buffers[1])[k];
+      if (present && x == NA && col->i[r] == NA) continue;
+      if (present != (col->i[r] != NA) || (present && x != col->i[r]))
         fz::fail("int32 differs from the whole read");
     } else if (f == "b") {
       const bool bit = (((const uint8_t*)a->buffers[1])[k >> 3] >> (k & 7) & 1) != 0;
@@ -125,11 +130,13 @@ void check_child(const ArrowSchema* sc, const ArrowArray* a, int64_t len, const 
       uint64_t u;
       std::memcpy(&u, &col->d[r], 8);
       const bool na = std::isnan(col->d[r]) && (u & 0xFFFFFFFFull) == 1954;
+      if (present && na && fz::same_dbl(((const double*)a->buffers[1])[k], col->d[r])) continue;  // see above
       if (present == na || (present && !fz::same_dbl(((const double*)a->buffers[1])[k], col->d[r])))
         fz::fail("float64 differs from the whole read");
     } else if (f == "tdD") {
       const int32_t v = ((const int32_t*)a->buffers[1])[k];
       if (col->phys == FSTX_INT32) {
+        if (present && v == NA && col->i[r] == NA) continue;  // see above
         if (present != (col->i[r] != NA) || (present && v != col->i[r])) fz::fail("date32 differs (int Date)");
       } else {
         const double d = std::floor(col->d[r]);

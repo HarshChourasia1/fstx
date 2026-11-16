@@ -343,7 +343,8 @@ A writer must not store the missing-value pattern of a page kind (`0x80000000` o
 `0x7FF00000000007A2` on double pages, -1 on code pages) on a row that the missing-value block does not mark.
 If a file does, the value is still missing for an R reader, since R has no other meaning for that pattern,
 but null_count and the missing-value block do not show it; fstx does not check for it. Readers for other
-systems should treat such a value as missing too.
+systems should treat such a value as missing too. On a page whose null_count is 0, fstx's Arrow stream does not look for the pattern
+and passes it on as a value.
 
 A logical page stores 1 for TRUE and 0 for FALSE; fstx does not check that other values are absent.
 
