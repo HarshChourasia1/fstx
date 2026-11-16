@@ -586,9 +586,10 @@ the big-endian "canonical" byte order that the xxHash tools print. A header is 2
 pages can be any length from 8 bytes up, so a reader needs the whole algorithm, not only the long-input path.
 Pages are checked when read unless the reader turns checking off; page-copy compaction always checks them.
 
-Test vectors: the empty input gives `0x2D06800538D394C2` (to be confirmed). The 24 header bytes
+Test vectors: the empty input gives `0x2D06800538D394C2`. The 24 header bytes
 `46 53 54 58 03 00 00 00 04 03 02 01 00 00 00 00 00 00 00 00 00 00 00 00` (every fstx 1.0 file that is not
-in the middle of an append starts with them) give the 8 bytes found at offset 24 of any such file: `<fill in>`.
+in the middle of an append starts with them) give `0x435A43570CB4FC1E`, stored at offset 24 of any such file
+as the 8 bytes `1E FC B4 0C 57 43 5A 43`.
 
 ### 9.3 Appends
 

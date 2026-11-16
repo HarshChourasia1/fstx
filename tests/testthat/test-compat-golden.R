@@ -45,6 +45,14 @@ test_that("the spec's worked bit-packing example (section 6.4) is what fstx writ
   expect_identical(read_fstx(p)$x, x)
 })
 
+test_that("a fresh file starts with the header and checksum of spec section 9.2", {
+  p <- tempfile(fileext = ".fstx")
+  on.exit(unlink(p))
+  write_fstx(data.frame(x = 1:3), p, threads = 1L)
+  hdr <- as.raw(c(0x46, 0x53, 0x54, 0x58, 3, 0, 0, 0, 4, 3, 2, 1, rep(0, 12)))
+  expect_identical(readBin(p, "raw", 32), c(hdr, as.raw(c(0x1E, 0xFC, 0xB4, 0x0C, 0x57, 0x43, 0x5A, 0x43))))
+})
+
 test_that("golden files are unchanged and read as recorded", {
   skip_if_not(have_golden, "golden files not generated yet (fixtures/golden-1.0/make_golden.R)")
   fl <- read.csv(file.path(gdir, "files.csv"), stringsAsFactors = FALSE, fileEncoding = "UTF-8")
