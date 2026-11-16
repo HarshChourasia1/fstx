@@ -23,7 +23,8 @@ write_fstx(x, path, profile = c("balanced", "fast", "small"), compress = NULL,
     appended to. The profile defaults to the file's (a profile written by a later fstx: the new rows are
     encoded as \code{"balanced"} and the file keeps its stored value). An interrupted append leaves the old
     table readable. A file with an optional feature this fstx does not know cannot be appended to ("Update fstx to change this
-    file; reading works").}
+    file; reading works"). Appending reads the file's table attributes with \code{unserialize()}, so the
+    trusted-source note in \code{\link{read_fstx}} applies.}
 }
 \details{
 Every page is encoded with the lightweight encoding that fits it best (bit-packing, frame-of-reference,
