@@ -53,6 +53,11 @@ Reads files in fstx format 1.0 (format version 3); files from fstx 0.x developme
 refused. A file written by a later fstx that uses something this version does not know (a column type, codec or file feature) is refused
 with a message that names it and ends "Update fstx", rather than reported as damaged. A damaged file gives
 an R error; with \code{verify = TRUE} (the default) every page checksum is checked as well.
+
+Column and table attributes are stored with R's \code{serialize()} and restored with \code{unserialize()},
+as \code{readRDS()} does. Like an .rds file, only read .fstx files from sources you trust: a crafted file
+can crash R when its attributes are restored. The checksum catches accidental damage, not deliberate
+tampering.
 }
 \value{a data frame with the class it was written with (data.frame, data.table or tibble).}
 \seealso{\code{\link{write_fstx}}, \code{\link{fstx_which}}, \code{\link{fstx_explain}}}

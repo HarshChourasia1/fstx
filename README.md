@@ -70,6 +70,9 @@ reads these files. Its specification ships with the package:
 - A file from a later fstx that needs something this version does not know is refused with a message that
   names it and ends "Update fstx". It is not called corrupt.
 - `fstx_features()` lists what this build reads and writes.
+- Column and table attributes are stored with R's `serialize()` and restored with `unserialize()`, as
+  `readRDS()` does. Like an .rds file, only read .fstx files from sources you trust: a crafted file can crash R
+  when its attributes are restored. The checksum catches accidental damage, not deliberate tampering.
 
 See `?fstx` for a short guide, and `?read_fstx` and `?write_fstx` for every argument. Third-party code bundled
 under `src/vendor/` and its licences are listed in `inst/COPYRIGHTS`.

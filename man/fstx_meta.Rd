@@ -24,6 +24,12 @@ zone, compressed and raw bytes and page count. \code{profile} is \code{"fast"}, 
 normally). Only the footer is read. The print method returns
 \code{x} invisibly.
 }
+\details{
+Column and table attributes are stored with R's \code{serialize()} and restored with \code{unserialize()},
+as \code{readRDS()} does. Like an .rds file, only read .fstx files from sources you trust: a crafted file
+can crash R when its attributes are restored. The checksum catches accidental damage, not deliberate
+tampering.
+}
 \seealso{\code{\link{fstx_pages}}}
 \examples{
 p <- tempfile(fileext = ".fstx")

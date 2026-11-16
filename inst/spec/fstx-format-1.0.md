@@ -628,6 +628,10 @@ input; a writer following this document never produces them):
 - Anything after the bytes block of a string PLAIN payload, or after the lengths block of an FSST payload,
   is ignored.
 - FSST: an unused code decodes to `corrupt` plus a zero byte and is not refused.
+- Attribute blobs are not checked by fstx. Column and table attributes are stored with R's `serialize()` and
+  restored with `unserialize()`, as `readRDS()` does. Like an .rds file, only read .fstx files from sources you
+  trust: a crafted file can crash R when its attributes are restored. The checksum catches accidental damage,
+  not deliberate tampering.
 
 ## Appendix A. Footer schema (`tools/fstx_footer.fbs`)
 
