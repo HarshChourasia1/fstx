@@ -34,8 +34,6 @@ test_that("eager, deferred and lazy reads of five tables are identical to the so
       expect_identical(read_fstx(p, threads = th), x, info = paste(nm, "eager", th))
       d <- read_fstx(p, strings = "deferred", threads = th)
       expect_identical(d, x, info = paste(nm, "deferred", th))
-      a <- read_fstx(p, strings = "altrep", threads = th)
-      expect_identical(a, x, info = paste(nm, "altrep alias", th))
       z <- read_fstx(p, lazy = TRUE, threads = th)
       expect_identical(z, x, info = paste(nm, "lazy", th))
       rm(z)

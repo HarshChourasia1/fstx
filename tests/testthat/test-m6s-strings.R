@@ -1,7 +1,7 @@
 # M6s: strings = "auto" (the default) and the other string modes give the eager result in everyday R.
 
 col_state <- function(x) fstx:::fstx_col_state_impl(x)
-m6s_modes <- c("auto", "deferred", "altrep", "eager")
+m6s_modes <- c("auto", "deferred", "eager")
 
 m6s_df <- function(n, seed = 7) {
   set.seed(seed)

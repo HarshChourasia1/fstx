@@ -5,7 +5,6 @@
 ^src/.*\.o$
 ^src/.*\.dll$
 ^src/.*\.so$
-DNSCache
 ^src/rust$
 ^tools/coretest$
 ^tools/fuzz$
