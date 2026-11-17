@@ -1,15 +1,17 @@
-"""Opening an fstx file and reading its metadata (no column data yet).
+"""Opening an fstx file and its metadata.
 
 Names follow DESIGN.md section 2: ``fstx.metadata(path)`` gives a ``FileMeta`` whose ``columns`` are
-``ColumnMeta``; ``fstx.open(path)`` gives the open ``File`` that reading will hang its methods on.
+``ColumnMeta``; ``fstx.open(path)`` gives the open ``File`` with ``schema``, ``read`` and ``to_batches``
+(the reading itself is in ``_read.py``).
 """
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Union
+from functools import cached_property
+from typing import Any, Dict, List, Optional, Union
 
-from . import _core
+from . import _core, _fxa1
 
 PathLike = Union[str, "os.PathLike[str]"]
 
@@ -37,6 +39,29 @@ class ColumnMeta:
     raw_bytes: int
     pages: int
 
+    @cached_property
+    def attributes(self) -> Optional[Dict[str, "_fxa1.RVector"]]:
+        """The column's R attributes other than those the schema stores, decoded from ``attrs``: {} when there
+        is no blob, None when the blob is R serialization (never decoded in Python)."""
+        return _decode(self.attrs, "column '%s'" % self.name, self.index)
+
+    @cached_property
+    def r_class(self) -> Optional[List[str]]:
+        """The class vector the column has in R: ["factor"], ["ordered", "factor"], ["Date"],
+        ["POSIXct", "POSIXt"], the class in the attribute blob (["integer64"], ["difftime"], ...), [] for a
+        plain vector, None when the attributes are R serialization (the class is then unknown)."""
+        if self.logical == "factor":
+            return ["ordered", "factor"] if self.ordered else ["factor"]
+        if self.logical == "Date":
+            return ["Date"]
+        if self.logical == "POSIXct":
+            return ["POSIXct", "POSIXt"]
+        a = self.attributes
+        if a is None:
+            return None
+        c = a.get("class")
+        return [v for v in c.values if v is not None] if c is not None and c.type == "character" else []
+
 
 @dataclass(frozen=True)
 class FileMeta:
@@ -57,6 +82,70 @@ class FileMeta:
     @property
     def names(self) -> List[str]:
         return [c.name for c in self.columns]
+
+    @cached_property
+    def attributes(self) -> Optional[Dict[str, "_fxa1.RVector"]]:
+        """The table's R attributes (class, row names, data.table key, anything else), decoded from
+        ``table_attrs`` and checked as R's reader checks them (spec 9.4): {"class": data.frame} when there is
+        no blob, None when the blob is R serialization. Raises ``FstxError`` when they are corrupt."""
+        if self.table_attrs is None:
+            return {"class": _fxa1.RVector("character", ["data.frame"])}
+        a = _decode(self.table_attrs, "table", None, self.path)
+        if a is None:
+            return None
+
+        def bad(why: str) -> Exception:
+            return _core.FstxError("'%s' is corrupt (table attributes: %s)" % (self.path, why), _core.ERR_CORRUPT, None)
+
+        if any(k in a for k in ("names", "dim", "dimnames")):
+            raise bad("names, dim or dimnames")
+        cl = a.get("class")
+        if cl is None or cl.type != "character" or "data.frame" not in cl.values:
+            raise bad("no data.frame class")
+        rn = a.get("row.names")
+        if rn is not None:
+            if rn.type == "integer" and len(rn.values) == 2 and rn.values[0] is None:  # R's compact c(NA, n)
+                if rn.values[1] is None or abs(rn.values[1]) != self.nrow:
+                    raise bad("row names do not match the row count")
+            elif rn.type not in ("integer", "character") or len(rn.values) != self.nrow:
+                raise bad("row names do not match the row count")
+        return a
+
+    @property
+    def table_class(self) -> Optional[List[str]]:
+        """The table's class in R (["data.frame"], ["data.table", "data.frame"], ...); None when unknown."""
+        a = self.attributes
+        return None if a is None else list(a["class"].values)
+
+    @property
+    def row_names(self) -> Optional[list]:
+        """Stored row names, one per row (str or int); None when they are automatic (or unknown)."""
+        a = self.attributes
+        rn = None if a is None else a.get("row.names")
+        if rn is None or (rn.type == "integer" and len(rn.values) == 2 and rn.values[0] is None):
+            return None
+        return list(rn.values)
+
+    @cached_property
+    def schema(self):
+        """The pyarrow.Schema a default ``read_fstx()`` returns, with the metadata of DESIGN.md section 4."""
+        from . import _read
+
+        return _read.schema_of(self)
+
+
+def _decode(blob: Optional[bytes], what: str, column: Optional[int], path: Optional[str] = None):
+    k = _fxa1.kind(blob)
+    if k == "none":
+        return {}
+    if k != "FXA1":
+        return None
+    try:
+        return _fxa1.decode(blob)
+    except _fxa1.Fxa1Error as e:
+        msg = ("'%s' is corrupt (%s attributes: %s)" % (path, what, e) if path
+               else "corrupt %s attributes: %s" % (what, e))
+        raise _core.FstxError(msg, _core.ERR_CORRUPT, column) from None
 
 
 def _meta(f: "_core.File") -> FileMeta:
@@ -132,8 +221,34 @@ class File:
 
     @property
     def columns(self) -> List[ColumnMeta]:
-        """The columns as stored, in file order. (``schema``, the pyarrow.Schema, comes with reading.)"""
+        """The columns as stored, in file order."""
         return list(self._meta.columns)
+
+    @property
+    def schema(self):
+        """The pyarrow.Schema a default ``read()`` returns (``metadata.schema``)."""
+        return self._meta.schema
+
+    # ---- reading (arguments: fstx.read_fstx)
+    def read(self, columns=None, rows=None, filters=None, **options):
+        """Reads the file, or part of it, into a pyarrow.Table. Arguments as ``fstx.read_fstx``."""
+        from . import _read
+
+        return _read.read(self, columns, rows, filters, **options)
+
+    def to_batches(self, columns=None, batch_rows=None, filters=None, **options):
+        """A pyarrow.RecordBatchReader over the file: one batch per row group, or of at most ``batch_rows``
+        rows; each is decoded when it is pulled. Options: rows (a slice), threads, verify, attributes,
+        datetimes, invalid_utf8 as in ``fstx.read_fstx`` (``invalid_utf8="binary"`` makes every character
+        column binary here, as the schema cannot wait for the data). The reader opens the file itself, so it
+        stays usable after this File is closed."""
+        from . import _read
+
+        return _read.to_batches(self, columns, batch_rows, filters, **options)
+
+    def __arrow_c_stream__(self, requested_schema=None):
+        """The Arrow PyCapsule stream protocol: polars, duckdb and pyarrow read the file a row group at a time."""
+        return self.to_batches().__arrow_c_stream__(requested_schema)
 
     def column(self, which: Union[int, str]) -> ColumnMeta:
         """A column by 0-based position (negative counts from the end) or by name (first match)."""

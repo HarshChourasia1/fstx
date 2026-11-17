@@ -153,7 +153,8 @@ if(FSTX_BUILD_PYTHON)
   nanobind_add_module(_core STABLE_ABI NB_STATIC
     src/module.cpp
     src/file.cpp
-    src/write.cpp)
+    src/write.cpp
+    src/read.cpp)
   target_link_libraries(_core PRIVATE fstx_engine)
   target_compile_definitions(_core PRIVATE
     FSTX_PY_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")

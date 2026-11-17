@@ -1,19 +1,20 @@
 """fstx: fast, safe column-store files (the FST-X format).
 
-Opening a file and reading its metadata (design: DESIGN.md in the source tree):
+Reading (design: DESIGN.md in the source tree):
 
     import fstx
-    m = fstx.metadata("data.fstx")      # FileMeta: nrow, ncol, row_groups, pages, profile, columns, ...
-    m.columns[0]                         # ColumnMeta: name, phys, logical, levels, tzone, ...
+    t = fstx.read_fstx("data.fstx")                       # pyarrow.Table
+    t = fstx.read_fstx("data.fstx", columns=["a", "b"], rows=slice(0, 1000), filters=[("a", ">", 5)])
+    df = fstx.to_pandas(t)                                 # or fstx.to_polars(t)
 
-    with fstx.open("data.fstx") as f:   # the open file that reading will be added to
-        f.num_rows, f.num_columns, f.column_names, f.columns
+    m = fstx.metadata("data.fstx")      # FileMeta: nrow, ncol, schema, columns (ColumnMeta), ...
+    with fstx.open("data.fstx") as f:   # the open file: f.schema, f.read(...), f.to_batches(...)
+        for batch in f.to_batches(batch_rows=100_000):
+            ...
 
 Writing takes a pyarrow.Table or a pandas / polars DataFrame:
 
     fstx.write_fstx(table, "data.fstx")                 # profile=, compress=, level=, append=, int64=
-
-read_fstx and the rest of DESIGN.md section 2 come next.
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ import atexit as _atexit
 from . import _core
 from ._file import ColumnMeta, File, FileMeta, metadata, open  # noqa: A004 (open is the package's own verb)
 from ._write import write_fstx
+from ._read import FstxWarning, read_fstx, set_options, to_pandas, to_polars
 
 FstxError = _core.FstxError
 FstxError.__doc__ = (
@@ -60,9 +62,14 @@ __all__ = [
     "File",
     "FileMeta",
     "FstxError",
+    "FstxWarning",
     "build_info",
     "metadata",
     "open",
     "write_fstx",
+    "read_fstx",
+    "set_options",
+    "to_pandas",
+    "to_polars",
     "__version__",
 ]

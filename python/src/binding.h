@@ -1,5 +1,5 @@
 // fstx Python binding: what the binding's .cpp files share. MIT licence.
-// Layout: one .cpp per area (file.cpp = open + metadata; read.cpp, write.cpp to come), each exporting
+// Layout: one .cpp per area (file.cpp = open + metadata; read.cpp = Arrow stream + filters; write.cpp to come), each exporting
 // init_<area>(nb::module_&), called from NB_MODULE in module.cpp and listed in ../CMakeLists.txt.
 // The engine is used only through its C interface (fstx_core.h, arrow_abi.h); simd.h / kern_test.h are the
 // two C++ engine headers module.cpp reads for build information and the kernel self-test.
@@ -46,6 +46,7 @@ struct File {
 
 void init_file(nb::module_& m);
 void init_write(nb::module_& m);
+void init_read(nb::module_& m);
 
 }  // namespace fstxpy
 

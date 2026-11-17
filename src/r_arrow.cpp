@@ -766,9 +766,9 @@ extern "C" int fstx_arrow_stream_open(const char* path, const fstx_arrow_args* A
           c.lev_lens.push_back((int32_t)len);
           c.lev_bytes.append(s, len);
         }
-      } else if (ci.logical == FSTX_LT_DATE) {
+      } else if (ci.logical == FSTX_LT_DATE && !A->raw) {
         c.out = O_DATE;
-      } else if (ci.logical == FSTX_LT_POSIXCT) {
+      } else if (ci.logical == FSTX_LT_POSIXCT && !A->raw) {
         c.out = O_TS;
         c.has_tz = ci.has_tzone != 0;
         if (c.has_tz) c.tz.assign(ci.tzone, ci.tzone_len);
