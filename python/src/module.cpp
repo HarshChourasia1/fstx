@@ -4,6 +4,7 @@
 #include <nanobind/stl/string.h>
 
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #include "kern_test.h"
@@ -18,7 +19,8 @@ static PyObject* g_error = nullptr;  // fstx.FstxError; the module keeps it aliv
 
 void raise_error(const fstx_error& err) {
   // message is a fixed buffer the engine fills with UTF-8; be safe about the terminator
-  const size_t n = strnlen(err.message, sizeof(err.message));
+  const void* z = std::memchr(err.message, 0, sizeof(err.message));
+  const size_t n = z ? (size_t)((const char*)z - err.message) : sizeof(err.message);
   nb::object col = err.column >= 0 ? nb::object(nb::int_(err.column)) : nb::object(nb::none());
   nb::object args = nb::make_tuple(nb::str(err.message, n), err.code, col);
   PyErr_SetObject(g_error, args.ptr());

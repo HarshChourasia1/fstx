@@ -50,7 +50,7 @@ def test_column_metadata(path, want):
             assert col.levels is None and not col.ordered
         assert (col.attrs.hex() if col.attrs else None) == s.get("blob_hex"), col
         assert (col.attrs is None) == (s["blob"] == "none"), col
-        assert col.pages == len(w["pages"]), col
+        assert col.pages == len(w.get("pages", [])), col  # no "pages" key for a column without pages
         assert col.raw_bytes >= 0 and col.compressed_bytes >= 0
 
 
