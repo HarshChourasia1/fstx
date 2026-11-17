@@ -1,8 +1,9 @@
 // FST-X R layer, 1.0: Arrow C stream straight from the file (WS2). MIT licence.
 // The stream is built on the public engine calls of fstx_core.h (column sources), one batch per row group (or
 // smaller, batch_rows). Its callbacks are plain C++ and never call R: DuckDB, Polars or arrow may call them from
-// their own threads. Errors come back through the stream's error slot. Pages decode in parallel inside a batch;
-// fixed-width columns decode straight into the Arrow buffers, strings are copied once from the decoded pages.
+// their own threads. Errors come back through the stream's error slot. Pages decode in parallel inside a batch
+// (columns, and row parts of fixed-width columns, on own threads); fixed-width columns decode straight into the
+// Arrow buffers, strings are copied once from the decoded pages.
 // Everything above the R glue at the bottom builds without R (-DFSTX_ARROW_NO_R, for the fuzz target).
 #include <algorithm>
 #include <atomic>
@@ -253,40 +254,110 @@ SrcPtr open_src(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b) {
   return SrcPtr(s);
 }
 
-// A fixed-width column (int, double, logical, factor codes, Date, POSIXct) over file rows [a, b); sel (rows
-// relative to a) or NULL for all of them.
-void fixed_column(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b, const uint64_t* sel, uint64_t n,
-                  int threads, ArrowArray* out) {
-  SrcPtr s = open_src(S, c, a, b);
+// A fixed-width column (int, double, logical, factor codes, Date, POSIXct) of a batch over file rows [a, b); sel
+// (rows relative to a) or NULL for all of them. fixed_prep sets up its Arrow array on the calling thread; then
+// fixed_part fills output rows [i0, i1), one call or several at once on different threads. Parts split at page
+// edges that fall on a whole byte of the bitmaps, so no page is decoded twice and no byte is written by two parts.
+struct FixedCol {
+  const ColSpec* c = nullptr;
+  ArrowArray* out = nullptr;
+  uint64_t a = 0, n = 0;
+  const uint64_t* sel = nullptr;
+  bool same = false;  // the Arrow values are the stored values: decoded straight into the Arrow buffer
+  bool scan = true;   // look for NAs (straight decode: only when a page of the batch has any, as before the split)
+  void* vals = nullptr;
+  std::mutex m;  // makes the validity bitmap on the first NA of any part
+  uint8_t* bits = nullptr;
+  std::atomic<int64_t> nulls{0};
+  uint8_t* bitmap() {
+    std::lock_guard<std::mutex> g(m);
+    if (!bits) {
+      uint8_t* p = (uint8_t*)array_buf(out, 0, (size_t)((n + 7) / 8));
+      std::memset(p, 0xFF, (size_t)((n + 7) / 8));
+      bits = p;
+    }
+    return bits;
+  }
+};
+
+// Returns the part boundaries (output rows, from 0 to n), at most `parts` parts.
+std::vector<uint64_t> fixed_prep(const Stream& S, FixedCol& F, uint64_t b, int parts) {
+  const ColSpec& c = *F.c;
+  const uint64_t n = F.n;
+  SrcPtr s = open_src(S, c, F.a, b);
   fstx_colsrc_info si;
   fstx_colsrc_info_get(s.get(), &si);
+  F.same = !F.sel && (c.out == O_INT32 || c.out == O_FLOAT64 || (c.out == O_DATE && c.phys == FSTX_INT32));
+  F.scan = !F.same || si.null_count;
+  array_init(F.out, (int64_t)n, 2);
+  const size_t ow = c.out == O_BOOL ? 0 : (c.out == O_FLOAT64 || c.out == O_TS) ? 8 : 4;
+  if (ow) {
+    F.vals = array_buf(F.out, 1, (size_t)n * ow);
+  } else {
+    F.vals = array_buf(F.out, 1, (size_t)((n + 7) / 8));
+    std::memset(F.vals, 0, (size_t)((n + 7) / 8));
+  }
+  if (c.out == O_FACTOR) {
+    ArrayHold* h = (ArrayHold*)F.out->private_data;
+    h->dict = new_child();
+    F.out->dictionary = h->dict;
+    make_utf8(h->dict, c.lev_lens.size(), c.lev_lens.data(), c.lev_bytes.data());
+  }
+  std::vector<uint64_t> cut{0};
+  if (parts > 1) {
+    std::vector<uint64_t> edges;  // page starts as output rows, inside (0, n), on a multiple of 8
+    for (uint32_t q = 1; q < si.n_pages; ++q) {
+      uint64_t first = 0;
+      uint32_t k = 0;
+      fstx_colsrc_page_span(s.get(), q, &first, &k);
+      const uint64_t i = F.sel ? (uint64_t)(std::lower_bound(F.sel, F.sel + n, first) - F.sel) : first;
+      if (i > 0 && i < n && i % 8 == 0 && (edges.empty() || i > edges.back())) edges.push_back(i);
+    }
+    for (int p = 1; p < parts; ++p) {  // the first edge at or past each p/parts of the rows
+      auto it = std::lower_bound(edges.begin(), edges.end(), n * (uint64_t)p / (uint64_t)parts);
+      if (it != edges.end() && *it > cut.back()) cut.push_back(*it);
+    }
+  }
+  cut.push_back(n);
+  return cut;
+}
+
+void fixed_part(const Stream& S, FixedCol& F, uint64_t i0, uint64_t i1, int threads) {
+  const ColSpec& c = *F.c;
+  const uint64_t* sel = F.sel;
+  const uint64_t lo = sel ? sel[i0] : i0, hi = sel ? sel[i1 - 1] + 1 : i1;  // file rows, relative to a
+  SrcPtr s = open_src(S, c, F.a + lo, F.a + hi);
   fstx_error e;
   const size_t w = c.phys == FSTX_FLOAT64 ? 8 : 4;
-  array_init(out, (int64_t)n, 2);
-  Validity v{out, n};
-  const bool same = c.out == O_INT32 || c.out == O_FLOAT64 || (c.out == O_DATE && c.phys == FSTX_INT32);
-  if (same && !sel) {  // decode straight into the Arrow buffer
-    void* dst = array_buf(out, 1, (size_t)n * w);
+  uint8_t* bits = nullptr;
+  int64_t nulls = 0;
+  auto null_at = [&](uint64_t i) {
+    if (!bits) bits = F.bitmap();
+    bits[i >> 3] &= (uint8_t) ~(1u << (i & 7));
+    ++nulls;
+  };
+  if (F.same) {  // decode straight into the Arrow buffer
+    void* dst = (uint8_t*)F.vals + (size_t)i0 * w;
     check(fstx_colsrc_load(s.get(), dst, threads, &e), e);
-    if (si.null_count) {
+    if (F.scan) {
       if (w == 4) {
-        const int32_t* x = (const int32_t*)dst;
-        for (uint64_t i = 0; i < n; ++i)
-          if (x[i] == std::numeric_limits<int32_t>::min()) v.null_at(i);
+        const int32_t* x = (const int32_t*)F.vals;
+        for (uint64_t i = i0; i < i1; ++i)
+          if (x[i] == std::numeric_limits<int32_t>::min()) null_at(i);
       } else {
-        const uint64_t* x = (const uint64_t*)dst;  // R's NA_real_: a NaN whose low word is 1954; other NaN stay NaN
-        for (uint64_t i = 0; i < n; ++i)
+        const uint64_t* x = (const uint64_t*)F.vals;  // R's NA_real_: a NaN whose low word is 1954; other NaN stay NaN
+        for (uint64_t i = i0; i < i1; ++i)
           if ((x[i] & 0xFFFFFFFFull) == 1954 && (x[i] & 0x7FF0000000000000ull) == 0x7FF0000000000000ull)
-            v.null_at(i);
+            null_at(i);
       }
     }
-    v.done();
+    F.nulls += nulls;
     return;
   }
-  std::vector<uint8_t> tmp((size_t)(b - a) * w);
+  std::vector<uint8_t> tmp((size_t)(hi - lo) * w);
   check(fstx_colsrc_load(s.get(), tmp.data(), threads, &e), e);
   s.reset();
-  auto at = [&](uint64_t i) { return sel ? sel[i] : i; };
+  auto at = [&](uint64_t i) { return (sel ? sel[i] : i) - lo; };
   if (c.phys == FSTX_FLOAT64) {
     const double* x = (const double*)tmp.data();
     auto is_na = [](double d) {
@@ -295,18 +366,18 @@ void fixed_column(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b, con
       return std::isnan(d) && (u & 0xFFFFFFFFull) == 1954;
     };
     if (c.out == O_FLOAT64) {
-      double* o = (double*)array_buf(out, 1, (size_t)n * 8);
-      for (uint64_t i = 0; i < n; ++i) {
+      double* o = (double*)F.vals;
+      for (uint64_t i = i0; i < i1; ++i) {
         o[i] = x[at(i)];
-        if (is_na(o[i])) v.null_at(i);
+        if (is_na(o[i])) null_at(i);
       }
     } else if (c.out == O_DATE) {  // whole days, rounded down (as R prints a fractional Date)
-      int32_t* o = (int32_t*)array_buf(out, 1, (size_t)n * 4);
-      for (uint64_t i = 0; i < n; ++i) {
+      int32_t* o = (int32_t*)F.vals;
+      for (uint64_t i = i0; i < i1; ++i) {
         const double d = std::floor(x[at(i)]);
         if (!std::isfinite(d)) {
           o[i] = 0;
-          v.null_at(i);
+          null_at(i);
         } else if (d < (double)INT32_MIN || d > (double)INT32_MAX) {
           throw Fail("column '" + c.name + "' has a Date outside the range of Arrow date32");
         } else {
@@ -314,12 +385,12 @@ void fixed_column(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b, con
         }
       }
     } else {  // O_TS: seconds -> microseconds, rounded to the nearest
-      int64_t* o = (int64_t*)array_buf(out, 1, (size_t)n * 8);
-      for (uint64_t i = 0; i < n; ++i) {
+      int64_t* o = (int64_t*)F.vals;
+      for (uint64_t i = i0; i < i1; ++i) {
         const double us = std::nearbyint(x[at(i)] * 1e6);
         if (!std::isfinite(us)) {
           o[i] = 0;
-          v.null_at(i);
+          null_at(i);
         } else if (us < -9.2e18 || us > 9.2e18) {
           throw Fail("column '" + c.name + "' has a time outside the range of Arrow microsecond timestamps");
         } else {
@@ -331,28 +402,27 @@ void fixed_column(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b, con
     const int32_t* x = (const int32_t*)tmp.data();
     const int32_t na = std::numeric_limits<int32_t>::min();
     if (c.out == O_BOOL) {
-      uint8_t* o = (uint8_t*)array_buf(out, 1, (size_t)((n + 7) / 8));
-      std::memset(o, 0, (size_t)((n + 7) / 8));
-      for (uint64_t i = 0; i < n; ++i) {
+      uint8_t* o = (uint8_t*)F.vals;
+      for (uint64_t i = i0; i < i1; ++i) {
         const int32_t k = x[at(i)];
-        if (k == na) v.null_at(i);
+        if (k == na) null_at(i);
         else if (k) o[i >> 3] |= (uint8_t)(1u << (i & 7));
       }
     } else {  // int32, int Date, factor codes (1-based -> 0-based dictionary indexes)
-      int32_t* o = (int32_t*)array_buf(out, 1, (size_t)n * 4);
+      int32_t* o = (int32_t*)F.vals;
       const int32_t shift = c.out == O_FACTOR ? 1 : 0;
-      for (uint64_t i = 0; i < n; ++i) {
+      for (uint64_t i = i0; i < i1; ++i) {
         const int32_t k = x[at(i)];
         if (k == na) {
           o[i] = 0;
-          v.null_at(i);
+          null_at(i);
         } else {
           o[i] = k - shift;
         }
       }
     }
   }
-  v.done();
+  F.nulls += nulls;
 }
 
 template <typename O>
@@ -455,22 +525,6 @@ void string_column(const ColSpec& c, SrcPtr s, const uint64_t* sel, uint64_t n, 
   make_utf8(h->dict, dn, dl, db);
 }
 
-// One column of a batch. String columns come with their pages already decoded (string_load).
-void build_column(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b, const uint64_t* sel, uint64_t n,
-                  int threads, SrcPtr loaded, ArrowArray* out) {
-  if (c.phys == FSTX_STRING) {
-    string_column(c, std::move(loaded), sel, n, out);
-    return;
-  }
-  fixed_column(S, c, a, b, sel, n, threads, out);
-  if (c.out == O_FACTOR) {
-    ArrayHold* h = (ArrayHold*)out->private_data;
-    h->dict = new_child();
-    out->dictionary = h->dict;
-    make_utf8(h->dict, c.lev_lens.size(), c.lev_lens.data(), c.lev_bytes.data());
-  }
-}
-
 Stream* stream_of(ArrowArrayStream* st) { return (Stream*)st->private_data; }
 
 int fail_code(Stream& S, const char* what) {
@@ -553,39 +607,67 @@ int stream_get_next(ArrowArrayStream* st, ArrowArray* out) {
     res.n_children = (int64_t)h->kids.size();
     res.children = h->kids.empty() ? nullptr : h->kids.data();
     // String pages decode first, column by column, each in parallel on the engine pool. Then the columns are laid
-    // out at once on own threads (no pool): fixed-width columns decode there too, one thread each, since their
-    // NA / bool / Date passes are single-threaded per column and dominate a page-parallel decode.
+    // out at once on own threads (no pool): fixed-width columns decode there too, since their NA / bool / Date
+    // passes are single-threaded per column and dominate a page-parallel decode. With fewer columns than threads,
+    // fixed-width columns are cut into row parts at page edges (fixed_prep) so that every thread has work.
     const uint64_t* sp = S.by_rows ? sel.data() : nullptr;
     const size_t nc = S.cols.size();
-    const int k = (int)std::min<size_t>((size_t)S.threads, nc);
+    const int parts = nc && nc < (size_t)S.threads ? (int)(((size_t)S.threads + nc - 1) / nc) : 1;
     std::vector<SrcPtr> loaded(nc);
-    for (size_t j = 0; j < nc; ++j)
-      if (S.cols[j].phys == FSTX_STRING) loaded[j] = string_load(S, S.cols[j], a, b, S.threads);
+    std::vector<std::unique_ptr<FixedCol>> fx(nc);
+    struct Task {
+      size_t j;
+      uint64_t i0, i1;
+    };
+    std::vector<Task> tasks;
+    for (size_t j = 0; j < nc; ++j) {
+      const ColSpec& c = S.cols[j];
+      if (c.phys == FSTX_STRING) {
+        loaded[j] = string_load(S, c, a, b, S.threads);
+        tasks.push_back({j, 0, n});
+        continue;
+      }
+      fx[j].reset(new FixedCol());
+      FixedCol& F = *fx[j];
+      F.c = &c;
+      F.out = h->kids[j];
+      F.a = a;
+      F.n = n;
+      F.sel = sp;
+      const std::vector<uint64_t> cut = fixed_prep(S, F, b, parts);
+      for (size_t q = 0; q + 1 < cut.size(); ++q) tasks.push_back({j, cut[q], cut[q + 1]});
+    }
+    auto run = [&](const Task& t, int threads) {
+      if (fx[t.j]) fixed_part(S, *fx[t.j], t.i0, t.i1, threads);
+      else string_column(S.cols[t.j], std::move(loaded[t.j]), sp, n, h->kids[t.j]);
+    };
+    const size_t nt = tasks.size();
+    const int k = (int)std::min<size_t>((size_t)S.threads, nt);
     if (k <= 1) {
-      for (size_t j = 0; j < nc; ++j)
-        build_column(S, S.cols[j], a, b, sp, n, S.threads, std::move(loaded[j]), h->kids[j]);
+      for (const Task& t : tasks) run(t, S.threads);
     } else {
       std::atomic<size_t> nx{0};
       std::vector<std::exception_ptr> ex((size_t)k);
       auto work = [&](int id) {
         try {
-          for (size_t j; (j = nx.fetch_add(1)) < nc;)
-            build_column(S, S.cols[j], a, b, sp, n, 1, std::move(loaded[j]), h->kids[j]);
+          for (size_t i; (i = nx.fetch_add(1)) < nt;) run(tasks[i], 1);
         } catch (...) {
           ex[(size_t)id] = std::current_exception();
-          nx.store(nc);
+          nx.store(nt);
         }
       };
       std::vector<std::thread> ts;
       try {
         for (int i = 1; i < k; ++i) ts.emplace_back(work, i);
-      } catch (...) {  // no more threads: the ones started and this one share the columns
+      } catch (...) {  // no more threads: the ones started and this one share the work
       }
       work(0);
       for (std::thread& t : ts) t.join();
       for (std::exception_ptr& x : ex)
         if (x) std::rethrow_exception(x);
     }
+    for (size_t j = 0; j < nc; ++j)
+      if (fx[j]) h->kids[j]->null_count = fx[j]->nulls.load();
     S.pos = next;
     *out = res;
     return 0;
