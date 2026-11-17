@@ -6,3 +6,4 @@ __pycache__/
 .pytest_cache/
 *.pyd
 *.so
+tests/golden/from_python/

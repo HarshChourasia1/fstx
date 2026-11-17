@@ -129,4 +129,5 @@ NB_MODULE(_core, m) {
   });
 
   init_file(m);
+  init_write(m);
 }

@@ -45,6 +45,7 @@ struct File {
 };
 
 void init_file(nb::module_& m);
+void init_write(nb::module_& m);
 
 }  // namespace fstxpy
 
