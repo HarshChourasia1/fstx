@@ -359,7 +359,7 @@ SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads
     rv.resize((size_t)n);
     const double nrow = (double)info.n_rows;
     if (TYPEOF(rows) == INTSXP) {
-      const int* x = INTEGER(rows);
+      const int* x = cpp11::safe[INTEGER_RO](rows);  // an ALTREP vector can fail here: unwind f and rv
       for (R_xlen_t i = 0; i < n; ++i) {
         if (x[i] == NA_INTEGER) cpp11::stop("fstx: 'rows' must not contain NA (element %.0f)", (double)i + 1);
         if (x[i] < 1 || (double)x[i] > nrow)
@@ -367,7 +367,7 @@ SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads
         rv[(size_t)i] = (uint64_t)x[i] - 1;
       }
     } else {
-      const double* x = REAL(rows);
+      const double* x = cpp11::safe[REAL_RO](rows);
       for (R_xlen_t i = 0; i < n; ++i) {
         if (ISNAN(x[i])) cpp11::stop("fstx: 'rows' must not contain NA (element %.0f)", (double)i + 1);
         if (x[i] != std::floor(x[i])) cpp11::stop("fstx: 'rows' must be whole numbers (element %.0f is %g)", (double)i + 1, x[i]);
@@ -392,9 +392,10 @@ SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads
       idx.push_back((uint32_t)c);
     }
   } else if (TYPEOF(columns) == INTSXP || TYPEOF(columns) == REALSXP) {
+    const int* ic = TYPEOF(columns) == INTSXP ? cpp11::safe[INTEGER_RO](columns) : nullptr;
+    const double* dc = ic ? nullptr : cpp11::safe[REAL_RO](columns);
     for (R_xlen_t i = 0; i < Rf_xlength(columns); ++i) {
-      double v = TYPEOF(columns) == INTSXP ? (INTEGER(columns)[i] == NA_INTEGER ? NA_REAL : INTEGER(columns)[i])
-                                           : REAL(columns)[i];
+      double v = ic ? (ic[i] == NA_INTEGER ? NA_REAL : ic[i]) : dc[i];
       if (ISNAN(v) || v < 1 || v > info.n_cols || v != (double)(int64_t)v)
         cpp11::stop("fstx: column position %g is out of range (the file has %u columns)", v, info.n_cols);
       idx.push_back((uint32_t)(v - 1));
@@ -743,7 +744,7 @@ SEXP fstx_filter_impl(SEXP path, SEXP preds, double from, double to, int threads
     if ((set != R_NilValue && TYPEOF(set) != REALSXP) || (st != R_NilValue && TYPEOF(st) != STRSXP))
       cpp11::stop("fstx: internal error, bad filter");
     if (set != R_NilValue) {
-      d.set = REAL(set);
+      d.set = cpp11::safe[REAL_RO](set);
       d.n_set = (uint64_t)Rf_xlength(set);
     }
     SEXP sna = field(q, "set_na"), snan = field(q, "set_nan");

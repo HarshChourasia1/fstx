@@ -888,14 +888,15 @@ SEXP fstx_arrow_stream_impl(SEXP args) {
   std::vector<uint32_t> ci;
   std::vector<std::string> nm;
   std::vector<const char*> np;
+  const int* cp = cpp11::safe[INTEGER_RO](cols);
   for (R_xlen_t j = 0; j < Rf_xlength(cols); ++j) {
-    ci.push_back((uint32_t)INTEGER(cols)[j]);
+    ci.push_back((uint32_t)cp[j]);
     nm.push_back(cpp11::safe[Rf_translateCharUTF8](STRING_ELT(names, j)));
   }
   for (const std::string& s : nm) np.push_back(s.c_str());
   std::vector<uint64_t> rv;
   if (rows != R_NilValue) {
-    const double* r = REAL(rows);
+    const double* r = cpp11::safe[REAL_RO](rows);
     for (R_xlen_t i = 0; i < Rf_xlength(rows); ++i) rv.push_back((uint64_t)r[i] - 1);  // checked in R: whole, >= 1
   }
   fstx_arrow_args A;

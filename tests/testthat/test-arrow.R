@@ -159,6 +159,7 @@ test_that("batches follow row groups and batch_rows; dictionaries come per row g
 
 test_that("row parts of fixed-width columns: same batches at 1 and many threads, same as read_fstx", {
   skip_if_not_installed("nanoarrow")
+  skip_if(fstx:::fstx_hw_threads() < 2, "one hardware thread: 1 and many threads would be the same run")
   # Default pages hold 32,768 doubles or 65,536 ints; each write below is its own row group. With fewer columns
   # than threads a fixed-width column is filled in row parts cut at page edges; the batches must not change.
   p <- tempfile(fileext = ".fstx")
