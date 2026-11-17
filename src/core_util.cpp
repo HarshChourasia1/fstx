@@ -103,12 +103,27 @@ static std::string win_error_text(DWORD e) {
   return buf;
 }
 
+// FILE_ID_INFO and FileIdInfo (18) of Windows 8+, spelled out here: the headers declare them only for
+// _WIN32_WINNT >= 0x0602 and Rtools defaults to 0x0601.
+struct FstxFileIdInfo {
+  ULONGLONG volume;
+  BYTE id[16];
+};
+
 static FileId id_of_handle(HANDLE h) {
   FileId id;
-  BY_HANDLE_FILE_INFORMATION fi;
+  FstxFileIdInfo xi;
+  if (GetFileInformationByHandleEx(h, (FILE_INFO_BY_HANDLE_CLASS)18, &xi, sizeof(xi))) {
+    id.a = (uint64_t)xi.volume;
+    std::memcpy(&id.c, xi.id, 8);
+    std::memcpy(&id.b, xi.id + 8, 8);
+    id.ok = true;
+    return id;
+  }
+  BY_HANDLE_FILE_INFORMATION fi;  // older Windows or a file system without FileIdInfo: the 64-bit index
   if (GetFileInformationByHandle(h, &fi)) {
     id.a = (uint64_t)fi.dwVolumeSerialNumber;
-    id.b = ((uint64_t)fi.nFileIndexHigh << 32) | (uint64_t)fi.nFileIndexLow;
+    id.c = ((uint64_t)fi.nFileIndexHigh << 32) | (uint64_t)fi.nFileIndexLow;
     id.ok = true;
   }
   return id;
