@@ -68,8 +68,9 @@ crash. With \code{options(fstx.verify_nulls = TRUE)} every page that is decoded 
 and a count that differs from the page's own refuses the file as corrupt. It is off by default because it costs
 one more pass over each decoded page (expected: a few percent on numeric columns, close to nothing on string
 columns) and, for \code{rows} and \code{where} reads, decodes whole pages instead of the parts that hold the
-rows. With the option on, a \code{where} filter decides nothing from the stored count; pages it skips by their
-min / max are not decoded, so they are not counted. Lazy and deferred columns take the option's value when
+rows. With the option on, a \code{where} filter decides nothing from the stored count; pages it decides
+without decoding (by min / max or the dictionary) are not counted by the filter, but the rows it returns are
+decoded and counted. Lazy and deferred columns take the option's value when
 \code{read_fstx()} runs: turning it on later does not check them, turning it off later does not stop it.
 
 Column and table attributes are stored in fstx's own encoding (FXA1, spec section 9.4) whenever they

@@ -195,8 +195,9 @@ TRUE, fstx counts the missing values of every page it decodes in full (read_fstx
 stream, and the pages a filter tests), refuses the file as corrupt when the count differs from null_count, and
 no filter decision rests on null_count alone. It counts what decoding gives: the rows the missing-value block
 marks plus any unmarked value that is the missing-value pattern (on double pages every NaN whose low 32 bits
-are 1954, as above). Pages a filter skips by min / max, or that hold no candidate row, are not decoded and so
-not counted.
+are 1954, as above). Pages a filter decides without decoding (skipped by min / max or by the dictionary, proved
+to match in full, or holding no candidate row) are not counted by the filter; a read of their rows decodes and
+counts them.
 
 Pages must lie wholly before the footer; fstx does not check that pages do not overlap one another.
 

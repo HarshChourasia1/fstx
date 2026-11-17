@@ -55,7 +55,8 @@ names it and ends "Update fstx".
   \item{\code{fstx.simd}, environment variable \code{FSTX_SIMD}}{SIMD target chosen when the package
     loads; see \code{\link{fstx_simd}}.}
   \item{\code{fstx.verify_nulls}}{\code{TRUE} counts the missing values of every page that
-    \code{\link{read_fstx}} or \code{\link{fstx_arrow_stream}} decodes and refuses a page whose count differs
+    \code{\link{read_fstx}}, \code{\link{fstx_arrow_stream}}, \code{\link{fstx_which}} or
+    \code{\link{fstx_explain}} decodes and refuses a page whose count differs
     from the one it records, as corrupt. Default \code{FALSE}; see \code{\link{read_fstx}}. Read when
     \code{read_fstx()} runs or the stream is made: lazy and deferred columns keep the value they were read
     with.}
