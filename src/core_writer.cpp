@@ -893,7 +893,7 @@ using fstx::Error;
 static void configure(fstx::WriterImpl& W, const fstx_write_column* cols, uint32_t n_cols, const uint8_t* table_attrs,
                       size_t table_attrs_len, const fstx_write_options* opt) {
   {
-    if (opt->codec < FSTX_CODEC_NONE || opt->codec > FSTX_CODEC_ZSTD) fstx::fail(FSTX_ERR_ARG, "unknown codec %d", opt->codec);
+    if (!fstx::codec_supported(opt->codec)) fstx::fail(FSTX_ERR_ARG, "unknown codec %d", opt->codec);
     W.codec = opt->codec;
     W.level = opt->level;
     if (W.codec == FSTX_CODEC_ZSTD && (W.level < fstx::zstd_level_min() || W.level > fstx::zstd_level_max()))

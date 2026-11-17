@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "codec_ext.h"
 #include "r_lazy.h"
 
 namespace {
@@ -663,7 +664,6 @@ SEXP fstx_pages_impl(SEXP path) {
   std::vector<fstx_page_info> pi((size_t)np);
   if (np) fstx_pages_get(f.get(), pi.data(), (uint64_t)np);
   const R_xlen_t n = (R_xlen_t)np;
-  static const char* codec_names[] = {"none", "lz4", "zstd"};
   static const char* na_names[] = {"none", "bitmap", "runs"};
   cpp11::writable::doubles rg(n), col(n), first(n), rows(n), nulls(n), off(n), comp(n), raw(n);
   cpp11::writable::logicals dict(n);
@@ -679,7 +679,8 @@ SEXP fstx_pages_impl(SEXP path) {
     off[i] = (double)p.offset;
     comp[i] = p.comp_len;
     raw[i] = p.raw_len;
-    codec[i] = cpp11::r_string(p.codec >= 0 && p.codec <= 2 ? codec_names[p.codec] : "?");
+    const char* cn = fstx::codec_name(p.codec);
+    codec[i] = cpp11::r_string(cn ? cn : "?");
     kind[i] = cpp11::r_string(fstx_kind_name(p.kind));
     na[i] = cpp11::r_string(p.na_mode >= 0 && p.na_mode <= 2 ? na_names[p.na_mode] : "?");
     e0[i] = cpp11::r_string(fstx_encoding_name(p.enc[0]));

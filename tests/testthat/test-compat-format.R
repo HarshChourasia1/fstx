@@ -32,6 +32,31 @@ test_that("fstx_features() reports what this build reads and writes", {
   expect_identical(f$types$read, c(TRUE, TRUE, TRUE, TRUE, FALSE, FALSE))
 })
 
+test_that("the writer takes exactly the codecs the codec layer has (codec_supported)", {
+  p <- tempfile(fileext = ".fstx")
+  on.exit(unlink(p))
+  x <- data.frame(a = 1:3000)
+  # the internal call write_fstx() makes (R/fstx.R); keep_codec keeps the codec on every page
+  w <- function(codec) fstx:::fstx_write_impl(
+    cols = list(x$a), path = p, names = "a", phys = 0L, logical = 0L, ordered = FALSE, levels = list(NULL),
+    tzone = list(NULL), attrs = list(NULL), table_attrs = NULL, nrow = 3000, codec = codec, level = 1L,
+    threads = 1L, utf8_locale = TRUE, profile = 1L, keep_pct = 0L,
+    force_encoding = fstx:::.encoding_flags[["keep_codec"]], append = FALSE, test_crash = 0L)
+  f <- fstx_features()$codecs
+  for (i in seq_along(f$id)) {
+    if (f$write[i]) {
+      expect_identical(w(f$id[i]), 0L)
+      expect_identical(unique(fstx_pages(p)$codec), f$name[i])
+      expect_identical(read_fstx(p), x)
+    } else {
+      expect_error(w(f$id[i]), paste("unknown codec", f$id[i]), info = f$id[i])
+    }
+  }
+  expect_identical(f$write, f$id %in% 0:2)
+  for (codec in c(3L, 4L, 5L, 127L, 128L, 255L, -1L))   # backstop
+    expect_error(w(codec), paste("unknown codec", codec), info = codec)
+})
+
 test_that("feature bits: unknown required bits are refused by name, optional ones ignored", {
   p <- tempfile(fileext = ".fstx")
   q <- tempfile(fileext = ".fstx")

@@ -225,10 +225,6 @@ read_fstx <- function(path, columns = NULL, from = 1, to = NULL, threads = fstx_
   .window(from, to, fn)
   threads <- .whole(threads, "threads", 1, fn)
   .flag(lazy, "lazy", fn)
-  if (identical(strings, "altrep")) {   # the 0.x name, kept working through 1.x
-    warning('read_fstx: strings = "altrep" is now called "deferred"; please use strings = "deferred"', call. = FALSE)
-    strings <- "deferred"
-  }
   strings <- .pick(strings, c("auto", "eager", "deferred"), "strings", fn)
   if (is.logical(as_factor) && length(as_factor) == 1L && !is.na(as_factor)) {
     if (!as_factor) as_factor <- NULL

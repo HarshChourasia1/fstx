@@ -52,14 +52,14 @@ test_that("test hooks reach the writer only through .write_fstx", {
   expect_false(all(fstx_pages(p)$encoding == "plain"))
 })
 
-test_that('strings = "altrep" still works, with a warning naming "deferred"', {
+test_that('strings = "altrep" (the 0.x name) is now an ordinary bad value', {
   p <- tempfile(fileext = ".fstx")
   on.exit(unlink(p))
   x <- data.frame(s = sprintf("k%05d", 1:3000), stringsAsFactors = FALSE)
   fstx::write_fstx(x, p, threads = 1)
-  expect_warning(y <- read_fstx(p, strings = "altrep", threads = 1), '"deferred"')
-  expect_identical(y, x)
+  expect_error(read_fstx(p, strings = "altrep"), "read_fstx: 'strings' should be one of")
   expect_error(read_fstx(p, strings = "nope"), "read_fstx: 'strings' should be one of")
+  expect_identical(read_fstx(p, strings = "deferred", threads = 1), x)
 })
 
 test_that("TRUE/FALSE arguments refuse other values and errors name the function", {

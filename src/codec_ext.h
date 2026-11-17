@@ -23,7 +23,9 @@ struct CodecContext {
   ~CodecContext();
 };
 
-bool codec_supported(int codec);  // this build reads and writes it
+// Supported = compress_bound, compress_page and decompress_page all implement it, so this build reads and writes
+// it (the writer's codec check uses this). Split into readable / writable when the first decode-only codec arrives.
+bool codec_supported(int codec);
 // "none", "lz4", "zstd", the reserved names, or nullptr for a number without a name
 const char* codec_name(int codec);
 // Required-feature bit a file needs when one of its pages uses this codec (0 = none), and all such bits this
