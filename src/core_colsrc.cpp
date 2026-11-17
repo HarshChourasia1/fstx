@@ -44,7 +44,8 @@ struct fstx_colsrc {
   int logical = FSTX_LT_NONE;
   uint32_t n_levels = 0;
   int mode = FSTX_SRC_FIXED;
-  bool verify = true;
+  bool verify = true;  // FSTX_VERIFY_HASH
+  bool nulls = false;  // FSTX_VERIFY_NULLS
   bool own_bytes = true;
   uint64_t rows = 0;
   std::vector<SrcPage> pages;
@@ -135,6 +136,10 @@ void decode_page(const fstx_colsrc& S, uint32_t p, PageData& d, void* dst, Codec
         enc::decode_dbl_page(b, len, chain, n, (double*)to);
       else
         enc::decode_int_page(b, len, chain, n, kind_of(S.phys), std::numeric_limits<int32_t>::min(), (int32_t*)to);
+      if (S.nulls) {
+        if (S.phys == FSTX_FLOAT64) check_nulls(pg, (const double*)to, n);
+        else check_nulls(pg, (const int32_t*)to, n, std::numeric_limits<int32_t>::min());
+      }
       const uint8_t* got = to + (size_t)sp.skip * w;
       if (S.logical == FSTX_LT_FACTOR) {
         const int32_t* v = (const int32_t*)got;
@@ -153,6 +158,7 @@ void decode_page(const fstx_colsrc& S, uint32_t p, PageData& d, void* dst, Codec
       const SrcDict& D = S.dicts[(size_t)sp.dict];
       std::vector<int32_t> codes(n);
       enc::decode_int_page(b, len, chain, n, enc::K_CODES, -1, codes.data());
+      if (S.nulls) check_nulls(pg, codes.data(), n, -1);
       const int32_t nd = (int32_t)D.n;
       for (uint32_t i = 0; i < n; ++i)
         if (codes[i] < -1 || codes[i] >= nd) enc::corrupt("dictionary code out of range");
@@ -181,6 +187,7 @@ void decode_page(const fstx_colsrc& S, uint32_t p, PageData& d, void* dst, Codec
       std::vector<uint8_t> fbuf;
       const char* bytes = nullptr;
       enc::decode_str_page(b, len, chain, n, enc::K_STR, lv, fbuf, &bytes);
+      if (S.nulls) check_nulls(pg, lv.data(), n, -1);
       uint64_t skip_bytes = 0, take_bytes = 0;
       for (uint32_t i = 0; i < sp.skip; ++i) skip_bytes += (uint64_t)std::max(0, lv[i]);
       for (uint32_t i = 0; i < sp.take; ++i) take_bytes += (uint64_t)std::max(0, lv[sp.skip + i]);
@@ -339,7 +346,8 @@ extern "C" int fstx_colsrc_open(const fstx_file* f, uint32_t col, uint64_t from,
     s->logical = (int)x->logical();
     s->n_levels = x->levels() ? x->levels()->size() : 0;
     s->mode = s->phys == FSTX_STRING ? FSTX_SRC_STRINGS : FSTX_SRC_FIXED;
-    s->verify = verify != 0;
+    s->verify = (verify & FSTX_VERIFY_HASH) != 0;
+    s->nulls = (verify & FSTX_VERIFY_NULLS) != 0;
     s->own_bytes = own_bytes != 0;
     s->rows = to - from;
     const auto* rgs = f->footer->row_groups();
@@ -448,6 +456,8 @@ extern "C" void fstx_colsrc_info_get(const fstx_colsrc* s, fstx_colsrc_info* o) 
     nulls += p.nulls;
   }
   o->all_dict = all ? 1 : 0;
+  // FSTX_VERIFY_NULLS: the stored counts are checked only when a page is decoded, so "none" is not promised before
+  if (s->nulls && nulls == 0 && !s->pages.empty()) nulls = 1;
   o->null_count = nulls;
   o->pages_ready = s->ready_count;
   o->cached_bytes = s->cache_bytes;

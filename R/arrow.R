@@ -43,6 +43,7 @@ fstx_arrow_stream <- function(path, columns = NULL, from = 1, to = NULL, where =
     rows <- fstx_filter_impl(path, .where_preds(path, wq, parent.frame(), fn = fn), from, t, threads, TRUE, FALSE)$rows
   s <- nanoarrow::nanoarrow_allocate_array_stream()
   fstx_arrow_stream_impl(list(path = path, cols = idx - 1L, names = enc2utf8(out_names), from = from - 1, to = t,
-                              rows = rows, threads = threads, batch_rows = batch_rows, stream = s))
+                              rows = rows, threads = threads, batch_rows = batch_rows, verify = .verify_bits(TRUE),
+                              stream = s))
   s
 }

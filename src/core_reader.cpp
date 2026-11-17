@@ -461,6 +461,22 @@ void check_no_nul(const char* bytes, const int32_t* lens, uint32_t n) {
   if (tot && std::memchr(bytes, 0, (size_t)tot)) enc::corrupt("a string holds a NUL byte");
 }
 
+void check_nulls(const fb::Page* p, const int32_t* x, uint32_t n, int32_t na) {
+  uint32_t k = 0;
+  for (uint32_t i = 0; i < n; ++i) k += x[i] == na;
+  if (k != p->null_count()) enc::corrupt("the page holds a different number of missing values than its null_count");
+}
+
+void check_nulls(const fb::Page* p, const double* x, uint32_t n) {
+  uint32_t k = 0;
+  for (uint32_t i = 0; i < n; ++i) {
+    uint64_t b;
+    std::memcpy(&b, x + i, 8);
+    k += (b & 0x7FF0000000000000ull) == 0x7FF0000000000000ull && (uint32_t)b == 1954u;
+  }
+  if (k != p->null_count()) enc::corrupt("the page holds a different number of missing values than its null_count");
+}
+
 namespace {
 
 struct StrSlot {
@@ -492,10 +508,11 @@ struct Reader {
   const fstx_plan& P;
   const fstx_file& F;
   const fstx_read_host& H;
-  bool verify;
+  bool verify, nulls;  // FSTX_VERIFY_HASH, FSTX_VERIFY_NULLS
   std::vector<uint8_t*> dest;
   std::vector<DictData> dicts;  // rows plans
-  Reader(const fstx_plan& p, const fstx_read_host& h, bool v) : P(p), F(*p.f), H(h), verify(v) {}
+  Reader(const fstx_plan& p, const fstx_read_host& h, int v)
+      : P(p), F(*p.f), H(h), verify((v & FSTX_VERIFY_HASH) != 0), nulls((v & FSTX_VERIFY_NULLS) != 0) {}
 
   // rows plans: marks the 1,024-row vectors of the page that hold requested rows; false when all of them do
   bool vector_mask(const ReadTask& t, std::vector<uint8_t>& vm) {
@@ -520,7 +537,7 @@ struct Reader {
     const uint32_t n = t.page->row_count();
     const uint64_t fr = t.page->first_row();
     std::vector<uint8_t> vm;
-    const uint8_t* vmp = vector_mask(t, vm) ? vm.data() : nullptr;
+    const uint8_t* vmp = (!nulls && vector_mask(t, vm)) ? vm.data() : nullptr;  // null counts need the whole page
     try {
       const uint8_t* b = body(t, cc, scratch);
       if (vals.size() < (size_t)n * w) vals.resize((size_t)n * w);
@@ -529,6 +546,10 @@ struct Reader {
       else
         enc::decode_int_page_part(b, t.page->raw_len(), t.page->chain(), n, kind_of(oc.phys),
                                   std::numeric_limits<int32_t>::min(), vmp, (int32_t*)vals.data());
+      if (nulls) {
+        if (oc.phys == FSTX_FLOAT64) check_nulls(t.page, (const double*)vals.data(), n);
+        else check_nulls(t.page, (const int32_t*)vals.data(), n, std::numeric_limits<int32_t>::min());
+      }
     } catch (...) {
       rethrow_in(t);
     }
@@ -580,9 +601,10 @@ struct Reader {
       s.obytes.clear();
       if (t.dict >= 0) {
         const DictData& D = dicts[(size_t)t.dict];
-        const uint8_t* vmp = vector_mask(t, s.vm) ? s.vm.data() : nullptr;
+        const uint8_t* vmp = (!nulls && vector_mask(t, s.vm)) ? s.vm.data() : nullptr;
         if (s.lv.size() < n) s.lv.resize(n);
         enc::decode_int_page_part(b, len, t.page->chain(), n, enc::K_CODES, -1, vmp, s.lv.data());
+        if (nulls) check_nulls(t.page, s.lv.data(), n, -1);
         const int32_t nd = (int32_t)D.n;
         for (uint64_t e = t.e0; e < t.e1; ++e) {
           const int32_t k = s.lv[P.rows[e] - fr];
@@ -597,6 +619,7 @@ struct Reader {
       } else {
         const char* bytes = nullptr;
         enc::decode_str_page(b, len, t.page->chain(), n, enc::K_STR, s.lv, s.fbuf, &bytes);
+        if (nulls) check_nulls(t.page, s.lv.data(), n, -1);
         s.off.resize((size_t)n + 1);
         s.off[0] = 0;
         for (uint32_t i = 0; i < n; ++i) s.off[i + 1] = s.off[i] + (uint64_t)(s.lv[i] > 0 ? s.lv[i] : 0);
@@ -641,6 +664,10 @@ struct Reader {
       else
         enc::decode_int_page(b, t.page->raw_len(), t.page->chain(), n, kind_of(oc.phys),
                              std::numeric_limits<int32_t>::min(), (int32_t*)to);
+      if (nulls) {
+        if (oc.phys == FSTX_FLOAT64) check_nulls(t.page, (const double*)to, n);
+        else check_nulls(t.page, (const int32_t*)to, n, std::numeric_limits<int32_t>::min());
+      }
       if (!whole) {
         FSTX_PROF_SCOPE(R_COPY);
         std::memcpy(dst, vals.data() + (size_t)t.skip * w, (size_t)t.take * w);
@@ -678,6 +705,7 @@ struct Reader {
         s.kind = enc::K_CODES;
         if (s.lv.size() < n) s.lv.resize(n);
         enc::decode_int_page(b, len, chain, n, enc::K_CODES, -1, s.lv.data());
+        if (nulls) check_nulls(t.page, s.lv.data(), n, -1);
         const int32_t nd = (int32_t)t.dict_rows;
         FSTX_PROF_SCOPE(R_CODES_CHECK);
         for (uint32_t i = 0; i < n; ++i)
@@ -689,6 +717,7 @@ struct Reader {
         const char* bytes = nullptr;
         FSTX_PROF_SCOPE(R_STR_DEC);
         enc::decode_str_page(b, len, chain, n, enc::K_STR, s.lv, s.fbuf, &bytes);
+        if (nulls) check_nulls(t.page, s.lv.data(), n, -1);
         uint64_t skip_bytes = 0;
         for (uint32_t i = 0; i < t.skip; ++i)
           if (s.lv[i] > 0) skip_bytes += (uint64_t)s.lv[i];
@@ -1025,7 +1054,7 @@ extern "C" int fstx_read(const fstx_plan* p, const fstx_read_host* host, int thr
       fstx::fail(FSTX_ERR_ARG, "rows out of order need the host's on_strings_at callback");
     if (p->has_dict && (!host->on_dict || !host->on_codes))
       fstx::fail(FSTX_ERR_ARG, "the file has string dictionaries but the host gave no dictionary callbacks");
-    fstx::Reader r(*p, *host, verify != 0);
+    fstx::Reader r(*p, *host, verify);
     r.run(threads);
     return FSTX_OK;
   } catch (...) {

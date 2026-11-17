@@ -14,10 +14,10 @@ extern "C" SEXP _fstx_fstx_write_impl(SEXP cols, SEXP path, SEXP names, SEXP phy
     return cpp11::as_sexp(fstx_write_impl(cpp11::as_cpp<cpp11::decay_t<SEXP>>(cols), cpp11::as_cpp<cpp11::decay_t<SEXP>>(path), cpp11::as_cpp<cpp11::decay_t<SEXP>>(names), cpp11::as_cpp<cpp11::decay_t<SEXP>>(phys), cpp11::as_cpp<cpp11::decay_t<SEXP>>(logical), cpp11::as_cpp<cpp11::decay_t<SEXP>>(ordered), cpp11::as_cpp<cpp11::decay_t<SEXP>>(levels), cpp11::as_cpp<cpp11::decay_t<SEXP>>(tzone), cpp11::as_cpp<cpp11::decay_t<SEXP>>(attrs), cpp11::as_cpp<cpp11::decay_t<SEXP>>(table_attrs), cpp11::as_cpp<cpp11::decay_t<double>>(nrow), cpp11::as_cpp<cpp11::decay_t<int>>(codec), cpp11::as_cpp<cpp11::decay_t<int>>(level), cpp11::as_cpp<cpp11::decay_t<int>>(threads), cpp11::as_cpp<cpp11::decay_t<bool>>(utf8_locale), cpp11::as_cpp<cpp11::decay_t<int>>(profile), cpp11::as_cpp<cpp11::decay_t<int>>(keep_pct), cpp11::as_cpp<cpp11::decay_t<int>>(force_encoding), cpp11::as_cpp<cpp11::decay_t<bool>>(append), cpp11::as_cpp<cpp11::decay_t<int>>(test_crash)));
   END_CPP11
 }
-SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads, bool verify, int mode, SEXP as_factor, SEXP presize, SEXP rows);
+SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads, int verify, int mode, SEXP as_factor, SEXP presize, SEXP rows);
 extern "C" SEXP _fstx_fstx_read_impl(SEXP path, SEXP columns, SEXP from, SEXP to, SEXP threads, SEXP verify, SEXP mode, SEXP as_factor, SEXP presize, SEXP rows) {
   BEGIN_CPP11
-    return cpp11::as_sexp(fstx_read_impl(cpp11::as_cpp<cpp11::decay_t<SEXP>>(path), cpp11::as_cpp<cpp11::decay_t<SEXP>>(columns), cpp11::as_cpp<cpp11::decay_t<double>>(from), cpp11::as_cpp<cpp11::decay_t<double>>(to), cpp11::as_cpp<cpp11::decay_t<int>>(threads), cpp11::as_cpp<cpp11::decay_t<bool>>(verify), cpp11::as_cpp<cpp11::decay_t<int>>(mode), cpp11::as_cpp<cpp11::decay_t<SEXP>>(as_factor), cpp11::as_cpp<cpp11::decay_t<SEXP>>(presize), cpp11::as_cpp<cpp11::decay_t<SEXP>>(rows)));
+    return cpp11::as_sexp(fstx_read_impl(cpp11::as_cpp<cpp11::decay_t<SEXP>>(path), cpp11::as_cpp<cpp11::decay_t<SEXP>>(columns), cpp11::as_cpp<cpp11::decay_t<double>>(from), cpp11::as_cpp<cpp11::decay_t<double>>(to), cpp11::as_cpp<cpp11::decay_t<int>>(threads), cpp11::as_cpp<cpp11::decay_t<int>>(verify), cpp11::as_cpp<cpp11::decay_t<int>>(mode), cpp11::as_cpp<cpp11::decay_t<SEXP>>(as_factor), cpp11::as_cpp<cpp11::decay_t<SEXP>>(presize), cpp11::as_cpp<cpp11::decay_t<SEXP>>(rows)));
   END_CPP11
 }
 // r_lazy.cpp

@@ -183,9 +183,14 @@ data; a writer must not set the flag with a range that leaves out a value.
 
 null_count must equal the number of rows the page's missing-value block marks, and 0 when the mode is 0. A
 writer must write mode 0 when no row is missing; a reader must still accept mode 1 or 2 with no row marked.
-fstx does not compare null_count with the body. It trusts it the way it trusts min and max: to skip pages in
-filters and to tell R and Arrow that a column has no missing values. A wrong count gives wrong answers
-(missing values that are not reported as missing), not a crash.
+By default fstx does not compare null_count with the body. It trusts it the way it trusts min and max: to skip
+pages in filters and to tell R and Arrow that a column has no missing values. A wrong count gives wrong answers
+(missing values that are not reported as missing), not a crash. With the R option `fstx.verify_nulls` set to
+TRUE, fstx counts the missing values of every page it decodes in full (read_fstx, lazy columns, the Arrow
+stream; not the pages a filter skips or tests) and refuses the file as corrupt when the count differs from
+null_count. It counts what decoding gives: the rows the missing-value block marks plus any unmarked value that
+is the missing-value pattern (for double pages, as the writer counts: a NaN whose low 32 bits are 1954, so an
+NA_real_ with the quiet bit set, which the writer stores as a value, counts too).
 
 Pages must lie wholly before the footer; fstx does not check that pages do not overlap one another.
 
@@ -344,7 +349,7 @@ A writer must not store the missing-value pattern of a page kind (`0x80000000` o
 If a file does, the value is still missing for an R reader, since R has no other meaning for that pattern,
 but null_count and the missing-value block do not show it; fstx does not check for it. Readers for other
 systems should treat such a value as missing too. On a page whose null_count is 0, fstx's Arrow stream does not look for the pattern
-and passes it on as a value.
+and passes it on as a value, unless the null_count check of section 4.5 is on, which refuses such a page.
 
 A logical page stores 1 for TRUE and 0 for FALSE; fstx does not check that other values are absent.
 
@@ -620,8 +625,8 @@ input; a writer following this document never produces them):
   missing-value blocks and byte blocks are not checked.
 - Values under missing rows of numeric and code pages are not checked (6.2); logical values other than
   0 and 1 are not refused.
-- Dictionary page first_row, page min / max / flags, null_count against the missing-value block, and
-  overlapping pages are not checked.
+- Dictionary page first_row, page min / max / flags, null_count against the missing-value block (unless
+  the opt-in null_count check is on, section 4.5), and overlapping pages are not checked.
 - Extra bytes at the end of a runs block payload are ignored.
 - Bytes after the last child of an RLE, DICT, ALP or ALPRD payload, and after the packed vectors of a FOR or
   DELTA payload, are ignored.

@@ -827,7 +827,8 @@ SEXP fstx_arrow_stream_impl(SEXP args) {
   A.threads = Rf_asInteger(arg(args, "threads"));
   SEXP br = arg(args, "batch_rows");
   A.batch_rows = br == R_NilValue ? 0 : (uint64_t)Rf_asReal(br);
-  A.verify = 1;
+  SEXP vf = arg(args, "verify");  // FSTX_VERIFY_* bits from R (.verify_bits())
+  A.verify = vf == R_NilValue ? FSTX_VERIFY_HASH : Rf_asInteger(vf);
   fstx_error err;
   if (fstx_arrow_stream_open(p.c_str(), &A, out, &err) != FSTX_OK) cpp11::stop("fstx: %s", err.message);
   return R_NilValue;

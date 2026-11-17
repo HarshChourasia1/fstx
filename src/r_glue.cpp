@@ -331,7 +331,7 @@ SEXP str1(const char* p, uint32_t n) { return cpp11::safe[Rf_mkCharLenCE](p, (in
 // deferred strings that serialise in R's standard format).
 // as_factor: NULL, TRUE (all-dictionary string columns) or column names. presize: an R function(nodes, bytes)
 // called before an eager read that builds many R strings, or NULL.
-SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads, bool verify, int mode,
+SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads, int verify, int mode,
                     SEXP as_factor, SEXP presize, SEXP rows) {
   FileRef f = open_shared_or_stop(path_of(path));
   fstx_file_info info;
@@ -464,7 +464,7 @@ SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads
       fallback[(R_xlen_t)j] = TRUE;
     } else if (fflag[j]) {
       fstx_colsrc* src = nullptr;
-      if (fstx_colsrc_open(f.get(), idx[j], r0, r1, verify ? 1 : 0, 1, &src, &err) != FSTX_OK) stop_err(err);
+      if (fstx_colsrc_open(f.get(), idx[j], r0, r1, verify, 1, &src, &err) != FSTX_OK) stop_err(err);
       fstx_colsrc_info si;
       fstx_colsrc_info_get(src, &si);
       if (si.rows == 0 || !si.all_dict) {
@@ -532,7 +532,7 @@ SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads
     host.on_dict = on_dict;
     host.on_codes = on_codes;
     host.on_strings_at = on_strings_at;
-    int rc = fstx_read(plan.get(), &host, threads, verify ? 1 : 0, &err);
+    int rc = fstx_read(plan.get(), &host, threads, verify, &err);
     if (ctx.pending) throw cpp11::unwind_exception(ctx.token);  // an R error inside a callback: re-raise it now
     if (rc != FSTX_OK) stop_err(err);
   }
@@ -542,7 +542,7 @@ SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads
     if (how[j] != 1 && how[j] != 2 && how[j] != 4) continue;
     const bool lazy = how[j] == 2;
     fstx_colsrc* src = nullptr;
-    if (fstx_colsrc_open(f.get(), idx[j], r0, r1, verify ? 1 : 0, lazy ? 0 : 1, &src, &err) != FSTX_OK) stop_err(err);
+    if (fstx_colsrc_open(f.get(), idx[j], r0, r1, verify, lazy ? 0 : 1, &src, &err) != FSTX_OK) stop_err(err);
     cpp11::sexp xp = make_xp(src, lazy, lazy, mode == 3);
     bool plain = how[j] == 4;
     if (!lazy) {

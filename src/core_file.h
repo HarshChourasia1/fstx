@@ -55,12 +55,17 @@ const uint8_t* page_body(const fstx_file& F, uint32_t col, const fb::Page* p, bo
 [[noreturn]] void rethrow_for_page(const fstx_file& F, uint32_t col, const fb::Page* p);
 // Throws FSTX_ERR_CORRUPT if a decoded string run holds a NUL byte (R strings cannot).
 void check_no_nul(const char* bytes, const int32_t* lens, uint32_t n);
+// FSTX_VERIFY_NULLS: throws FSTX_ERR_CORRUPT unless the whole decoded page (n values) holds exactly the page's
+// null_count missing values. na is the int32 pattern: NA_integer_, or -1 for code pages and string lengths.
+// Doubles count R's NA_real_ as the writer does: a NaN whose low word is 1954.
+void check_nulls(const fb::Page* p, const int32_t* x, uint32_t n, int32_t na);
+void check_nulls(const fb::Page* p, const double* x, uint32_t n);
 
 // Tests only: copies src to dst through compaction with fields overridden, to make files a newer fstx could
 // write (unknown feature bits, reserved numbers). -1 = keep the field. Page fields act on column 0's first page.
 struct Forge {
   int hdr_flags = -1, version = -1, phys0 = -1, logical0 = -1, codec0 = -1, kind0 = -1, tag0 = -1, na0 = -1,
-      profile = -1;
+      profile = -1, nulls0 = -1;
   uint64_t req = 0, opt = 0;
   std::vector<std::string> names;
 };
