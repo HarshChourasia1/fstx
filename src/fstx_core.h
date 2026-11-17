@@ -260,7 +260,8 @@ typedef struct fstx_column_data {
    * runtime. Fill ptrs/lens for rows [row, row + n); lens[i] = -1 marks NA.
    * Return 0, or 1 if a string is not UTF-8 / ASCII (the writer then fails with FSTX_ERR_TRANSLATE before
    * writing any page), or 2 for strings that can never be converted (e.g. R "bytes" encoding).
-   * The pointers must stay valid until fstx_writer_append returns: the writer may keep them between calls. */
+   * The pointers must stay valid from one get_strings call to the next within one fstx_writer_append call (the
+   * writer keeps them); it never uses them after fstx_writer_append returns. */
   int (*get_strings)(void* ctx, uint64_t row, uint32_t n, const char** ptrs, int32_t* lens);
   void* ctx;
 } fstx_column_data;

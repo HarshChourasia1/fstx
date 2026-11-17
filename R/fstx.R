@@ -12,8 +12,10 @@ NULL
 .encoding_ids <- c(plain = 1L, const = 2L, "for" = 3L, delta = 4L, rle = 5L, dict = 6L, split = 7L,
                    alp = 8L, alprd = 9L, fsst = 10L)
 # test flags that go with .encoding: string dictionaries with the forced tag on their code pages, the same with
-# an FSST-coded dictionary page, the codec kept on every page, and no string pointer cache (strings read twice)
-.encoding_flags <- c(dict_codes = 256L, fsst_dict = 512L, keep_codec = 1024L, no_str_cache = 2048L)
+# an FSST-coded dictionary page, the codec kept on every page, no string pointer cache (strings read twice), and
+# a string pointer cache of 150,000 rows' worth (only some chunks get one)
+.encoding_flags <- c(dict_codes = 256L, fsst_dict = 512L, keep_codec = 1024L, no_str_cache = 2048L,
+                     small_str_cache = 4096L)
 
 # Argument checks. `fn` names the exported function in the message; it defaults to none so that callers in
 # files other workstreams own keep working.

@@ -931,7 +931,7 @@ static void configure(fstx::WriterImpl& W, const fstx_write_column* cols, uint32
     if (opt->force_encoding) {
       namespace e = fstx::enc;
       const int f = opt->force_encoding & 0xff, fl = opt->force_encoding & ~0xff;
-      if (fl & ~(e::F_STR_DICT | e::F_DICT_FSST | e::F_KEEP_CODEC | e::F_NO_STR_CACHE))
+      if (fl & ~(e::F_STR_DICT | e::F_DICT_FSST | e::F_KEEP_CODEC | e::F_NO_STR_CACHE | e::F_SMALL_STR_CACHE))
         fstx::fail(FSTX_ERR_ARG, "unknown encoding flags");
       if (f == e::T_FSST) W.force_str = f;
       else if (f == e::T_DICT || f == e::T_PLAIN) W.force_num = W.force_str = f;
@@ -942,6 +942,7 @@ static void configure(fstx::WriterImpl& W, const fstx_write_column* cols, uint32
         W.force_codes = W.force_num;
       }
       W.keep_codec = (fl & e::F_KEEP_CODEC) != 0;
+      if (fl & e::F_SMALL_STR_CACHE) W.str_cache_bytes = e::kTestStrCacheBytes;
       if (fl & e::F_NO_STR_CACHE) W.str_cache_bytes = 0;
     }
     if (opt->page_bytes) {

@@ -128,3 +128,29 @@ test_that("the string pointer cache leaves the written bytes unchanged", {
   expect_identical(unname(tools::md5sum(ps[3])), unname(tools::md5sum(ps[4])))
   expect_identical(read_fstx(ps[3]), rbind(x1, x1))
 })
+
+test_that("bytes are the same at 1 and many threads when only some string chunks get a pointer cache", {
+  # .encoding = "small_str_cache": a 150,000-row budget, so two of the five 60,000-row plain / FSST chunks below
+  # get a cache; which two depends on thread timing at many threads. s and t start with long strings (vectors
+  # over 1 MB are split row by row): at 1 thread s is cached and t is not.
+  ps <- replicate(3, tempfile(fileext = ".fstx"))
+  on.exit(unlink(ps))
+  ss <- ws3_strings()
+  set.seed(34)
+  n <- 60000
+  long_first <- function() paste(c(sample(ss$long, 2048, TRUE), sample(ss$short, n - 2048, TRUE)), seq_len(n))
+  x <- data.frame(s = long_first(), u1 = sprintf("a%06d", sample.int(n)), u2 = sprintf("b%06d", sample.int(n)),
+                  k = sample(c("a", "bb", NA), n, TRUE), u3 = sprintf("c%06d", sample.int(n)), t = long_first(),
+                  stringsAsFactors = FALSE)
+  write_fstx(x, ps[1], threads = 1, .encoding = "no_str_cache")
+  pg <- fstx_pages(ps[1])
+  expect_true(all(pg$kind[pg$name != "k"] == "string"))
+  ref <- unname(tools::md5sum(ps[1]))
+  write_fstx(x, ps[2], threads = 1, .encoding = "small_str_cache")
+  expect_identical(unname(tools::md5sum(ps[2])), ref, label = "1 thread")
+  for (r in 1:4) {
+    write_fstx(x, ps[3], threads = test_threads(14), .encoding = "small_str_cache")
+    expect_identical(unname(tools::md5sum(ps[3])), ref, label = paste("many threads, run", r))
+  }
+  expect_identical(read_fstx(ps[3]), x)
+})

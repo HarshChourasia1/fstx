@@ -41,7 +41,14 @@ constexpr int kMaxTag = 10;
 // F_DICT_FSST as F_STR_DICT, and the dictionary page is FSST-coded
 // F_KEEP_CODEC keep the codec on every page, even when it saves nothing
 // F_NO_STR_CACHE no string pointer cache: pages read the strings through the host again (the cache-off path)
-enum { F_STR_DICT = 0x100, F_DICT_FSST = 0x200, F_KEEP_CODEC = 0x400, F_NO_STR_CACHE = 0x800 };
+// F_SMALL_STR_CACHE a string pointer cache budget of kTestStrCacheBytes, so only some chunks get one
+enum {
+  F_STR_DICT = 0x100,
+  F_DICT_FSST = 0x200,
+  F_KEEP_CODEC = 0x400,
+  F_NO_STR_CACHE = 0x800,
+  F_SMALL_STR_CACHE = 0x1000
+};
 
 // page kinds (low nibble of chain byte 0, and byte 0 of the page body)
 enum : uint8_t { K_INT = 1, K_DBL = 2, K_LGL = 3, K_STR = 4, K_CODES = 5, K_DICT = 6 };
@@ -201,6 +208,7 @@ struct StrChunk {
 };
 // String pointer cache budget per write or append call: at most 64 MB (about 5.6 million cached strings).
 constexpr uint64_t kStrCacheBytes = 64ull << 20;
+constexpr uint64_t kTestStrCacheBytes = 12ull * 150000;  // tests (F_SMALL_STR_CACHE): 150,000 rows' worth
 
 // Reads rows [r0, r1) through the host callback, picks dictionary / FSST / plain, builds what the pages
 // need. force: 0, T_DICT (optionally | F_DICT_FSST), T_FSST or T_PLAIN. Returns the host's error code (0 = fine).
