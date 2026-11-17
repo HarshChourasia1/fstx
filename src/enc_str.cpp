@@ -118,8 +118,9 @@ struct FsstLane {
 };
 
 // Per-thread scratch kept between pages (the pool threads live on), up to kKeepScratch bytes; bigger asks are freed after
-// use. No zero fill: every byte is written before it is read. The kept block grows to the largest ask so far (not
-// straight to kKeepScratch: two 4 MB blocks per pool thread were 112 MB of committed memory at 14 threads).
+// use. No zero fill: every byte is written before it is read. The kept block grows as asks grow, at least doubling
+// up to kKeepScratch (not straight to it: two 4 MB blocks per pool thread were 112 MB of committed memory at 14
+// threads). cap is 0 while a new block is allocated, so a failed allocation leaves no stale size behind.
 constexpr size_t kKeepScratch = 4u << 20;
 struct Scratch {
   std::unique_ptr<uint8_t[]> keep;
@@ -132,9 +133,11 @@ struct Scratch {
     }
     big.reset();
     if (cap < n) {
+      const size_t c = std::min(kKeepScratch, std::max(n, 2 * cap));
       keep.reset();
-      keep.reset(new uint8_t[n]);
-      cap = n;
+      cap = 0;
+      keep.reset(new uint8_t[c]);
+      cap = c;
     }
     return keep.get();
   }
@@ -258,6 +261,9 @@ size_t fsst_encode(const void* enc, size_t n, const size_t* len, const unsigned 
         ++L.line;
       }
     }
+    // fsst_step loads 8 bytes, so steps near the round's last terminator read up to 7 bytes past it. Those bytes
+    // never change the output (no symbol holds the terminator), but they were uninitialised scratch (valgrind).
+    std::memset(L.stage + s, 0, 8);
     L.nch = k;
     L.c = L.stage;
     L.e = L.stage + s;
