@@ -17,10 +17,11 @@ writing and wheels build on this layout. The API it grows into is in `DESIGN.md`
 - Highway dynamic dispatch works under both: AVX2, SSE4, SSE2 compiled, AVX2 picked on this CPU; the kernel
   self-test passes under each target and with SIMD off.
 
-Not built or tested: Linux, macOS, ARM, Python other than 3.12 (3.9 to 3.11 take the non-abi3 path, and 3.9
-needs nanobind 2: neither was run), the abi3 wheel on a newer Python, an sdist, `R CMD build` after the
-`.Rbuildignore` change (the change is one line, `^python$`; the two engine edits are behind
-`_MSC_VER && !__clang__`).
+Not built or tested in step 1: Linux, macOS, ARM, Python other than 3.12, the abi3 wheel on a newer Python, an
+sdist, `R CMD build` after the `.Rbuildignore` change. Step 5 (wheels, below) covered the sdist, 3.11, abi3 on
+3.14, Linux x86_64 under WSL, and the R side: `R CMD build` (R 4.6.1, Rtools45) of the tree with `python/` in it
+gave `fstx_1.0.0.tar.gz` with no `python/` entry, `R CMD INSTALL` had no warning, and a write / read round trip
+(none, lz4, zstd) came back identical. Python 3.9 is dropped (floor 3.10).
 
 ## Build and test
 
@@ -44,12 +45,42 @@ python -m pytest python/tests -q -rs
 - Desktop helper scripts (not in the repo): `C:\Users\31har\fstx\v1\py\scripts\` (`env.cmd`, `coretest.cmd`,
   `wheel.cmd <msvc|clangcl>`, `guarded.ps1`); sources in `...\py\fstx`, venv in `...\py\venv`, logs in `...\py\build`.
 
+## Wheels, sdist and version
+
+- Version: one source, `version` in `python/pyproject.toml`. A release: set it there (say `1.0.0`), commit, tag
+  `py-v1.0.0`, push the tag. The workflow's sdist job stops when tag and pyproject disagree. The engine version
+  (written into every file's created_by) stays the one in `DESCRIPTION`; the Python version can move on its own
+  (a binding-only fix is a Python release, not an engine one).
+- sdist: `python python/tools/make_core.py` (copies the engine into `python/core/` and refreshes `python/LICENSES/`),
+  then `python -m build --sdist python --outdir dist`. It builds anywhere: CMake takes `core/` when it is there,
+  `../src` otherwise. Without make_core the sdist has no engine and its build stops at "engine sources not found".
+  Delete `python/core/` after making the sdist: while it exists, builds in the tree use it and not your `src/` edits.
+- Wheels: `.github/workflows/python-wheels.yml` (cibuildwheel), on a `py-v*` tag or by hand, never on plain pushes.
+  Windows x64 (cl), Linux x86_64 and aarch64 (manylinux_2_28; aarch64 on the native `ubuntu-24.04-arm` runner),
+  macOS x86_64 (`macos-15-intel`, 10.15+) and arm64 (`macos-15`, 11+). Per platform: a cp310 and a cp311 wheel
+  and one cp312-abi3 wheel, which cibuildwheel also tests on 3.13 and 3.14. pytest runs on every wheel. The sdist
+  job also unpacks the sdist away from the tree, builds a wheel from it and runs pytest. Artifacts only: the
+  PyPI job is in the file as comments, not enabled.
+- Licences: `python/LICENSE` (fstx, MIT) and `python/LICENSES/` go into the sdist and into the wheel's
+  `.dist-info/licenses/` (`wheel.license-files`). The metadata is version 2.1, so there are no `License-File:` lines;
+  that needs `project.license-files` (PEP 639) and scikit-build-core 0.11+ in `build-system.requires`.
+
+Checked on 17 Nov 2026 (desktop): sdist (244 entries, engine in `core/`) unpacked outside the git tree built
+`cp312-abi3-win_amd64` and `cp311-cp311-win_amd64` wheels with cl; pytest 132 passed on 3.12, 3.11 and with the
+abi3 wheel on 3.14. The same sdist in WSL Ubuntu 24.04 (GCC 13.3) built `cp312-abi3-linux_x86_64`, 132 passed, AVX2
+dispatch (a plain Linux wheel; auditwheel puts it at manylinux_2_38 because of the newer glibc there, the
+manylinux_2_28 image builds the real one). Not run: the workflow itself, so macOS, Linux aarch64, manylinux,
+cp310, cp313, abi3audit and delvewheel are first tried on GitHub.
+
 ## Layout
 
 ```
 python/
-  pyproject.toml        scikit-build-core; abi3 (cp312) wheel; nanobind 2 on Python 3.9, nanobind 3 on 3.10+
+  pyproject.toml        scikit-build-core; Python 3.10+; abi3 (cp312) wheel; the version; [tool.cibuildwheel]
   CMakeLists.txt        fstx_engine (static: src/ engine + vendored libs), _core (nanobind), coretest (option)
+  LICENSE               fstx's MIT licence (full text; the R package's LICENSE is the CRAN two-line form)
+  LICENSES/             copies of inst/COPYRIGHTS and src/vendor/<lib>/LICENSE, shipped in wheel and sdist
+  tools/make_core.py    copies the engine into core/ (git-ignored) for the sdist, refreshes LICENSES/
   cmake/msvc_compat.h   cl.exe only, force-included (/FI): __builtin_ctzll / clzll, __attribute__ dropped
   src/binding.h         shared by the binding: File (holds fstx_file*), raise_error / check, init_* declarations
   src/module.cpp        NB_MODULE(_core): FstxError, ERR_* codes, build_info, set_simd, kernel_selftest, shutdown
@@ -125,15 +156,9 @@ Floating point: files must be byte-identical on every CPU, so no fused multiply-
 
 ## Open points
 
-- Python 3.9: nanobind 3 needs 3.10. `pyproject.toml` pins nanobind 2 for 3.9, but that path was not built.
-  3.9 is past end of life; dropping it would remove the pin.
 - Which Windows compiler the wheels use: both pass. clang-cl compiles the same code paths as the R build
   (vector extensions, always_inline) and Highway recommends it over cl; cl is what pip and cibuildwheel use by
-  default. No speed comparison was run.
-- sdist: `CMakeLists.txt` reads the engine from `../src` (and the version from `../DESCRIPTION`), which an
-  sdist made inside `python/` does not contain. It already accepts a copy in `python/core/` (with `DESCRIPTION`
-  in it, or `-DFSTX_CORE_VERSION=`); the wheels step has to add the copy step. Licence files of the vendored
-  libraries (`inst/COPYRIGHTS`, `src/vendor/*/LICENSE`) are not in the wheel yet.
-- The package version is a fixed `1.0.0.dev0` in `pyproject.toml`; the engine version comes from `DESCRIPTION`.
+  default, so the wheels use cl now. No speed comparison was run. Wheels with clang-cl: `CC` and `CXX` set to
+  `clang-cl` and `CMAKE_GENERATOR=Ninja` in a Windows `environment` under `[tool.cibuildwheel]`.
 - `fstx_hardware_threads()` honours `_R_CHECK_LIMIT_CORES_` and `OMP_THREAD_LIMIT` in Python too.
 - Build warnings were not reviewed one by one (lines with "warning" in the coretest build logs: 1 under cl, 6 under clang-cl).
