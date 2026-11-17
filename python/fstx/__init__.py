@@ -1,6 +1,6 @@
 """fstx: fast, safe column-store files (the FST-X format).
 
-This first step opens a file and reports its metadata (design: DESIGN.md in the source tree):
+Opening a file and reading its metadata (design: DESIGN.md in the source tree):
 
     import fstx
     m = fstx.metadata("data.fstx")      # FileMeta: nrow, ncol, row_groups, pages, profile, columns, ...
@@ -9,7 +9,11 @@ This first step opens a file and reports its metadata (design: DESIGN.md in the 
     with fstx.open("data.fstx") as f:   # the open file that reading will be added to
         f.num_rows, f.num_columns, f.column_names, f.columns
 
-read_fstx, write_fstx and the rest of DESIGN.md section 2 come next.
+Writing takes a pyarrow.Table or a pandas / polars DataFrame:
+
+    fstx.write_fstx(table, "data.fstx")                 # profile=, compress=, level=, append=, int64=
+
+read_fstx and the rest of DESIGN.md section 2 come next.
 """
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ import atexit as _atexit
 
 from . import _core
 from ._file import ColumnMeta, File, FileMeta, metadata, open  # noqa: A004 (open is the package's own verb)
+from ._write import write_fstx
 
 FstxError = _core.FstxError
 FstxError.__doc__ = (
@@ -58,5 +63,6 @@ __all__ = [
     "build_info",
     "metadata",
     "open",
+    "write_fstx",
     "__version__",
 ]

@@ -30,7 +30,7 @@ minimum-version = "build-system.requires"
 cmake.version = ">=3.21"
 cmake.build-type = "Release"
 build-dir = "build/{wheel_tag}"
-# One abi3 wheel for CPython 3.12 and later; 3.9 to 3.11 get an ordinary per-version wheel
+# One abi3 wheel for CPython 3.12 and later; 3.10 and 3.11 get an ordinary per-version wheel
 # (nanobind needs 3.12 for the stable ABI; scikit-build-core ignores this key on older Pythons).
 wheel.py-api = "cp312"
 wheel.packages = ["fstx"]

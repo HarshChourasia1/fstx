@@ -162,3 +162,60 @@ Floating point: files must be byte-identical on every CPU, so no fused multiply-
   `clang-cl` and `CMAKE_GENERATOR=Ninja` in a Windows `environment` under `[tool.cibuildwheel]`.
 - `fstx_hardware_threads()` honours `_R_CHECK_LIMIT_CORES_` and `OMP_THREAD_LIMIT` in Python too.
 - Build warnings were not reviewed one by one (lines with "warning" in the coretest build logs: 1 under cl, 6 under clang-cl).
+
+## Writing: `write_fstx` (step 3, branch `py-write`)
+
+Tested 17 Nov 2026 on the desktop (Windows x64, Python 3.12, pyarrow 26.0.1, pandas 3.1.1, polars 2.1.0), cl
+and clang-cl: 260 tests pass under each (`tests/test_write.py` is new). R 4.5.1 on
+the laptop then read the files: `check_roundtrip.R` 69 files = 57 PASS, 11 KNOWN, 1 FAIL (below);
+`check_native.R` 23 files, 23 PASS. No engine (`src/`) change was needed.
+
+Layout:
+
+- `fstx/_write.py`: `write_fstx(data, path, *, profile=None, compress=None, level=None, threads=None,
+  append=False, int64="auto")`. Every type decision is here, with pyarrow (DESIGN.md sections 3 to 5).
+- `fstx/_fxa1_write.py`: the FXA1 encoder (`encode`, `Vec`, `logical` / `integer` / `double` / `character`)
+  and a private `parse`, which the writer needs to change blobs (row names, data.table key and index, NA
+  levels). The reader's decoder is its own file (`_fxa1.py`); the two can be joined when the branches meet.
+- `src/write.cpp`: `_core.write(path, columns, table_attrs, nrow, codec, level, threads, profile, keep_pct,
+  append)`. A column is `(name, phys, logical, ordered, levels, tzone, attrs, [Array.__arrow_c_array__()...])`.
+  Number columns arrive as one int32 / float64 array with R's NA already filled in; string columns as their
+  chunks (string, large_string, binary, large_binary). With the GIL released it first checks every string
+  (UTF-8 for text, no NUL, at most 2^31-1 bytes, sound offsets; `ValueError` with column and 0-based row),
+  then runs the engine's open / append / close. The string callback reads Arrow buffers only.
+- `tests/golden_tables.py`: builds the table `read_fstx()` is to return from a golden sidecar, and a stand-in
+  `to_pandas()`. The write tests use it because this branch has no reader. `tests/golden/full/*.json` hold the
+  values the sidecars cut short (`make_full_values.R`, checked against the sidecar md5).
+- `tests/golden/check_native.R`: R reads the files made from plain Python data
+  (`tests/golden/from_python/native/`) and compares them with the same tables built in R.
+- `tests/golden/from_python/` is made by the tests and not committed.
+
+Metadata contract (the reader has to produce exactly this for a round trip):
+
+- field `b"fstx.r"`: JSON `{"phys", "logical", "class", "tzone"}`: phys integer / double / logical /
+  character; logical none / factor / Date / POSIXct; class = R's full class vector (absent for none); tzone
+  only for a POSIXct column that has the attribute. Wanted on every column, and always next to `fstx.attrs`.
+- field `b"fstx.attrs"`: the column's attribute blob, raw. Schema `b"fstx.table_attrs"`: the table's blob, raw.
+  Schema `b"fstx.nrow"`: rows when read (decimal text); used only for a table blob in R serialization.
+- A `binary` column is written as text only when its `fstx.r` says phys character (`invalid_utf8="binary"`).
+- pandas: `df.attrs["fstx"] = {"table_attrs", "nrow", "columns": [{"name", "r", "attrs"}]}`, blobs as bytes or
+  base64 text. The index is the row names: RangeIndex 0..n-1 = none, distinct strings = character, distinct
+  int32 whole numbers = integer; anything else is refused (reset_index).
+- Metadata that does not fit the Arrow type any more is ignored with a `UserWarning`.
+- A zero-column table keeps its row count only as a table built from an empty struct array, with the schema
+  metadata put on the record batch (`Table.replace_schema_metadata` loses the rows).
+
+Engine use: the engine has one worker pool that runs one job at a time (two writes from two Python threads
+gave `FstxError: worker pool is already running a job`). `_write._ENGINE_LOCK` makes writes take turns; the
+reader has to take the same lock around its engine calls.
+
+Open after this step:
+
+- `check_roundtrip.R` FAIL: `difftime.pandas.fstx`, column `weeks`, row 3: NaN comes back NA. A pandas float
+  column cannot tell NaN from NA (the same reason `basic.pandas.fstx` is KNOWN); the manifest expects
+  "identical if kept as float" although the column holds a NaN. Either the manifest line changes or
+  `to_pandas()` hands doubles over as the nullable `Float64` dtype.
+- `pyarrow` is imported by `fstx/_write.py` but is not in `pyproject.toml` dependencies yet.
+- Error rows are counted from 0. An append reads the file's metadata before taking the engine lock, so two
+  threads appending to the same file at once are not protected from each other.
+- Not tested: a string column past 2 GB, string_view input, float16, Linux / macOS, Python other than 3.12.
