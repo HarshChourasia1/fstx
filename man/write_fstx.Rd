@@ -23,9 +23,9 @@ write_fstx(x, path, profile = c("balanced", "fast", "small"), compress = NULL,
     appended to. The profile defaults to the file's (a profile written by a later fstx: the new rows are
     encoded as \code{"balanced"} and the file keeps its stored value). An interrupted append leaves the old
     table readable. A file with an optional feature this fstx does not know cannot be appended to ("Update fstx to change this
-    file; reading works"). Appending reads the file's table attributes, with \code{unserialize()} when they
-    are stored with R's \code{serialize()}, so the trusted-source note in \code{\link{read_fstx}} applies
-    to those files.}
+    file; reading works"). Appending reads the file's table and column attributes, with \code{unserialize()}
+    for any stored with R's \code{serialize()} (append has no \code{attributes = FALSE} switch), so the
+    trusted-source note in \code{\link{read_fstx}} applies to those files.}
 }
 \details{
 Every page is encoded with the lightweight encoding that fits it best (bit-packing, frame-of-reference,

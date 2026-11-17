@@ -268,7 +268,7 @@ read_fstx <- function(path, columns = NULL, from = 1, to = NULL, threads = fstx_
   }
   n <- r$nrow
   ta <- .attr_decode(r$table_attrs, path, "table", attributes)
-  if (is.null(ta)) ta <- list(class = "data.frame")
+  ta <- if (is.null(ta)) list(class = "data.frame") else .table_attrs_check(ta, r$file_rows, r$names, path)
   part_rows <- n != r$file_rows || !is.null(rows)
   if (is.null(ta[["row.names"]])) {
     ta[["row.names"]] <- .set_row_names(as.integer(n))
@@ -285,7 +285,7 @@ read_fstx <- function(path, columns = NULL, from = 1, to = NULL, threads = fstx_
   }
   nms <- r$names
   if (!r$all_columns && anyDuplicated(nms)) nms <- make.unique(nms)   # as x[, cols] does
-  attributes(res) <- c(list(names = nms), ta)
+  tryCatch(attributes(res) <- c(list(names = nms), ta), error = function(e) .attr_corrupt(path, "table", conditionMessage(e)))
   if (inherits(res, "data.table") && requireNamespace("data.table", quietly = TRUE))
     res <- data.table::setalloccol(res)
   res
@@ -318,6 +318,7 @@ fstx_meta <- function(path) {
     if (!is.null(a[["class"]])) cls[i] <- paste(a[["class"]], collapse = "/")
   }
   ta <- .attr_decode(m$table_attrs, path, "table")
+  if (!is.null(ta)) ta <- .table_attrs_check(ta, m$nrow, m$name, path)
   structure(list(
     path = path, nrow = m$nrow, ncol = m$ncol, file_size = m$file_size, row_groups = m$row_groups,
     pages = m$pages, format_version = m$format_version, profile = m$profile, table_class = ta[["class"]],

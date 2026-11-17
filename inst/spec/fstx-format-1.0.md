@@ -618,9 +618,13 @@ An attribute blob is one of two encodings, told apart by its first bytes:
   one attribute list, then nothing.
 - **R serialization** (the fallback): `serialize(x, NULL, xdr = FALSE)` of the named list, R's native
   binary format, which starts with `B\n`. An R serialization always starts with `A\n`, `B\n` or `X\n`, so
-  it never starts with "FXA". fstx 1.0 writes it only for attributes FXA1 cannot hold: lists, environments,
-  functions, complex or raw values, values nested deeper than below, vectors of 2^31-1 or more values,
-  strings marked "bytes". Files written by fstx 1.0 builds before FXA1 hold only this encoding.
+  it never starts with "FXA". fstx 1.0 writes it only for attributes FXA1 cannot hold, which is exactly
+  when one of these holds anywhere in the list: a value that is not a logical, integer, double or character
+  vector (lists, environments, functions, complex or raw values, ...); attributes nested deeper than the
+  three levels below; a list whose names are missing, empty or repeated; a vector of 2^31-1 or more values;
+  strings marked "bytes"; a name or string value that `enc2utf8()` cannot convert or that is not valid UTF-8
+  after it; the strings of one vector totalling 2^31-1 or more bytes. Files written by fstx 1.0 builds
+  before FXA1 hold only this encoding.
 
 An attribute list, all integers i32 little-endian:
 
@@ -633,6 +637,10 @@ An attribute list, all integers i32 little-endian:
 | length | 4 | number of values, 0 to 2^31-2 |
 | values | | logical and integer: length x i32 (NA = -2^31; logical only 0, 1 or NA). double: length x 8 bytes, the IEEE 754 bits (NA and NaN payloads kept). character: length x i32 byte lengths (-1 = NA), then the bytes of the non-NA strings back to back (UTF-8 as written; no NUL) |
 | attrs | | the value's own attribute list (count 0 for none) |
+
+A count of 0 is valid at every level (at level 1 it is an empty list: no attributes). fstx never writes
+it at level 1, as it stores no blob at all for no attributes; as a table blob it is corrupt (no class,
+below).
 
 Nesting: the blob's list is level 1, a value's own list is level 2 and the list of a level-2 value is level
 3; the values of a level-3 list have count 0. This holds class vectors, row names, data.table `sorted` and
@@ -649,6 +657,16 @@ deeper nesting, bytes after the end, a version byte other than 01 after "FXA", o
 (for example a `dim` that does not fit the column) make the file corrupt. String values that are not valid
 UTF-8 follow rule 7 of section 9. fstx restores R serialization with `unserialize()` (section 10), or skips it
 with `read_fstx(attributes = FALSE)`.
+
+Table attributes, in either encoding, are checked before they are set (by `read_fstx()`, `fstx_meta()` and
+appends). Corrupt: a `class` that is not a character vector containing "data.frame" (including none), a
+`names`, `dim` or `dimnames` attribute, and `row.names` that are not an integer or character vector with one
+value per row of the file. Row names in R's compact form, an integer `c(NA, n)` with |n| the row count, are
+accepted and rebuilt as automatic row names; any other n is corrupt. Dropped (the rest is kept): a data.table
+`sorted` that is not a character vector of the file's column names; an `index` that is not an `integer(0)`;
+each of its order vectors that is not an integer vector of length 0 or a permutation of 1 to the row count,
+or whose `starts` are not integers in 1 to the row count, strictly increasing; the `index` when no order
+vector is left. Whether a key or an index matches the data is not checked (section 10).
 
 ## 10. Where this document and fstx 1.0 differ
 
@@ -672,7 +690,9 @@ input; a writer following this document never produces them):
   before FXA1) are not checked by fstx: they are restored with `unserialize()`, as `readRDS()` does. Like an
   .rds file, only read such files from sources you trust, or read them with `read_fstx(attributes = FALSE)`,
   which skips those blobs: a crafted blob can crash R when it is restored. The checksum catches accidental
-  damage, not deliberate tampering. FXA1 blobs are fully checked.
+  damage, not deliberate tampering. FXA1 blobs are checked as section 9.4 says and never run code, but a
+  data.table key or index is not compared with the data, so a crafted file can give wrong data.table
+  results or an R error.
 
 ## Appendix A. Footer schema (`tools/fstx_footer.fbs`)
 

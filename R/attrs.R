@@ -10,13 +10,16 @@
 
 .fxa_i32 <- function(x) writeBin(as.integer(x), raw(), size = 4L, endian = "little")
 
-# one attribute list (level 1: the blob; level 2: a value's own attributes; level 3: theirs) -> raw, or NULL
-# if it does not fit. Level 3 is what a data.table index needs (its order vectors carry "starts", "anyna", ...).
+# one attribute list (level 1: the blob; level 2: a value's own attributes; level 3: theirs) -> a list of raw
+# pieces (joined once by .attr_encode), or NULL if it does not fit. Level 3 is what a data.table index needs (its
+# order vectors carry "starts", "anyna", ...).
 .fxa_list <- function(a, level) {
+  if (!length(a)) return(list(.fxa_i32(0L)))
   nm <- names(a)
-  if (length(a) && (is.null(nm) || anyNA(nm) || !all(nzchar(nm)) || anyDuplicated(nm))) return(NULL)
-  out <- vector("list", length(a) + 1L)
-  out[[1L]] <- .fxa_i32(length(a))
+  if ((is.null(nm) || anyNA(nm) || !all(nzchar(nm)) || anyDuplicated(nm))) return(NULL)
+  nm <- enc2utf8(nm)
+  if (!all(validUTF8(nm))) return(NULL)
+  out <- list(.fxa_i32(length(a)))
   for (k in seq_along(a)) {
     v <- a[[k]]
     ty <- .fxa_types[typeof(v)]
@@ -25,45 +28,53 @@
     if (!is.null(va) && level >= 3L) return(NULL)
     attributes(v) <- NULL
     body <- switch(typeof(v),
-      double = writeBin(v, raw(), size = 8L, endian = "little"),
+      double = list(writeBin(v, raw(), size = 8L, endian = "little")),
       character = {
         if (any(Encoding(v) == "bytes")) return(NULL)
         v <- enc2utf8(v)
         na <- is.na(v)
+        if (any(na)) v[na] <- ""
+        if (!all(validUTF8(v))) return(NULL)
         len <- nchar(v, type = "bytes")
+        tot <- sum(len, 0)
+        if (tot > .Machine$integer.max - 1) return(NULL)
+        b <- charToRaw(paste(v, collapse = ""))
+        if (length(b) != tot) return(NULL)
         len[na] <- -1L
-        if (sum(as.double(len[!na])) > .Machine$integer.max - 1) return(NULL)
-        b <- charToRaw(paste(v[!na], collapse = ""))
-        if (length(b) != sum(len[!na])) return(NULL)
-        c(.fxa_i32(len), b)
+        list(.fxa_i32(len), b)
       },
-      .fxa_i32(v))   # logical (0, 1, NA) and integer
-    sub <- if (is.null(va)) .fxa_i32(0L) else .fxa_list(va, level + 1L)
+      list(.fxa_i32(v)))   # logical (0, 1, NA) and integer
+    sub <- if (is.null(va)) list(.fxa_i32(0L)) else .fxa_list(va, level + 1L)
     if (is.null(sub)) return(NULL)
-    nb <- charToRaw(enc2utf8(nm[k]))
-    out[[k + 1L]] <- c(.fxa_i32(length(nb)), nb, .fxa_i32(ty), .fxa_i32(length(v)), body, sub)
+    nb <- charToRaw(nm[k])
+    out <- c(out, list(.fxa_i32(length(nb)), nb, .fxa_i32(c(ty, length(v)))), body, sub)
   }
-  unlist(out, use.names = FALSE)
+  out
 }
 
 # attributes -> blob (NULL for none): FXA1 when they fit, else R serialization
 .attr_encode <- function(a) {
   if (!length(a)) return(NULL)
   b <- tryCatch(.fxa_list(a, 1L), error = function(e) NULL)
-  if (is.null(b)) serialize(a, NULL, xdr = FALSE) else c(.fxa_magic, b)
+  if (is.null(b)) serialize(a, NULL, xdr = FALSE) else unlist(c(list(.fxa_magic), b), use.names = FALSE)
 }
 
-# FXA1 blob -> named list; any problem is an R error (turned into "corrupt" by .attr_decode)
+# FXA1 blob -> named list; any problem is an R error (turned into "corrupt" by .attr_decode). The bytes are
+# read in order from a connection, so no index vectors are built (b[pos + seq_len(k)] made one of 8 bytes per byte).
 .fxa_parse <- function(b) {
   n <- length(b)
-  pos <- 4L                                          # bytes used so far (the magic)
-  take <- function(k) {
+  con <- rawConnection(b)
+  on.exit(close(con))
+  readBin(con, "raw", 4L)                            # the magic, checked by the caller
+  pos <- 4L                                          # bytes read so far
+  need <- function(k) {
     if (is.na(k) || k < 0 || k > n - pos) stop("truncated or wrong length", call. = FALSE)
-    r <- b[pos + seq_len(k)]
-    pos <<- pos + k
-    r
+    pos <<- pos + as.integer(k)
   }
-  i32 <- function(k = 1L) readBin(take(4 * k), "integer", k, size = 4L, endian = "little")
+  i32 <- function(k = 1L) {
+    need(4 * k)
+    readBin(con, "integer", k, size = 4L, endian = "little")
+  }
   left <- function() n - pos
   one_list <- function(level) {
     cnt <- i32()
@@ -75,7 +86,8 @@
     for (k in seq_len(cnt)) {
       nl <- i32()
       if (is.na(nl) || nl < 1L) stop("name length", call. = FALSE)
-      nb <- take(nl)
+      need(nl)
+      nb <- readBin(con, "raw", nl)
       if (any(nb == as.raw(0))) stop("NUL in a name", call. = FALSE)
       nm <- rawToChar(nb)
       Encoding(nm) <- "UTF-8"
@@ -86,7 +98,8 @@
       if (is.na(ty) || ty < 1L || ty > 4L) stop(sprintf("value type %s", format(ty)), call. = FALSE)
       v <- if (ty == 3L) {
         if (len > left() / 8) stop("value count", call. = FALSE)
-        readBin(take(8 * len), "double", len, size = 8L, endian = "little")
+        need(8 * len)
+        readBin(con, "double", len, size = 8L, endian = "little")
       } else {
         if (len > left() / 4) stop("value count", call. = FALSE)
         x <- i32(len)
@@ -96,24 +109,27 @@
         } else if (ty == 2L) {
           x
         } else {
-          if (anyNA(x) || any(x < -1L)) stop("string length", call. = FALSE)
-          ok <- x >= 0L
-          lens <- x[ok]
-          tot <- sum(as.double(lens))
-          if (tot > left()) stop("string bytes", call. = FALSE)
-          s <- take(tot)
-          if (any(s == as.raw(0))) stop("NUL in a string", call. = FALSE)
-          v <- rep(NA_character_, len)
-          if (length(lens)) {   # NUL-terminate each string, then split them in one step
-            buf <- raw(tot + length(lens))
-            buf[seq_len(tot) + rep.int(seq_along(lens) - 1L, lens)] <- s
-            str <- readBin(buf, "character", length(lens))
-            if (length(str) != length(lens) || !identical(nchar(str, type = "bytes"), lens))
-              stop("string bytes", call. = FALSE)
-            Encoding(str) <- "UTF-8"
-            v[ok] <- str
+          if (len && (anyNA(x) || min(x) < -1L)) stop("string length", call. = FALSE)
+          has_na <- len && min(x) < 0L
+          if (has_na) {
+            ok <- x >= 0L
+            x <- x[ok]
           }
-          v
+          tot <- sum(x, 0)
+          need(tot)
+          s <- readBin(con, "raw", tot)
+          # readChar splits the bytes by the lengths in one step; it warns (or fails) at a NUL. (On the
+          # connection itself it needs ten times the memory.)
+          nul <- function(e) stop("NUL in a string", call. = FALSE)
+          str <- if (length(x)) tryCatch(readChar(s, x, useBytes = TRUE), warning = nul, error = nul) else character(0)
+          rm(s)
+          if (length(str) != length(x)) stop("string bytes", call. = FALSE)
+          Encoding(str) <- "UTF-8"
+          if (has_na) {
+            v <- rep(NA_character_, len)
+            v[ok] <- str
+            v
+          } else str
         }
       }
       a <- one_list(level + 1L)
@@ -145,3 +161,43 @@
   if (unser) unserialize(b) else NULL
 }
 
+# Table attributes from a blob, checked before they go on a data frame of `nrow` rows with columns `cols`. The
+# writer always stores a class with "data.frame", never names or dim, and row names (if any) one per row; anything
+# else is corrupt. Automatic row names in the compact c(NA, -n) form are dropped (rebuilt on read). A data.table
+# key (`sorted`) naming columns that are not there is dropped, and so are index order vectors that are not empty
+# or a permutation of 1..nrow (data.table rebuilds indices when it needs them). Not checked: whether a key or
+# index matches the data.
+.table_attrs_check <- function(ta, nrow, cols, path) {
+  bad <- function(why) .attr_corrupt(path, "table", why)
+  if (!is.list(ta) || (length(ta) && is.null(names(ta)))) bad("not a named list")
+  if (any(c("names", "dim", "dimnames") %in% names(ta))) bad("names, dim or dimnames")
+  cl <- ta[["class"]]
+  if (!is.character(cl) || !"data.frame" %in% cl) bad("no data.frame class")
+  rn <- ta[["row.names"]]
+  if (!is.null(rn)) {
+    if (is.integer(rn) && length(rn) == 2L && is.na(rn[1L])) {
+      if (is.na(rn[2L]) || abs(rn[2L]) != nrow) bad("row names do not match the row count")
+      ta[["row.names"]] <- NULL
+    } else if (!(is.integer(rn) || is.character(rn)) || length(rn) != nrow) {
+      bad("row names do not match the row count")
+    }
+  }
+  s <- ta[["sorted"]]
+  if (!is.null(s) && (!is.character(s) || !all(s %in% cols))) ta[["sorted"]] <- NULL
+  ix <- ta[["index"]]
+  if (!is.null(ix)) ta[["index"]] <- .dt_index_check(ix, nrow)   # NULL removes it
+  ta
+}
+
+.dt_index_check <- function(ix, n) {
+  if (!is.integer(ix) || length(ix) != 0L) return(NULL)
+  perm <- function(o) is.integer(o) && (length(o) == 0L ||
+    (length(o) == n && !anyNA(o) && min(o) >= 1L && max(o) <= n && !anyDuplicated(o)))
+  starts <- function(s) is.null(s) || (is.integer(s) && !anyNA(s) && all(s >= 1L & s <= max(n, 1L)) &&
+    !is.unsorted(s, strictly = TRUE))
+  a <- attributes(ix)
+  keep <- a[vapply(a, function(o) perm(o) && starts(attr(o, "starts")), NA)]
+  if (!length(keep)) return(NULL)
+  attributes(ix) <- keep
+  ix
+}

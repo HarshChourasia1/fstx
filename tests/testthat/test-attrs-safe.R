@@ -209,3 +209,122 @@ test_that("append keeps an R-serialized table blob, and re-encodes one it change
   rownames(z) <- NULL
   expect_identical(read_fstx(p), z)
 })
+
+test_that("no_unserialize() fires when unserialize() is called (positive control)", {
+  old <- test_path("fixtures", "attrs_serialized.fstx")
+  expect_error(no_unserialize(read_fstx(old)), "unserialize\\(\\) was called")
+  expect_error(no_unserialize(fstx_meta(old)), "unserialize\\(\\) was called")
+})
+
+test_that("crafted table blobs: names, dim, wrong row names or no class are corrupt; a bad key or index is dropped", {
+  x <- data.frame(a = 1:3, b = c("x", "y", "z"), stringsAsFactors = FALSE)
+  p <- tempfile(fileext = ".fstx")
+  on.exit(unlink(p))
+  put <- function(ta) write_fstx(x, p, threads = 1L, .blobs = list(table = fstx:::.attr_encode(ta)))
+  df <- list(class = "data.frame")
+  corrupt <- list(no_class = list(note = "n"), class_int = list(class = 1L), not_df = list(class = "tbl"),
+                  names = c(df, list(names = c("p", "q"))), dim = c(df, list(dim = c(3L, 2L))),
+                  dimnames = c(df, list(dimnames = c("p", "q"))),
+                  rn_short = c(df, list(row.names = c("r1", "r2"))), rn_long = c(df, list(row.names = 1:4)),
+                  rn_double = c(df, list(row.names = c(1, 2, 3))), rn_compact = c(df, list(row.names = c(NA, -5L))),
+                  rn_compact_na = c(df, list(row.names = c(NA_integer_, NA_integer_))))
+  for (k in names(corrupt)) {
+    put(corrupt[[k]])
+    expect_error(read_fstx(p), "is corrupt \\(table attributes", info = k)
+    expect_error(read_fstx(p, rows = 2L), "is corrupt \\(table attributes", info = k)
+    expect_error(fstx_meta(p), "is corrupt \\(table attributes", info = k)
+    expect_error(write_fstx(x, p, append = TRUE), "is corrupt \\(table attributes", info = k)
+  }
+  # an R-serialized blob is checked the same way
+  write_fstx(x, p, threads = 1L, .blobs = list(table = serialize(list(row.names = 1:3), NULL, xdr = FALSE)))
+  expect_error(read_fstx(p), "is corrupt \\(table attributes: no data.frame class")
+  put(c(df, list(row.names = c(NA, -3L))))                 # compact automatic row names: rebuilt
+  expect_identical(read_fstx(p), x)
+  z <- x[2:3, ]
+  rownames(z) <- NULL
+  expect_identical(read_fstx(p, from = 2), z)
+  put(c(df, list(row.names = c(NA, 3L))))
+  expect_identical(read_fstx(p), x)
+  # data.table key and index: kept when they fit the file, dropped (not corrupt) when they do not
+  ok_ix <- structure(integer(0), `__a` = c(2L, 3L, 1L), `__b` = integer(0),
+                     `__a__b` = structure(c(1L, 3L, 2L), starts = c(1L, 2L)))
+  put(c(df, list(sorted = "a", index = ok_ix)))
+  y <- read_fstx(p)
+  expect_identical(attr(y, "sorted"), "a")
+  expect_identical(attr(y, "index"), ok_ix)
+  expect_null(attr(read_fstx(p, from = 2), "index"))
+  bad_ix <- list(dup = c(1L, 1L, 2L), short = 1:2, zero = c(0L, 1L, 2L), big = c(1L, 2L, 4L), na = c(1L, NA, 2L),
+                 dbl = c(1, 2, 3), starts_unsorted = structure(1:3, starts = c(2L, 1L)),
+                 starts_out = structure(1:3, starts = c(1L, 4L)), starts_dbl = structure(1:3, starts = 1))
+  for (k in names(bad_ix)) {
+    put(c(df, list(sorted = "nope", index = structure(integer(0), `__a` = bad_ix[[k]], `__b` = 3:1))))
+    y <- read_fstx(p)
+    expect_null(attr(y, "sorted"), info = k)
+    expect_identical(attr(y, "index"), structure(integer(0), `__b` = 3:1), info = k)
+    put(c(df, list(index = structure(integer(0), `__a` = bad_ix[[k]]))))
+    expect_null(attr(read_fstx(p), "index"), info = k)
+    expect_identical(read_fstx(p), x, info = k)
+  }
+  for (ix in list(1:3, structure(1L, `__a` = 1:3), "a")) {
+    put(c(df, list(index = ix)))
+    expect_identical(read_fstx(p), x)
+  }
+  # append drops what the check drops, and re-encodes the table blob
+  put(c(df, list(sorted = "nope", note = "kept")))
+  write_fstx(x, p, threads = 1L, append = TRUE)
+  z <- rbind(x, x)
+  attr(z, "note") <- "kept"
+  expect_identical(read_fstx(p), z)
+  expect_identical(fstx:::.attr_decode(fstx:::fstx_meta_impl(p)$table_attrs, p, "table"), c(df, list(note = "kept")))
+})
+
+test_that("names and strings that are not valid UTF-8 fall back to serialize() and round trip", {
+  bad <- rawToChar(as.raw(c(0x62, 0xff)))
+  expect_false(validUTF8(bad))
+  v <- 1:3
+  attr(v, bad) <- 1L                                       # R accepts such a name
+  expect_identical(blob_kind(fstx:::.attr_encode(attributes(v))), "rds")
+  expect_identical(blob_kind(fstx:::.attr_encode(list(lab = c("ok", bad)))), "rds")
+  expect_identical(blob_kind(fstx:::.attr_encode(list(lab = c("ok", NA)))), "fxa")
+  x <- data.frame(a = 1:3)
+  x$v <- v
+  x$w <- structure(4:6, lab = c("ok", bad))
+  r <- rt(x)
+  expect_identical(unname(r$blobs$cols), c("none", "rds", "rds"))
+  expect_identical(r$y, x)
+})
+
+test_that("fuzz: nested and string-heavy attribute lists round trip; damaged ones give a list or the corrupt error", {
+  set.seed(2026)
+  strs <- c("", "a", NA, "café", "日本語", strrep("q", 300), "x y", "üß")
+  val <- function(d) {
+    n <- sample(c(0:6, 50L), 1)
+    v <- switch(sample(4, 1), sample(c(TRUE, FALSE, NA), n, TRUE), sample(c(-3:3, NA, .Machine$integer.max), n, TRUE),
+                sample(c(0.5, -0, NaN, NA, Inf, 1e-300), n, TRUE), sample(strs, n, TRUE))
+    if (d < 3L && runif(1) < 0.5) attributes(v) <- lst(d + 1L)
+    v
+  }
+  lst <- function(d) {
+    k <- sample(1:4, 1)
+    nm <- make.unique(sample(c("a", "note", "été", "lab", "x.y", "levels_"), k, TRUE))
+    setNames(lapply(seq_len(k), function(i) val(d)), nm)
+  }
+  checked <- 0L
+  for (r in 1:300) {
+    a <- tryCatch(lst(1L), error = function(e) NULL)       # a few random lists are not valid attributes
+    if (is.null(a)) next
+    b <- fstx:::.attr_encode(a)
+    expect_identical(blob_kind(b), "fxa", info = r)
+    expect_identical(dec(b), a, info = r)
+    checked <- checked + 1L
+    d <- b
+    at <- sample(5:length(d), sample(1:4, 1))
+    d[at] <- as.raw(sample(0:255, length(at), TRUE))
+    if (r %% 3 == 0) d <- d[seq_len(sample(4:length(d), 1))]
+    e <- tryCatch({ dec(d); "" }, error = function(e) conditionMessage(e))
+    expect_true(e == "" || grepl("is corrupt (table attributes", e, fixed = TRUE), info = paste(r, e))
+  }
+  expect_gt(checked, 200L)
+  many <- list(class = "data.frame", row.names = c(sprintf("r%05d", 1:20000), NA, ""), s = strrep("é", 1e5))
+  expect_identical(dec(fstx:::.attr_encode(many)), many)
+})

@@ -51,8 +51,9 @@ read_fstx(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads()
     attribute blobs that would need \code{unserialize()} (see Details), so a file from a source you do not
     trust reads without it: a column whose blob is skipped keeps only its stored type (factor, Date and
     POSIXct are stored natively), and a skipped table blob gives a plain data.frame with automatic row
-    names. Blobs in fstx's own checked encoding are still applied: they cannot run or crash anything, and
-    skipping them would only lose the class (data.table, tibble), row names and labels of ordinary files.}
+    names. Blobs in fstx's own encoding are still applied: they hold only plain vectors, no code, and are
+    checked (see Details); skipping them would only lose the class (data.table, tibble), row names and labels
+    of ordinary files.}
 }
 \details{
 Reads files in fstx format 1.0 (format version 3); files from fstx 0.x development versions are
@@ -63,8 +64,12 @@ an R error; with \code{verify = TRUE} (the default) every page checksum is check
 Column and table attributes are stored in fstx's own encoding (FXA1, spec section 9.4) whenever they
 are plain logical, integer, double or character vectors (with at most two levels of attributes of their
 own): the class, row names and data.table key and index of a table, labels and the like. Those are decoded
-with every length checked; a damaged one is reported as corrupt. Anything else (list or complex values,
-deeper nesting, and every attribute in files written by earlier fstx 1.0 builds) is stored with R's
+with every length checked; a damaged one is reported as corrupt. The table attributes are checked too: a
+class with \code{"data.frame"}, no names or dim, row names one per row; a data.table key naming a missing
+column, or an index that is not a permutation of the rows, is dropped. Whether a key or index matches the
+data is not checked, so a crafted file can still give wrong data.table results or an error, though not run
+code. Anything else (list or complex values, deeper nesting, strings that are not valid UTF-8, and every
+attribute in files written by earlier fstx 1.0 builds) is stored with R's
 \code{serialize()} and restored with \code{unserialize()}, as \code{readRDS()} does. Like an .rds file,
 only read such files from sources you trust, or use \code{attributes = FALSE}: a crafted blob can crash R
 when it is restored. The checksum catches accidental damage, not deliberate tampering.
