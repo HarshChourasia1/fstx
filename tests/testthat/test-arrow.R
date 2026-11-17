@@ -157,6 +157,57 @@ test_that("batches follow row groups and batch_rows; dictionaries come per row g
                  read_fstx(p, where = int < 300))
 })
 
+test_that("row parts of fixed-width columns: same batches at 1 and many threads, same as read_fstx", {
+  skip_if_not_installed("nanoarrow")
+  # Default pages hold 32,768 doubles or 65,536 ints; each write below is its own row group. With fewer columns
+  # than threads a fixed-width column is filled in row parts cut at page edges; the batches must not change.
+  p <- tempfile(fileext = ".fstx")
+  on.exit(unlink(p))
+  n <- 300000
+  x <- make_df(n, seed = 7)
+  x$chr <- NULL
+  x$ord <- NULL
+  x$dna <- seq_len(n) / 8                  # NA only from row 200,001: pages before it say null_count 0
+  x$dna[seq(200001, n, by = 997)] <- NA
+  x$dfull <- seq_len(n) / 4                # no NA: no validity bitmap
+  write_fstx(x[1:130001, ], p, threads = 1)
+  write_fstx(x[130002:230004, ], p, append = TRUE, threads = 1)
+  write_fstx(x[230005:n, ], p, append = TRUE, threads = 1)
+  hw <- fstx:::fstx_hw_threads()
+  all_batches <- function(s) {
+    out <- list()
+    while (!is.null(b <- s$get_next())) out[[length(out) + 1L]] <- b
+    out
+  }
+  same_batches <- function(...) {
+    b1 <- all_batches(fstx_arrow_stream(p, threads = 1, ...))
+    bn <- all_batches(fstx_arrow_stream(p, threads = hw, ...))
+    expect_identical(length(bn), length(b1))
+    for (i in seq_along(b1)) {
+      for (nm in names(b1[[i]]$children)) {
+        g <- bn[[i]]$children[[nm]]
+        w <- b1[[i]]$children[[nm]]
+        expect_identical(c(g$length, g$null_count), c(w$length, w$null_count), info = nm)
+        expect_identical(lapply(g$buffers, as.raw), lapply(w$buffers, as.raw), info = nm)
+      }
+    }
+  }
+  same_batches()
+  same_batches(columns = "dbl")                                      # one column: as many parts as threads
+  same_batches(columns = c("dna", "lgl"), from = 32761, to = 262150, batch_rows = 50001)
+  same_batches(columns = c("int", "dna", "ct"), where = dbl > 0.5)   # selected rows
+  y <- read_fstx(p)
+  expect_same_df(arrow_df(fstx_arrow_stream(p, threads = 1)), y)
+  expect_same_df(arrow_df(fstx_arrow_stream(p, threads = hw)), y)
+  expect_same_df(arrow_df(fstx_arrow_stream(p, columns = "dbl", threads = hw)), read_fstx(p, columns = "dbl"))
+  expect_same_df(arrow_df(fstx_arrow_stream(p, from = 32761, to = 262150, batch_rows = 50001, threads = hw)),
+                 read_fstx(p, from = 32761, to = 262150))
+  expect_same_df(arrow_df(fstx_arrow_stream(p, where = dbl > 0.5, threads = hw)), read_fstx(p, where = dbl > 0.5))
+  b <- fstx_arrow_stream(p, columns = c("dfull", "dna"), threads = hw)$get_next()
+  expect_identical(length(as.raw(b$children$dfull$buffers[[1]])), 0L)
+  expect_equal(b$children$dna$null_count, 0)                         # first row group: rows 1 to 130,001
+})
+
 test_that("the stream releases everything once, also when dropped half-read", {
   skip_if_not_installed("nanoarrow")
   # in a fresh R process, so the count of live stream / schema / array holders starts at 0

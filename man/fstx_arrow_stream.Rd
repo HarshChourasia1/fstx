@@ -11,7 +11,10 @@ fstx_arrow_stream(path, columns = NULL, from = 1, to = NULL, where = NULL,
   \item{from, to}{first and last row (1-based, inclusive), as in \code{\link{read_fstx}}.}
   \item{where}{row filter, as in \code{\link{read_fstx}}. It runs when the stream is made; the stream then
     reads only the matching rows.}
-  \item{threads}{threads used to decode the pages of each batch.}
+  \item{threads}{threads used to decode each batch (at most the hardware threads): its columns are filled in
+    parallel, and when there are fewer columns than threads, so are row parts of each integer, double,
+    logical, factor, Date or POSIXct column (cut at page edges). The batches are the same for any number of
+    threads.}
   \item{batch_rows}{most rows per batch, or \code{NULL} for one batch per row group. A batch never spans two
     row groups.}
 }
