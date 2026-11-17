@@ -23,14 +23,17 @@ write_fstx(x, path, profile = c("balanced", "fast", "small"), compress = NULL,
     appended to. The profile defaults to the file's (a profile written by a later fstx: the new rows are
     encoded as \code{"balanced"} and the file keeps its stored value). An interrupted append leaves the old
     table readable. A file with an optional feature this fstx does not know cannot be appended to ("Update fstx to change this
-    file; reading works"). Appending reads the file's table attributes with \code{unserialize()}, so the
-    trusted-source note in \code{\link{read_fstx}} applies.}
+    file; reading works"). Appending reads the file's table attributes, with \code{unserialize()} when they
+    are stored with R's \code{serialize()}, so the trusted-source note in \code{\link{read_fstx}} applies
+    to those files.}
 }
 \details{
 Every page is encoded with the lightweight encoding that fits it best (bit-packing, frame-of-reference,
 delta, run-length, dictionary, ALP for doubles, FSST for strings); the profile decides what goes on top.
 Columns may be logical, integer, double or character vectors. Factors (and ordered factors), Date and
-POSIXct are stored natively; any other attributes (classes, units, labels) are kept and restored on read.
+POSIXct are stored natively; any other attributes (classes, units, labels) are kept and restored on read,
+in fstx's own checked encoding when they are plain vectors, else with R's \code{serialize()} (see
+\code{\link{read_fstx}}).
 Matrix and list columns are not supported. Strings are stored as UTF-8.
 
 Files are written in fstx format 1.0 (format version 3 inside the file).

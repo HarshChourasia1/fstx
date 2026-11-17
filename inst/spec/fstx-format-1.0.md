@@ -105,7 +105,7 @@ default (0, false, empty, or Balanced for `profile`).
 | 2 | row_group_size | u64 | most rows a row group may hold; 1 to 2^31 (the writer uses a multiple of 1,024; default 1,048,576) |
 | 3 | columns | [Column] | schema, in column order; at most 2^24 columns |
 | 4 | row_groups | [RowGroup] | in row order; empty for a table with no rows |
-| 5 | table_attrs | [u8] | data-frame attributes, R serialization (rule 4, section 9); may be absent |
+| 5 | table_attrs | [u8] | data-frame attributes, an attribute blob (rule 4, section 9; section 9.4); may be absent |
 | 6 | created_by | string | `fstx <version>` of the writer (fstx 1.0.0 writes `fstx 1.0.0`). Informational: a reader must not use it to decide how to read the file; a file written by a development build before 1.0.0 may say `fstx 0.99.0` |
 | 7 | profile | enum u8 | 0 fast, 1 balanced (default), 2 small; informational. 3-255 are read and reported as "unknown" |
 | 8 | required_features | u64 | bits a reader must know (section 5) |
@@ -122,7 +122,7 @@ default (0, false, empty, or Balanced for `profile`).
 | 3 | ordered | bool | ordered factor |
 | 4 | levels | [string] | factor levels, UTF-8 |
 | 5 | tzone | string | POSIXct time zone, UTF-8, no NUL; absent when the column has none |
-| 6 | attrs | [u8] | other R attributes, R serialization; may be absent |
+| 6 | attrs | [u8] | other R attributes, an attribute blob (section 9.4); may be absent |
 
 Type combinations fstx accepts (anything else is corrupt):
 
@@ -557,11 +557,11 @@ Factor levels are not checked when a file is opened, to keep opening fast; they 
 2. FlatBuffers fields are only ever added at the end of a table.
 3. Page min/max for 64-bit integer columns (when they come) are rounded outward to the nearest doubles, so
    page skipping stays correct.
-4. Attribute blobs are R serialization: `serialize(x, NULL, xdr = FALSE)` (R's native binary format, which
-   starts with `B\n`) of a named list. Column.attrs holds a column's attributes other than those the
-   schema stores (class for factor, Date and POSIXct; levels; tzone). Footer.table_attrs holds the data
-   frame's attributes without names, without automatic row names and without `.internal.selfref`. Readers
-   that are not R may ignore both.
+4. Attribute blobs (Column.attrs, Footer.table_attrs) hold a named list of R attributes, in the FXA1
+   encoding of section 9.4 when it can hold them, else as R serialization. Column.attrs holds a column's
+   attributes other than those the schema stores (class for factor, Date and POSIXct; levels; tzone).
+   Footer.table_attrs holds the data frame's attributes without names, without automatic row names and
+   without `.internal.selfref`. Readers that are not R may ignore both.
 5. A new encoding tag, codec, physical type or page kind needs a required feature bit, so an older reader
    names it instead of calling the file corrupt.
 6. Compaction always writes format 3. Appends and page-copy compaction keep the file's profile (as stored,
@@ -610,6 +610,46 @@ first levels of the new rows' factor).
 Page-copy compaction (`fstx_compact()`) copies every page's stored bytes unchanged, checksum checked, into a
 fresh file: per row group, per column, the dictionary page first, then the data pages.
 
+### 9.4 Attribute blobs
+
+An attribute blob is one of two encodings, told apart by its first bytes:
+
+- **FXA1** (written whenever it can hold the list): the 4 bytes `46 58 41 01` ("FXA", version 1), then
+  one attribute list, then nothing.
+- **R serialization** (the fallback): `serialize(x, NULL, xdr = FALSE)` of the named list, R's native
+  binary format, which starts with `B\n`. An R serialization always starts with `A\n`, `B\n` or `X\n`, so
+  it never starts with "FXA". fstx 1.0 writes it only for attributes FXA1 cannot hold: lists, environments,
+  functions, complex or raw values, values nested deeper than below, vectors of 2^31-1 or more values,
+  strings marked "bytes". Files written by fstx 1.0 builds before FXA1 hold only this encoding.
+
+An attribute list, all integers i32 little-endian:
+
+| field | bytes | |
+|---|---|---|
+| count | 4 | number of attributes |
+| per attribute: name_len | 4 | 1 or more |
+| name | name_len | UTF-8, no NUL; the names in one list are distinct |
+| type | 4 | 1 logical, 2 integer, 3 double, 4 character |
+| length | 4 | number of values, 0 to 2^31-2 |
+| values | | logical and integer: length x i32 (NA = -2^31; logical only 0, 1 or NA). double: length x 8 bytes, the IEEE 754 bits (NA and NaN payloads kept). character: length x i32 byte lengths (-1 = NA), then the bytes of the non-NA strings back to back (UTF-8 as written; no NUL) |
+| attrs | | the value's own attribute list (count 0 for none) |
+
+Nesting: the blob's list is level 1, a value's own list is level 2 and the list of a level-2 value is level
+3; the values of a level-3 list have count 0. This holds class vectors, row names, data.table `sorted` and
+`index` (an `integer(0)` whose order vectors carry `starts`, `anyna` and the like), named vectors, factor- or
+Date-valued attributes and labels. Nothing is aligned; a list has no padding.
+
+Worked example, the table blob of a plain data.frame, `list(class = "data.frame")`, 43 bytes:
+`46 58 41 01`, count `01 00 00 00`, name_len `05 00 00 00`, `class`, type `04 00 00 00`, length
+`01 00 00 00`, byte length `0A 00 00 00`, `data.frame`, attrs count `00 00 00 00`.
+
+A reader decodes FXA1 with every count and length checked against the bytes left. Any mismatch, an unknown
+type, a logical value other than 0 / 1 / NA, an empty, non-UTF-8 or repeated name, a NUL in a name or string,
+deeper nesting, bytes after the end, a version byte other than 01 after "FXA", or attributes R refuses to set
+(for example a `dim` that does not fit the column) make the file corrupt. String values that are not valid
+UTF-8 follow rule 7 of section 9. fstx restores R serialization with `unserialize()` (section 10), or skips it
+with `read_fstx(attributes = FALSE)`.
+
 ## 10. Where this document and fstx 1.0 differ
 
 Things a strict reading of the rules above would refuse that fstx 1.0 accepts (all on corrupt or hostile
@@ -628,10 +668,11 @@ input; a writer following this document never produces them):
 - Anything after the bytes block of a string PLAIN payload, or after the lengths block of an FSST payload,
   is ignored.
 - FSST: an unused code decodes to `corrupt` plus a zero byte and is not refused.
-- Attribute blobs are not checked by fstx. Column and table attributes are stored with R's `serialize()` and
-  restored with `unserialize()`, as `readRDS()` does. Like an .rds file, only read .fstx files from sources you
-  trust: a crafted file can crash R when its attributes are restored. The checksum catches accidental damage,
-  not deliberate tampering.
+- Attribute blobs in R serialization (section 9.4: attributes FXA1 cannot hold, and files from fstx 1.0
+  before FXA1) are not checked by fstx: they are restored with `unserialize()`, as `readRDS()` does. Like an
+  .rds file, only read such files from sources you trust, or read them with `read_fstx(attributes = FALSE)`,
+  which skips those blobs: a crafted blob can crash R when it is restored. The checksum catches accidental
+  damage, not deliberate tampering. FXA1 blobs are fully checked.
 
 ## Appendix A. Footer schema (`tools/fstx_footer.fbs`)
 

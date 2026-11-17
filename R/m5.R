@@ -5,7 +5,7 @@
 # attributes (raw) and its profile.
 .append_prepare <- function(x, path) {
   m <- fstx_meta_impl(path)
-  ta <- if (is.null(m$table_attrs)) list() else unserialize(m$table_attrs)
+  ta <- .attr_decode(m$table_attrs, path, "table")
   # character row names cannot grow; integer ones (as x[i, ] leaves) are positions and become automatic
   if (is.character(ta[["row.names"]]))
     stop("write_fstx: cannot append to a file with stored row names", call. = FALSE)
@@ -14,7 +14,7 @@
   tab <- m$table_attrs
   if (!is.null(ta[["row.names"]])) {
     ta[["row.names"]] <- NULL
-    tab <- if (length(ta)) serialize(ta, NULL, xdr = FALSE) else NULL
+    tab <- .attr_encode(ta)
   }
   proto <- read_fstx(path, from = 1, to = 0, threads = 1L)
   fn <- names(proto)

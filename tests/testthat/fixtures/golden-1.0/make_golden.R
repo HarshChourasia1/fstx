@@ -16,6 +16,8 @@
 # files.csv: per file its size, MD5, whether it reads or is refused (with the message), format version,
 # profile, rows, columns and table attributes. expected.csv: per column (canon.R).
 # The whole set must stay under 300 KB.
+# Regenerated 17 Nov 2026 (agent A) when attribute blobs moved from serialize() to FXA1 (spec 9.4): every
+# file holds a table blob, so every file's bytes changed; the contents (table_md5, expected.csv) did not.
 
 args <- commandArgs(TRUE)
 if (length(args) < 2L) stop("usage: Rscript make_golden.R <out dir> <fstx 1.0 library>")

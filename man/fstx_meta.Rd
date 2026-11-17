@@ -25,10 +25,10 @@ normally). Only the footer is read. The print method returns
 \code{x} invisibly.
 }
 \details{
-Column and table attributes are stored with R's \code{serialize()} and restored with \code{unserialize()},
-as \code{readRDS()} does. Like an .rds file, only read .fstx files from sources you trust: a crafted file
-can crash R when its attributes are restored. The checksum catches accidental damage, not deliberate
-tampering.
+Classes are read from the attribute blobs. Blobs in fstx's own encoding are decoded with every length
+checked; blobs stored with R's \code{serialize()} (attributes that encoding cannot hold, and files from earlier
+fstx 1.0 builds) are restored with \code{unserialize()}, so the trusted-source note in
+\code{\link{read_fstx}} applies to them.
 }
 \seealso{\code{\link{fstx_pages}}}
 \examples{

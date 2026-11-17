@@ -8,7 +8,7 @@ the rows that match a filter, eagerly or lazily.
 \usage{
 read_fstx(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads(),
           verify = TRUE, lazy = FALSE, strings = c("auto", "eager", "deferred"),
-          as_factor = FALSE, rows = NULL, where = NULL)
+          as_factor = FALSE, rows = NULL, where = NULL, attributes = TRUE)
 }
 \arguments{
   \item{path}{file path.}
@@ -47,6 +47,12 @@ read_fstx(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads()
     \code{between()}, \code{is.na()}, \code{!is.na()} or a logical column. Pages are skipped by their
     min / max / NA count, then the remaining rows are tested exactly; rows where the condition is
     \code{NA} are dropped, as \code{subset()} does. Applied within \code{from} / \code{to}.}
+  \item{attributes}{\code{TRUE} (default) restores every stored attribute. \code{FALSE} skips the
+    attribute blobs that would need \code{unserialize()} (see Details), so a file from a source you do not
+    trust reads without it: a column whose blob is skipped keeps only its stored type (factor, Date and
+    POSIXct are stored natively), and a skipped table blob gives a plain data.frame with automatic row
+    names. Blobs in fstx's own checked encoding are still applied: they cannot run or crash anything, and
+    skipping them would only lose the class (data.table, tibble), row names and labels of ordinary files.}
 }
 \details{
 Reads files in fstx format 1.0 (format version 3); files from fstx 0.x development versions are
@@ -54,10 +60,14 @@ refused. A file written by a later fstx that uses something this version does no
 with a message that names it and ends "Update fstx", rather than reported as damaged. A damaged file gives
 an R error; with \code{verify = TRUE} (the default) every page checksum is checked as well.
 
-Column and table attributes are stored with R's \code{serialize()} and restored with \code{unserialize()},
-as \code{readRDS()} does. Like an .rds file, only read .fstx files from sources you trust: a crafted file
-can crash R when its attributes are restored. The checksum catches accidental damage, not deliberate
-tampering.
+Column and table attributes are stored in fstx's own encoding (FXA1, spec section 9.4) whenever they
+are plain logical, integer, double or character vectors (with at most two levels of attributes of their
+own): the class, row names and data.table key and index of a table, labels and the like. Those are decoded
+with every length checked; a damaged one is reported as corrupt. Anything else (list or complex values,
+deeper nesting, and every attribute in files written by earlier fstx 1.0 builds) is stored with R's
+\code{serialize()} and restored with \code{unserialize()}, as \code{readRDS()} does. Like an .rds file,
+only read such files from sources you trust, or use \code{attributes = FALSE}: a crafted blob can crash R
+when it is restored. The checksum catches accidental damage, not deliberate tampering.
 }
 \value{a data frame with the class it was written with (data.frame, data.table or tibble).}
 \seealso{\code{\link{write_fstx}}, \code{\link{fstx_which}}, \code{\link{fstx_explain}}}
