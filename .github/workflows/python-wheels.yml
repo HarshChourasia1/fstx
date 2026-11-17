@@ -1,0 +1,98 @@
+# Python wheels and sdist for fstx (python/, cibuildwheel). Runs on a py-v* tag (py-v1.0.0) or by hand only.
+# Settings for the wheels themselves (Pythons, archs, images, tests) are in python/pyproject.toml [tool.cibuildwheel].
+# Builds and tests only: nothing is uploaded anywhere except this run's artifacts. Prepared 17 Nov 2026, not run yet.
+name: python-wheels
+
+on:
+  push:
+    tags: ['py-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sdist:
+    name: sdist (and a wheel built from it)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # One version source: python/pyproject.toml. A py-v* tag must say the same version.
+      - name: Tag matches the pyproject version
+        if: startsWith(github.ref, 'refs/tags/py-v')
+        run: |
+          v=$(python -c "import tomllib; print(tomllib.load(open('python/pyproject.toml','rb'))['project']['version'])")
+          t="${GITHUB_REF_NAME#py-v}"
+          echo "pyproject $v, tag $t"
+          test "$v" = "$t" || { echo "::error::tag py-v$t does not match version $v in python/pyproject.toml"; exit 1; }
+
+      - name: Engine copy into python/core, licence copies up to date
+        run: |
+          python python/tools/make_core.py
+          git diff --exit-code -- python/LICENSES || { echo "::error::python/LICENSES is out of date: run python/tools/make_core.py and commit"; exit 1; }
+
+      - name: Build the sdist
+        run: |
+          python -m pip install build
+          python -m build --sdist python --outdir dist
+
+      # The sdist has to build on its own: unpack it away from the git tree, build a wheel, run the tests.
+      - name: Wheel from the sdist, tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/sd" && tar -xzf dist/*.tar.gz -C "$RUNNER_TEMP/sd"
+          rm -rf python/core
+          python -m pip wheel "$RUNNER_TEMP"/sd/fstx-* --no-deps -w "$RUNNER_TEMP/whl"
+          python -m pip install "$(ls "$RUNNER_TEMP"/whl/*.whl)[test]"
+          cd "$RUNNER_TEMP" && FSTX_FORMAT_GOLDEN_DIR="$GITHUB_WORKSPACE/tests/testthat/fixtures/golden-1.0" \
+            python -m pytest "$RUNNER_TEMP"/sd/fstx-*/tests -q -rs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  wheels:
+    name: wheels ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows x64 (MSVC), Linux x86_64 and aarch64 (manylinux_2_28, native ARM runner), macOS x86_64 and arm64.
+        os: [windows-latest, ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pypa/cibuildwheel@v4.3.5
+        with:
+          package-dir: python
+          output-dir: wheelhouse
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  # ------------------------------------------------------------------------------------------------------------
+  # NOT ENABLED. PyPI upload through trusted publishing (no token). Before switching it on: register the project on
+  # PyPI with this repository, this workflow file and the environment "pypi" as a trusted publisher, add the
+  # environment in the repository settings, then remove the leading "# " from the lines below.
+  #
+  # publish:
+  #   name: upload to PyPI
+  #   needs: [sdist, wheels]
+  #   if: startsWith(github.ref, 'refs/tags/py-v')
+  #   runs-on: ubuntu-latest
+  #   environment: pypi
+  #   permissions:
+  #     id-token: write
+  #   steps:
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         path: dist
+  #         merge-multiple: true
+  #     - uses: pypa/gh-action-pypi-publish@release/v1

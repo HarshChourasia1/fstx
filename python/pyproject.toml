@@ -1,9 +1,7 @@
 [build-system]
-# nanobind 3 needs Python 3.10; Python 3.9 builds with the last nanobind 2.
 requires = [
   "scikit-build-core>=0.10",
-  "nanobind>=2.4,<3; python_version < '3.10'",
-  "nanobind>=2.4; python_version >= '3.10'",
+  "nanobind>=2.4",
 ]
 build-backend = "scikit_build_core.build"
 
@@ -12,7 +10,7 @@ name = "fstx"
 version = "1.0.0.dev0"
 description = "Fast, safe column-store files (the FST-X format): Python on the fstx C++ engine"
 license = { text = "MIT" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [{ name = "Harsh Chourasia" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -36,6 +34,30 @@ build-dir = "build/{wheel_tag}"
 # (nanobind needs 3.12 for the stable ABI; scikit-build-core ignores this key on older Pythons).
 wheel.py-api = "cp312"
 wheel.packages = ["fstx"]
+# fstx's MIT licence and the vendored libraries' licences, in the wheel's .dist-info/licenses
+# (LICENSES/ is a copy of inst/COPYRIGHTS and src/vendor/*/LICENSE, refreshed by tools/make_core.py).
+wheel.license-files = ["LICENSE", "LICENSES/COPYRIGHTS", "LICENSES/*/LICENSE"]
+# The sdist carries the engine copy made by tools/make_core.py (core/ is git-ignored, so named here).
+sdist.include = ["core/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Wheels (.github/workflows/python-wheels.yml). CPython 3.10 and 3.11 get their own wheels; the 3.12 build is
+# abi3 (wheel.py-api) and cibuildwheel tests that same wheel on 3.13 and 3.14 instead of building again.
+# 64-bit only; no free-threaded (3.14t: no abi3 there) and no musllinux (pyarrow has no musl wheels).
+[tool.cibuildwheel]
+build = ["cp310-*", "cp311-*", "cp312-*", "cp313-*", "cp314-*"]
+skip = ["cp3??t-*", "*-musllinux_*"]
+archs = ["auto64"]
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+build-verbosity = 1
+test-extras = ["test"]
+# {package} is python/: its tests read the R package's format files through ../tests (conftest.py).
+test-command = "pytest {package}/tests -q -rs"
+
+# Intel Macs: macOS 10.15 at least (C++17 library parts; cibuildwheel's default is 10.13). ARM Macs start at 11.
+[[tool.cibuildwheel.overrides]]
+select = "*-macosx_x86_64"
+environment = { MACOSX_DEPLOYMENT_TARGET = "10.15" }
