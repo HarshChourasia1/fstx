@@ -83,3 +83,48 @@ test_that("forging a file with row groups but no columns does not crash", {
   expect_true(r == "ok" || grepl("fstx", r), label = r)
   expect_error(fstx:::.fstx_forge(p, q, codec0 = 0), "no columns")
 })
+
+test_that("the string pointer cache leaves the written bytes unchanged", {
+  # The prep pass keeps each plain / FSST chunk's string pointers (within a 64 MB budget per write) so the pages
+  # need not read the strings again; .encoding = "no_str_cache" turns the cache off. Chunks that start plain,
+  # give up their dictionary at 65,536 rows, keep it up to the end but do not choose it, or stay dictionaries.
+  ps <- replicate(4, tempfile(fileext = ".fstx"))
+  on.exit(unlink(ps))
+  ss <- ws3_strings()
+  set.seed(33)
+  n1 <- 60000
+  # s: the first 2,048 rows are long strings (vectors over 1 MB are split row by row); s and u: a dictionary kept up
+  # to the end but not chosen (all distinct, under 65,536 rows)
+  x1 <- data.frame(s = paste(c(sample(ss$long, 2048, TRUE), sample(ss$short, n1 - 2048, TRUE)), seq_len(n1)),
+                   u = sprintf("k%06d", sample.int(n1)),
+                   k = sample(c("a", "bb", NA), n1, TRUE), stringsAsFactors = FALSE)
+  n2 <- 200000
+  x2 <- data.frame(u = sprintf("id%07d", sample.int(n2)),                 # dictionary given up at 65,536 rows
+                   k = sample(c(ss$short, NA), n2, TRUE), stringsAsFactors = FALSE)
+  same <- function(x, enc, label) {
+    write_fstx(x, ps[1], profile = "balanced", threads = 1, .encoding = enc)
+    write_fstx(x, ps[2], profile = "balanced", threads = test_threads(14), .encoding = c(enc, "no_str_cache"))
+    expect_identical(unname(tools::md5sum(ps[1])), unname(tools::md5sum(ps[2])), label = label)
+    expect_identical(read_fstx(ps[1]), x, label = label)
+  }
+  for (pr in c("fast", "balanced", "small")) {
+    write_fstx(x1, ps[1], profile = pr, threads = test_threads(14))
+    write_fstx(x1, ps[2], profile = pr, threads = 1, .encoding = "no_str_cache")
+    expect_identical(unname(tools::md5sum(ps[1])), unname(tools::md5sum(ps[2])), label = pr)
+  }
+  pg <- fstx_pages(ps[1])
+  expect_true(all(pg$kind[pg$name %in% c("s", "u")] == "string"))
+  expect_true(any(pg$kind[pg$name == "k"] == "dictionary"))
+  same(x2, NULL, "dictionary given up")
+  pg <- fstx_pages(ps[1])
+  expect_true(all(pg$kind[pg$name == "u"] == "string"))
+  same(x1, "fsst", "forced fsst")
+  same(x1, "plain", "forced plain")
+  # appends: the budget is per append call
+  write_fstx(x1, ps[3], threads = test_threads(14))
+  write_fstx(x1, ps[3], threads = test_threads(14), append = TRUE)
+  write_fstx(x1, ps[4], threads = 1, .encoding = "no_str_cache")
+  write_fstx(x1, ps[4], threads = 1, append = TRUE, .encoding = "no_str_cache")
+  expect_identical(unname(tools::md5sum(ps[3])), unname(tools::md5sum(ps[4])))
+  expect_identical(read_fstx(ps[3]), rbind(x1, x1))
+})

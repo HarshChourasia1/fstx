@@ -32,6 +32,9 @@ delta, run-length, dictionary, ALP for doubles, FSST for strings); the profile d
 Columns may be logical, integer, double or character vectors. Factors (and ordered factors), Date and
 POSIXct are stored natively; any other attributes (classes, units, labels) are kept and restored on read.
 Matrix and list columns are not supported. Strings are stored as UTF-8.
+Memory: besides the data and the pages in flight, the writer keeps the string pointers of character
+columns it does not dictionary-code, 12 bytes per string and at most 64 MB per call (past that it reads
+those strings a second time instead).
 
 Files are written in fstx format 1.0 (format version 3 inside the file).
 }

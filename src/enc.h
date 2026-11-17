@@ -11,6 +11,7 @@
 #ifndef FSTX_ENC_H
 #define FSTX_ENC_H
 
+#include <atomic>
 #include <memory>
 #include <vector>
 
@@ -39,7 +40,8 @@ constexpr int kMaxTag = 10;
 // F_STR_DICT  string chunks use a dictionary; their code pages get the forced tag
 // F_DICT_FSST as F_STR_DICT, and the dictionary page is FSST-coded
 // F_KEEP_CODEC keep the codec on every page, even when it saves nothing
-enum { F_STR_DICT = 0x100, F_DICT_FSST = 0x200, F_KEEP_CODEC = 0x400 };
+// F_NO_STR_CACHE no string pointer cache: pages read the strings through the host again (the cache-off path)
+enum { F_STR_DICT = 0x100, F_DICT_FSST = 0x200, F_KEEP_CODEC = 0x400, F_NO_STR_CACHE = 0x800 };
 
 // page kinds (low nibble of chain byte 0, and byte 0 of the page body)
 enum : uint8_t { K_INT = 1, K_DBL = 2, K_LGL = 3, K_STR = 4, K_CODES = 5, K_DICT = 6 };
@@ -147,6 +149,7 @@ struct EncCtx {
   int force = 0;                 // top-level encoding forced by the host (tests); 0 = choose
   int codec = FSTX_CODEC_ZSTD;   // codec the page will get afterwards (NONE: never try SPLIT)
   CodecContext* cc = nullptr;    // for the ZSTD -1 estimates
+  std::atomic<uint64_t>* str_cache = nullptr;  // plan_str_chunk: bytes left for StrChunk::cptr / clen (null: none)
 };
 
 // Fixed-width pages. The return value is the page's chain. x is read in place, never changed.
@@ -191,7 +194,13 @@ struct StrChunk {
   std::vector<int32_t> dlen;
   std::unique_ptr<FsstTable> fsst;       // T_FSST
   std::vector<uint64_t> vsizes;          // per 1,024-row vector: 4 x rows + bytes (page planning)
+  // T_PLAIN / T_FSST: every row's pointer and length from the prep pass (NA: nullptr, -1), so the pages need not
+  // ask the host again. 12 bytes a row, taken from the write's budget (kStrCacheBytes); empty when it ran out.
+  std::vector<const char*> cptr;
+  std::vector<int32_t> clen;
 };
+// String pointer cache budget per write or append call: at most 64 MB (about 5.6 million cached strings).
+constexpr uint64_t kStrCacheBytes = 64ull << 20;
 
 // Reads rows [r0, r1) through the host callback, picks dictionary / FSST / plain, builds what the pages
 // need. force: 0, T_DICT (optionally | F_DICT_FSST), T_FSST or T_PLAIN. Returns the host's error code (0 = fine).

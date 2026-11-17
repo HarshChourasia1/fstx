@@ -2,6 +2,7 @@
 // FSST pages (vendored cwida/fsst, one symbol table per column chunk, stored in every page) and plain pages
 // (lengths through the integer chain, then the bytes). MIT licence. No R headers.
 #include <algorithm>
+#include <cstring>
 #include <limits>
 
 #include "enc.h"
@@ -349,6 +350,8 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
   sc.dlen.clear();
   sc.fsst.reset();
   sc.vsizes.assign(nv, 0);
+  sc.cptr.clear();
+  sc.clen.clear();
   const bool dict_fsst = (force & F_DICT_FSST) != 0;  // tests: FSST-code the dictionary page
   force &= 0xff;
 
@@ -359,6 +362,29 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
     sc.codes.resize(n);
     pd.init(&sc.dptr, &sc.dlen);
   }
+  // Pointer cache, kept only for chunks that end plain / FSST: taken from the budget when the dictionary is
+  // ruled out (rows seen so far come from the codes, which hold the same pointers), never for dictionary chunks.
+  bool cache = false;
+  auto take_cache = [&]() {
+    const uint64_t need = 12 * n;
+    if (!cx.str_cache) return false;
+    uint64_t left = cx.str_cache->load();
+    while (left >= need)
+      if (cx.str_cache->compare_exchange_weak(left, left - need)) {
+        sc.cptr.resize(n);
+        sc.clen.resize(n);
+        return true;
+      }
+    return false;
+  };
+  auto codes_to_cache = [&](uint64_t rows) {
+    for (uint64_t i = 0; i < rows; ++i) {
+      const int32_t c = sc.codes[i];
+      sc.cptr[i] = c < 0 ? nullptr : sc.dptr[(size_t)c];
+      sc.clen[i] = c < 0 ? -1 : sc.dlen[(size_t)c];
+    }
+  };
+  if (!dict) cache = take_cache();
   std::vector<uint64_t> svec;  // sample vectors, ascending
   if (nv <= kStrSampleVectors) {
     for (uint64_t v = 0; v < nv; ++v) svec.push_back(v);
@@ -390,6 +416,7 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
       if ((force != T_DICT && seen >= 65536 && sc.dptr.size() * 2 > seen) || sc.dptr.size() > (1u << 24) ||
           dict_bytes + 8 * sc.dptr.size() > kMaxRawPage / 2) {
         dict = false;  // too many distinct strings: stop paying for the hashing
+        if ((cache = take_cache())) codes_to_cache(v * kV);  // this vector is copied below
         std::vector<int32_t>().swap(sc.codes);
         std::vector<const char*>().swap(sc.dptr);
         std::vector<int32_t>().swap(sc.dlen);
@@ -403,6 +430,10 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
           sl.push_back((size_t)lens[i]);
           sbytes += (uint64_t)lens[i];
         }
+    }
+    if (cache) {
+      std::memcpy(sc.cptr.data() + v * kV, ptrs, m * sizeof(const char*));
+      std::memcpy(sc.clen.data() + v * kV, lens, m * sizeof(int32_t));
     }
   }
 
@@ -430,6 +461,7 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
       return 0;
     }
   }
+  if (dict && !cache && (cache = take_cache())) codes_to_cache(n);  // a dictionary was kept up but not chosen
   std::vector<int32_t>().swap(sc.codes);
   std::vector<const char*>().swap(sc.dptr);
   std::vector<int32_t>().swap(sc.dlen);

@@ -173,6 +173,7 @@ struct WriterImpl {
   int profile = enc::P_BALANCED, keep_pct = 10, force_num = 0, force_str = 0;
   int force_codes = 0;     // tests: encoding forced on string dictionary code pages
   bool keep_codec = false;  // tests: keep the codec on every page, even when it does not save space
+  uint64_t str_cache_bytes = enc::kStrCacheBytes;  // string pointer cache budget per append call (tests: 0)
   // format of the file written: always version 3 (the forge alone may set another); appends and compaction keep
   // the file's feature fields
   uint32_t version = kFormatVersion;
@@ -367,6 +368,7 @@ struct WriterImpl {
     std::atomic<uint64_t> next(0);
     std::atomic<int> bad(0);  // 0 ok, 1 translate, 2 impossible
     std::atomic<int64_t> bad_col(std::numeric_limits<int64_t>::max());
+    std::atomic<uint64_t> cache_left(str_cache_bytes);
     const int k = (int)std::min<uint64_t>((uint64_t)threads, ntasks);
     for (int i = 0; i < std::max(k, 1); ++i) ctx(i);  // contexts are made here, before the workers start
 
@@ -375,6 +377,7 @@ struct WriterImpl {
       cx.profile = profile;
       cx.codec = codec;
       cx.cc = ctxs[(size_t)id].get();
+      cx.str_cache = &cache_left;
       for (;;) {
         uint64_t t = next.fetch_add(1);
         if (t >= ntasks) return;
@@ -435,11 +438,17 @@ struct WriterImpl {
       const uint64_t sz = sc.vsizes[(size_t)((vs - r0) / kVector)];
       if (sz > big) {
         if (vs > start) tasks.push_back({c, rg, start, (uint32_t)(vs - start), 0});
-        std::vector<const char*> ptrs(kVector);
-        std::vector<int32_t> lens(kVector);
+        std::vector<const char*> ptrs;
+        std::vector<int32_t> lens;
         uint32_t m = (uint32_t)(ve - vs);
-        if (d.get_strings(d.ctx, vs, m, ptrs.data(), lens.data()) != 0)
-          fail(FSTX_ERR_INTERNAL, "string source changed during write");
+        if (sc.clen.empty()) {
+          ptrs.resize(kVector);
+          lens.resize(kVector);
+          if (d.get_strings(d.ctx, vs, m, ptrs.data(), lens.data()) != 0)
+            fail(FSTX_ERR_INTERNAL, "string source changed during write");
+        } else {
+          lens.assign(sc.clen.begin() + (ptrdiff_t)(vs - r0), sc.clen.begin() + (ptrdiff_t)(ve - r0));
+        }
         uint64_t ps = vs, pacc = 0;
         for (uint32_t i = 0; i < m; ++i) {
           uint64_t rsz = 4ull + (lens[i] > 0 ? (uint64_t)lens[i] : 0);
@@ -531,22 +540,32 @@ struct WriterImpl {
         cx.force = force_codes;
         pm.chain = enc::encode_int_page(codes, n, enc::K_CODES, -1, cx, s.raw);
       } else {
-        if (ptrs.size() < n) {
-          ptrs.resize(n);
-          lens.resize(n);
+        const char* const* pp;
+        const int32_t* lp;
+        if (!sc.cptr.empty()) {  // the prep pass kept this chunk's pointers
+          const uint64_t off = t.row_start - (uint64_t)(t.rg - rg0) * rg_size;
+          pp = sc.cptr.data() + off;
+          lp = sc.clen.data() + off;
+        } else {
+          if (ptrs.size() < n) {
+            ptrs.resize(n);
+            lens.resize(n);
+          }
+          FSTX_PROF_BEGIN(prof_get, W_STR_GET);
+          for (uint32_t done = 0; done < n;) {
+            uint32_t m = std::min<uint32_t>(kVector, n - done);
+            if (d.get_strings(d.ctx, t.row_start + done, m, ptrs.data() + done, lens.data() + done) != 0)
+              fail(FSTX_ERR_INTERNAL, "string source changed during write");
+            done += m;
+          }
+          FSTX_PROF_END(prof_get);
+          pp = ptrs.data();
+          lp = lens.data();
         }
-        FSTX_PROF_BEGIN(prof_get, W_STR_GET);
-        for (uint32_t done = 0; done < n;) {
-          uint32_t m = std::min<uint32_t>(kVector, n - done);
-          if (d.get_strings(d.ctx, t.row_start + done, m, ptrs.data() + done, lens.data() + done) != 0)
-            fail(FSTX_ERR_INTERNAL, "string source changed during write");
-          done += m;
-        }
-        FSTX_PROF_END(prof_get);
         uint32_t na = 0;
-        for (uint32_t i = 0; i < n; ++i) na += lens[i] < 0;
+        for (uint32_t i = 0; i < n; ++i) na += lp[i] < 0;
         pm.null_count = na;
-        pm.chain = enc::encode_str_page(enc::K_STR, ptrs.data(), lens.data(), n, sc.mode, sc.fsst.get(), cx, s.raw);
+        pm.chain = enc::encode_str_page(enc::K_STR, pp, lp, n, sc.mode, sc.fsst.get(), cx, s.raw);
       }
     }
 
@@ -912,7 +931,8 @@ static void configure(fstx::WriterImpl& W, const fstx_write_column* cols, uint32
     if (opt->force_encoding) {
       namespace e = fstx::enc;
       const int f = opt->force_encoding & 0xff, fl = opt->force_encoding & ~0xff;
-      if (fl & ~(e::F_STR_DICT | e::F_DICT_FSST | e::F_KEEP_CODEC)) fstx::fail(FSTX_ERR_ARG, "unknown encoding flags");
+      if (fl & ~(e::F_STR_DICT | e::F_DICT_FSST | e::F_KEEP_CODEC | e::F_NO_STR_CACHE))
+        fstx::fail(FSTX_ERR_ARG, "unknown encoding flags");
       if (f == e::T_FSST) W.force_str = f;
       else if (f == e::T_DICT || f == e::T_PLAIN) W.force_num = W.force_str = f;
       else if (f >= 1 && f <= e::kMaxTag) W.force_num = f;
@@ -922,6 +942,7 @@ static void configure(fstx::WriterImpl& W, const fstx_write_column* cols, uint32
         W.force_codes = W.force_num;
       }
       W.keep_codec = (fl & e::F_KEEP_CODEC) != 0;
+      if (fl & e::F_NO_STR_CACHE) W.str_cache_bytes = 0;
     }
     if (opt->page_bytes) {
       if (opt->page_bytes < 4096 || opt->page_bytes > (1u << 28)) fstx::fail(FSTX_ERR_ARG, "page size out of range");
