@@ -288,12 +288,9 @@ Through pandas, additionally: R's NaN becomes NA in double columns; integer colu
 nullable dtypes are used (`fstx.to_pandas` uses them; plain `Table.to_pandas()` turns int64 with nulls into float64
 and loses precision past 2^53, checked); a factor with an NA level cannot be a Categorical.
 
-## 9. Open questions for Harsh
+## 9. Decisions (Harsh, 17 Nov 2026: "Yes, all four")
 
-1. **int64 from pandas**: `int64="auto"` (int32 when the values fit, else bit64 integer64) as proposed, or always
-   integer64 (exact type round trip, but R users need bit64), or always double?
-2. **Bad UTF-8 by default**: replace with U+FFFD and warn (proposed), or refuse the read?
-3. **Row numbers**: 0-based in Python (proposed, as every Python library), or 1-based like R so the same numbers
-   work in both?
-4. **Dates and times by default**: Arrow types (date32, timestamp[us]; lossy only for the cases of section 8) as
-   proposed, or the exact stored floats with conversion on request?
+1. **int64 from pandas**: `int64="auto"`: int32 when the values fit, else bit64 integer64.
+2. **Bad UTF-8 by default**: replace with U+FFFD and warn; the binary mode keeps the bytes.
+3. **Row numbers**: 0-based in Python.
+4. **Dates and times by default**: Arrow types (date32, timestamp[us]); `datetimes="float"` returns the exact stored values.
