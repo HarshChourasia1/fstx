@@ -93,9 +93,9 @@ inline uint64_t align_up(uint64_t x) { return (x + kAlign - 1) & ~(kAlign - 1); 
 uint64_t hash64(const void* p, size_t n);
 
 // ---------------------------------------------------------------- files
-// Identity of a file on disk, so two spellings of one path compare equal. Windows: a = volume serial, (b, c) = the
-// 128-bit file id (FileIdInfo; ReFS needs all 128 bits), or b = 0 and c = the 64-bit file index where FileIdInfo is
-// not available. POSIX: a = device, b = inode, c = 0. In memory only, never written to a file.
+// Identity of a file on disk, so two spellings of one path compare equal. Windows: a = volume serial (low 32
+// bits), (b, c) = the 128-bit file id (FileIdInfo; ReFS needs all 128 bits), or b = 0 and c = the 64-bit file index
+// where FileIdInfo is not available. POSIX: a = device, b = inode, c = 0. In memory only, never written to a file.
 struct FileId {
   uint64_t a = 0, b = 0, c = 0;
   bool ok = false;

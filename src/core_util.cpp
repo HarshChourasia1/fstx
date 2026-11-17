@@ -104,28 +104,33 @@ static std::string win_error_text(DWORD e) {
 }
 
 // FILE_ID_INFO and FileIdInfo (18) of Windows 8+, spelled out here: the headers declare them only for
-// _WIN32_WINNT >= 0x0602 and Rtools defaults to 0x0601.
+// _WIN32_WINNT >= 0x0602, and Rtools45 g++ defaults to 0x0601 (_mingw.h; R passes no -D_WIN32_WINNT).
 struct FstxFileIdInfo {
   ULONGLONG volume;
   BYTE id[16];
 };
+static_assert(sizeof(FstxFileIdInfo) == 24, "FstxFileIdInfo must match the 24-byte FILE_ID_INFO");
 
 static FileId id_of_handle(HANDLE h) {
   FileId id;
   FstxFileIdInfo xi;
+  BY_HANDLE_FILE_INFORMATION fi;
   if (GetFileInformationByHandleEx(h, (FILE_INFO_BY_HANDLE_CLASS)18, &xi, sizeof(xi))) {
-    id.a = (uint64_t)xi.volume;
+    // Only the low 32 bits of the volume serial: that is what the fallback below gets (dwVolumeSerialNumber), so an
+    // NTFS or FAT file has the same id whichever call answered (file_id_of_path and MappedFile::open open the file
+    // with different access). The 128-bit file id alone still tells ReFS files apart.
+    id.a = (uint32_t)xi.volume;
     std::memcpy(&id.c, xi.id, 8);
     std::memcpy(&id.b, xi.id + 8, 8);
-    id.ok = true;
-    return id;
-  }
-  BY_HANDLE_FILE_INFORMATION fi;  // older Windows or a file system without FileIdInfo: the 64-bit index
-  if (GetFileInformationByHandle(h, &fi)) {
+  } else if (GetFileInformationByHandle(h, &fi)) {  // older Windows or a file system without FileIdInfo
     id.a = (uint64_t)fi.dwVolumeSerialNumber;
     id.c = ((uint64_t)fi.nFileIndexHigh << 32) | (uint64_t)fi.nFileIndexLow;
-    id.ok = true;
+  } else {
+    return id;
   }
+  // Some FAT volumes and network redirectors give index 0 for every file: no usable id, so the file is never taken
+  // for another open one.
+  id.ok = id.b != 0 || id.c != 0;
   return id;
 }
 
