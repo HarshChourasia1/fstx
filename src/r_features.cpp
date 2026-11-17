@@ -88,8 +88,7 @@ SEXP fstx_features_impl(SEXP args) {
     cid.push_back(c);
     cname.push_back(n);
     cread.push_back(cpp11::r_bool(fstx::codec_supported(c)));
-    // the codecs the writer takes (core_writer.cpp configure()); a codec could be read-only in a later build
-    cwrite.push_back(cpp11::r_bool(fstx::codec_supported(c) && c >= FSTX_CODEC_NONE && c <= FSTX_CODEC_ZSTD));
+    cwrite.push_back(cpp11::r_bool(fstx::codec_supported(c)));  // the writer takes what codec_supported() says
   }
   return cpp11::writable::list({"version"_nm = cpp11::writable::strings({fstx::kVersion}),
                                 "format_read"_nm = cpp11::writable::integers({(int)fstx::kFormatVersion}),

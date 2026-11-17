@@ -32,6 +32,21 @@ test_that("fstx_features() reports what this build reads and writes", {
   expect_identical(f$types$read, c(TRUE, TRUE, TRUE, TRUE, FALSE, FALSE))
 })
 
+test_that("the writer takes exactly the codecs the codec layer has (codec_supported)", {
+  p <- tempfile(fileext = ".fstx")
+  on.exit(unlink(p))
+  w <- function(codec) fstx:::fstx_write_impl(list(1:10), p, "a", 0L, 0L, FALSE, list(NULL), list(NULL),
+                                              list(NULL), NULL, 10, codec, 1L, 1L, TRUE, 1L, 0L, 0L, FALSE, 0L)
+  for (codec in c(3L, 4L, 5L, 127L, 128L, 255L, -1L))
+    expect_error(w(codec), paste("unknown codec", codec), info = codec)
+  f <- fstx_features()$codecs
+  for (codec in 0:2) {
+    expect_true(f$write[f$id == codec])
+    expect_identical(w(codec), 0L)
+    expect_identical(read_fstx(p), data.frame(a = 1:10))
+  }
+})
+
 test_that("feature bits: unknown required bits are refused by name, optional ones ignored", {
   p <- tempfile(fileext = ".fstx")
   q <- tempfile(fileext = ".fstx")

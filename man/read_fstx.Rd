@@ -30,8 +30,7 @@ read_fstx(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads()
     back without fstx. \code{"deferred"} is the same, but keeps dictionary
     columns deferred too, and an unmade column is serialised in a compact form that needs fstx to read
     back (smaller and faster to write). \code{"eager"} makes every R string during the read and returns
-    plain character vectors. The old name \code{"altrep"} still works as \code{"deferred"}, with a
-    warning, through fstx 1.x.}
+    plain character vectors.}
   \item{as_factor}{\code{FALSE} (default), \code{TRUE} (every character column whose pages are all
     dictionary-coded becomes a factor, built from the dictionaries without hashing the rows), or column
     names (those columns become factors; ones that are not dictionary-coded go through \code{factor()}).
