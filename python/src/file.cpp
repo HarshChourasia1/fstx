@@ -7,12 +7,14 @@
 
 namespace fstxpy {
 
+// The names R and the golden sidecars use (DESIGN.md section 4: phys integer / double / logical / character,
+// logical none / factor / Date / POSIXct).
 static const char* phys_name(int p) {
   switch (p) {
-    case FSTX_INT32: return "int32";
-    case FSTX_FLOAT64: return "float64";
+    case FSTX_INT32: return "integer";
+    case FSTX_FLOAT64: return "double";
     case FSTX_LOGICAL: return "logical";
-    case FSTX_STRING: return "string";
+    case FSTX_STRING: return "character";
     default: return "unknown";
   }
 }
@@ -20,8 +22,8 @@ static const char* logical_name(int l) {
   switch (l) {
     case FSTX_LT_NONE: return "none";
     case FSTX_LT_FACTOR: return "factor";
-    case FSTX_LT_DATE: return "date";
-    case FSTX_LT_POSIXCT: return "posixct";
+    case FSTX_LT_DATE: return "Date";
+    case FSTX_LT_POSIXCT: return "POSIXct";
     default: return "unknown";
   }
 }
@@ -59,10 +61,10 @@ static nb::dict file_info(const File& F) {
   fstx_file_info_get(F.get(), &fi);
   nb::dict d;
   d["path"] = F.path;
-  d["num_rows"] = fi.n_rows;
-  d["num_columns"] = fi.n_cols;
-  d["num_row_groups"] = fi.n_row_groups;
-  d["num_pages"] = fi.n_pages;
+  d["nrow"] = fi.n_rows;
+  d["ncol"] = fi.n_cols;
+  d["row_groups"] = fi.n_row_groups;
+  d["pages"] = fi.n_pages;
   d["file_size"] = fi.file_size;
   d["row_group_size"] = fi.row_group_size;
   d["format_version"] = fi.format_version;
@@ -78,7 +80,7 @@ static nb::dict column_info(const File& F, uint32_t col) {
   nb::dict d;
   d["index"] = col;
   d["name"] = nb::str(ci.name ? ci.name : "", ci.name_len);
-  d["physical"] = phys_name(ci.phys);
+  d["phys"] = phys_name(ci.phys);
   d["logical"] = logical_name(ci.logical);
   d["ordered"] = ci.ordered != 0;
   d["num_levels"] = ci.n_levels;
@@ -87,7 +89,7 @@ static nb::dict column_info(const File& F, uint32_t col) {
   d["attrs"] = bytes_or_none(ci.attrs, ci.attrs_len);
   d["compressed_bytes"] = ci.compressed_bytes;
   d["raw_bytes"] = ci.raw_bytes;
-  d["num_pages"] = ci.n_pages;
+  d["pages"] = ci.n_pages;
   return d;
 }
 

@@ -1,39 +1,40 @@
-"""Shared test data: the format 1.0 golden files the R package ships (tests/testthat/fixtures/golden-1.0).
+"""Shared test data. No R is needed: every expectation is in a JSON sidecar written by R 4.5 + fstx 1.0.0.
 
-They were written by the R package 1.0.0, so every test here also checks R -> Python compatibility.
-FSTX_GOLDEN_DIR overrides the folder (for an installed wheel tested away from the git tree).
+golden/<case>.fstx + <case>.json   the Python cases of DESIGN.md section 3 (golden/make_golden.R)
+golden/format-1.0.json             expectations for the R package's own format files, which stay in
+                                   tests/testthat/fixtures/golden-1.0 (FSTX_FORMAT_GOLDEN_DIR overrides
+                                   the folder, for an installed wheel tested away from the git tree)
 """
-import csv
+import json
 import os
 from pathlib import Path
 
-import pytest
+HERE = Path(__file__).resolve().parent
+GOLDEN = HERE / "golden"
 
 
-def _golden_dir() -> Path:
-    env = os.environ.get("FSTX_GOLDEN_DIR")
+def _json(path):
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _format_dir() -> Path:
+    env = os.environ.get("FSTX_FORMAT_GOLDEN_DIR")
     if env:
         return Path(env)
-    return Path(__file__).resolve().parents[2] / "tests" / "testthat" / "fixtures" / "golden-1.0"
+    return HERE.parents[1] / "tests" / "testthat" / "fixtures" / "golden-1.0"
 
 
-GOLDEN = _golden_dir()
+# [(path, sidecar dict)] of the Python cases
+CASES = [(GOLDEN / c["file"], _json(GOLDEN / (Path(c["file"]).stem + ".json")))
+         for c in _json(GOLDEN / "manifest.json")["cases"]]
+
+FORMAT_DIR = _format_dir()
+_fmt = _json(GOLDEN / "format-1.0.json")["files"] if FORMAT_DIR.is_dir() else []
+# [(path, expectation dict)]: files that read, files that must be refused
+FORMAT_READ = [(FORMAT_DIR / f["file"], f) for f in _fmt if f["expect"] == "read"]
+FORMAT_REFUSE = [(FORMAT_DIR / f["file"], f) for f in _fmt if f["expect"] != "read"]
 
 
-def _rows(name):
-    path = GOLDEN / name
-    if not path.exists():
-        return []
-    with open(path, newline="", encoding="utf-8") as fh:
-        return list(csv.DictReader(fh))
-
-
-GOLDEN_FILES = _rows("files.csv")
-GOLDEN_COLUMNS = _rows("expected.csv")
-
-
-@pytest.fixture(scope="session")
-def golden() -> Path:
-    if not GOLDEN_FILES:
-        pytest.skip(f"golden files not found in {GOLDEN}")
-    return GOLDEN
+def ids(pairs):
+    return [p.name for p, _ in pairs]

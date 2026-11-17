@@ -1,9 +1,13 @@
-"""Opening an fstx file and reading its metadata (no column data yet)."""
+"""Opening an fstx file and reading its metadata (no column data yet).
+
+Names follow DESIGN.md section 2: ``fstx.metadata(path)`` gives a ``FileMeta`` whose ``columns`` are
+``ColumnMeta``; ``fstx.open(path)`` gives the open ``File`` that reading will hang its methods on.
+"""
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
-from typing import Any, Optional, Union
+from dataclasses import dataclass, field
+from typing import Any, List, Optional, Union
 
 from . import _core
 
@@ -11,42 +15,77 @@ PathLike = Union[str, "os.PathLike[str]"]
 
 
 @dataclass(frozen=True)
-class Column:
-    """One column of an fstx file.
+class ColumnMeta:
+    """One column as the file stores it (spec 4.2).
 
-    physical: how the values are stored: "int32", "float64", "logical" or "string".
-    logical:  what they mean: "none", "factor" (int32 codes + levels), "date" (days since 1970-01-01)
-              or "posixct" (seconds since 1970-01-01 UTC, shown in ``tzone``).
+    phys:    "integer" (int32), "double" (float64), "logical" (int32 0 / 1) or "character" (UTF-8).
+    logical: "none", "factor" (1-based int32 codes + ``levels``), "Date" (days since 1970-01-01, stored as
+             integer or double) or "POSIXct" (double seconds since 1970-01-01 UTC).
+    tzone:   POSIXct only: the time zone, "" when R stored an empty one, None when the column has none.
+    attrs:   the column's attribute blob (spec 9.4: FXA1 or R serialization), raw, or None.
     """
 
     index: int
     name: str
-    physical: str
+    phys: str
     logical: str
     ordered: bool
-    num_levels: int
+    levels: Optional[List[str]]
     tzone: Optional[str]
-    attrs: Optional[bytes]
+    attrs: Optional[bytes] = field(repr=False)
     compressed_bytes: int
     raw_bytes: int
-    num_pages: int
+    pages: int
+
+
+@dataclass(frozen=True)
+class FileMeta:
+    """A file's metadata. ``table_attrs`` is the table's attribute blob (spec 9.4), raw, or None."""
+
+    path: str
+    nrow: int
+    ncol: int
+    row_groups: int
+    pages: int
+    profile: str
+    format_version: int
+    file_size: int
+    row_group_size: int
+    table_attrs: Optional[bytes] = field(repr=False)
+    columns: List[ColumnMeta] = field(repr=False)
 
     @property
-    def type(self) -> str:
-        """One word for the column: the logical type when there is one, else the physical type."""
-        return self.physical if self.logical == "none" else self.logical
+    def names(self) -> List[str]:
+        return [c.name for c in self.columns]
+
+
+def _meta(f: "_core.File") -> FileMeta:
+    info = f.info()
+    cols = []
+    for c in f.columns():
+        n_levels = c.pop("num_levels")
+        levels = f.levels(c["index"]) if c["logical"] == "factor" else None
+        assert levels is None or len(levels) == n_levels
+        cols.append(ColumnMeta(levels=levels, **c))
+    return FileMeta(columns=cols, **info)
 
 
 class File:
-    """An open fstx file. Use ``fstx.open(path)``; close it with ``close()`` or a ``with`` block."""
+    """An open fstx file. Use ``fstx.open(path)``; close it with ``close()`` or a ``with`` block.
+
+    The metadata is read once at open and stays available after ``close()``.
+    """
 
     def __init__(self, path: PathLike):
         p = os.fspath(path)
         if isinstance(p, bytes):
             p = os.fsdecode(p)
         self._f = _core.open(p)
-        self._info = self._f.info()
-        self._schema = tuple(Column(**c) for c in self._f.columns())
+        try:
+            self._meta = _meta(self._f)
+        except BaseException:
+            self._f.close()
+            raise
 
     # ---- lifetime
     def close(self) -> None:
@@ -66,49 +105,45 @@ class File:
         state = " (closed)" if self.closed else ""
         return f"<fstx.File {self.path!r}: {self.num_rows} rows x {self.num_columns} columns{state}>"
 
-    # ---- metadata (kept after close)
+    # ---- metadata
     @property
     def path(self) -> str:
-        return self._info["path"]
+        return self._meta.path
+
+    @property
+    def metadata(self) -> FileMeta:
+        return self._meta
 
     @property
     def num_rows(self) -> int:
-        return self._info["num_rows"]
+        return self._meta.nrow
 
     @property
     def num_columns(self) -> int:
-        return self._info["num_columns"]
+        return self._meta.ncol
 
     @property
     def shape(self) -> tuple:
-        return (self.num_rows, self.num_columns)
+        return (self._meta.nrow, self._meta.ncol)
 
     @property
-    def column_names(self) -> list:
-        return [c.name for c in self._schema]
+    def column_names(self) -> List[str]:
+        return self._meta.names
 
     @property
-    def schema(self) -> tuple:
-        """The columns, in file order (a tuple of ``fstx.Column``)."""
-        return self._schema
+    def columns(self) -> List[ColumnMeta]:
+        """The columns as stored, in file order. (``schema``, the pyarrow.Schema, comes with reading.)"""
+        return list(self._meta.columns)
 
-    @property
-    def info(self) -> dict:
-        """File-level details: rows, columns, row groups, pages, sizes, format version, profile."""
-        return dict(self._info)
-
-    def column(self, which: Union[int, str]) -> Column:
-        """A column by position (negative counts from the end) or by name."""
+    def column(self, which: Union[int, str]) -> ColumnMeta:
+        """A column by 0-based position (negative counts from the end) or by name (first match)."""
         if isinstance(which, str):
-            for c in self._schema:
-                if c.name == which:
-                    return c
-            raise KeyError(which)
-        return self._schema[which]
-
-    def levels(self, which: Union[int, str]) -> list:
-        """The levels of a factor column, in order (an empty list for other columns)."""
-        return self._f.levels(self.column(which).index)
+            i = self._f.find_column(which) if not self.closed else next(
+                (c.index for c in self._meta.columns if c.name == which), -1)
+            if i < 0:
+                raise KeyError(which)
+            return self._meta.columns[i]
+        return self._meta.columns[which]
 
 
 def open(path: PathLike) -> File:  # noqa: A001
@@ -116,23 +151,7 @@ def open(path: PathLike) -> File:  # noqa: A001
     return File(path)
 
 
-def metadata(path: PathLike) -> dict:
-    """The file's metadata as one plain dict: the ``File.info`` keys plus ``columns`` (a list of dicts)."""
+def metadata(path: PathLike) -> FileMeta:
+    """The file's metadata: rows, columns, row groups, pages, profile, format version and every column."""
     with File(path) as f:
-        out = f.info
-        out["columns"] = [
-            {
-                "name": c.name,
-                "type": c.type,
-                "physical": c.physical,
-                "logical": c.logical,
-                "ordered": c.ordered,
-                "num_levels": c.num_levels,
-                "tzone": c.tzone,
-                "compressed_bytes": c.compressed_bytes,
-                "raw_bytes": c.raw_bytes,
-                "num_pages": c.num_pages,
-            }
-            for c in f.schema
-        ]
-        return out
+        return f.metadata

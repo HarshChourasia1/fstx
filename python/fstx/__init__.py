@@ -1,23 +1,22 @@
 """fstx: fast, safe column-store files (the FST-X format).
 
-This first step opens a file and reports its metadata:
+This first step opens a file and reports its metadata (design: DESIGN.md in the source tree):
 
     import fstx
-    with fstx.open("data.fstx") as f:
-        f.num_rows, f.num_columns, f.column_names
-        f.schema          # tuple of fstx.Column
-        f.info            # file-level details
+    m = fstx.metadata("data.fstx")      # FileMeta: nrow, ncol, row_groups, pages, profile, columns, ...
+    m.columns[0]                         # ColumnMeta: name, phys, logical, levels, tzone, ...
 
-    fstx.metadata("data.fstx")   # the same as one dict
+    with fstx.open("data.fstx") as f:   # the open file that reading will be added to
+        f.num_rows, f.num_columns, f.column_names, f.columns
 
-Reading columns and writing files come next (see DEV.md in the source tree).
+read_fstx, write_fstx and the rest of DESIGN.md section 2 come next.
 """
 from __future__ import annotations
 
 import atexit as _atexit
 
 from . import _core
-from ._file import Column, File, metadata, open  # noqa: A004 (open is the package's own verb)
+from ._file import ColumnMeta, File, FileMeta, metadata, open  # noqa: A004 (open is the package's own verb)
 
 FstxError = _core.FstxError
 FstxError.__doc__ = (
@@ -52,8 +51,9 @@ except Exception:  # running from a source tree that was never installed
 _atexit.register(_core.shutdown)
 
 __all__ = [
-    "Column",
+    "ColumnMeta",
     "File",
+    "FileMeta",
     "FstxError",
     "build_info",
     "metadata",
