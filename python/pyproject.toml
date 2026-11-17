@@ -1,5 +1,10 @@
 [build-system]
-requires = ["scikit-build-core>=0.10", "nanobind>=2.4"]
+# nanobind 3 needs Python 3.10; Python 3.9 builds with the last nanobind 2.
+requires = [
+  "scikit-build-core>=0.10",
+  "nanobind>=2.4,<3; python_version < '3.10'",
+  "nanobind>=2.4; python_version >= '3.10'",
+]
 build-backend = "scikit_build_core.build"
 
 [project]

@@ -44,7 +44,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # ---------------------------------------------------------------- the engine: a static library, no R glue
-# The list is OBJECTS of src/Makevars.in minus r_*.cpp and cpp11.cpp. prof.cpp has no R code (its counters
+# The list is OBJECTS of src/Makevars.in minus the R glue (r_*.cpp, cpp11.cpp). prof.cpp has no R code (its counters
 # are compiled out unless FSTX_PROF is defined) and the engine calls into it, so it stays.
 set(V "${FSTX_CORE_DIR}/vendor")
 set(FSTX_VENDOR_SOURCES
@@ -67,7 +67,11 @@ set(FSTX_ENGINE_SOURCES
   ${FSTX_CORE_DIR}/core_filter.cpp ${FSTX_CORE_DIR}/core_colsrc.cpp
   ${FSTX_CORE_DIR}/enc_num.cpp ${FSTX_CORE_DIR}/enc_str.cpp
   ${FSTX_CORE_DIR}/codec_ext.cpp ${FSTX_CORE_DIR}/simd_kernels.cpp ${FSTX_CORE_DIR}/kern_test.cpp
-  ${FSTX_CORE_DIR}/prof.cpp)
+  ${FSTX_CORE_DIR}/prof.cpp
+  ${FSTX_CORE_DIR}/r_arrow.cpp)
+# r_arrow.cpp is the Arrow C stream (fstx_arrow_stream_open, arrow_abi.h) with R glue at its end; the glue is
+# compiled out with FSTX_ARROW_NO_R, as tools/fuzz does. It is the one r_*.cpp file in this build.
+set_source_files_properties(${FSTX_CORE_DIR}/r_arrow.cpp PROPERTIES COMPILE_DEFINITIONS FSTX_ARROW_NO_R)
 
 add_library(fstx_engine STATIC ${FSTX_ENGINE_SOURCES} ${FSTX_VENDOR_SOURCES})
 target_include_directories(fstx_engine PUBLIC
