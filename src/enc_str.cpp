@@ -118,7 +118,8 @@ struct FsstLane {
 };
 
 // Per-thread scratch kept between pages (the pool threads live on), up to kKeepScratch bytes; bigger asks are freed after
-// use. No zero fill: every byte is written before it is read.
+// use. No zero fill: every byte is written before it is read. The kept block grows to the largest ask so far (not
+// straight to kKeepScratch: two 4 MB blocks per pool thread were 112 MB of committed memory at 14 threads).
 constexpr size_t kKeepScratch = 4u << 20;
 struct Scratch {
   std::unique_ptr<uint8_t[]> keep;
@@ -131,8 +132,9 @@ struct Scratch {
     }
     big.reset();
     if (cap < n) {
-      keep.reset(new uint8_t[kKeepScratch]);
-      cap = kKeepScratch;
+      keep.reset();
+      keep.reset(new uint8_t[n]);
+      cap = n;
     }
     return keep.get();
   }
