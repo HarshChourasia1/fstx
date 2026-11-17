@@ -20,17 +20,22 @@ write_fstx(x, path, profile = c("balanced", "fast", "small"), compress = NULL,
     of an existing file (a missing file is simply written). Columns must match the file's in names, order,
     type and class; factor levels may grow (the file's levels first, new ones after; ordered factors need
     the same levels); POSIXct columns need the same time zone; files with stored row names cannot be
-    appended to. The profile defaults to the file's (a profile written by a later fstx: the new rows are
-    encoded as \code{"balanced"} and the file keeps its stored value). An interrupted append leaves the old
-    table readable. A file with an optional feature this fstx does not know cannot be appended to ("Update fstx to change this
-    file; reading works"). Appending reads the file's table attributes with \code{unserialize()}, so the
-    trusted-source note in \code{\link{read_fstx}} applies.}
+    appended to. Appending rows to a data.table drops its key and indices (the new rows may not follow
+    them; set them again with \code{setkey()} / \code{setindex()}); appending 0 rows keeps them.
+    The profile defaults to the file's (a profile written by a later fstx: the new rows are encoded as
+    \code{"balanced"} and the file keeps its stored value). An interrupted append leaves the old table readable.
+    A file with an optional feature this fstx does not know cannot be appended to ("Update fstx to change this
+    file; reading works"). Appending reads the file's table and column attributes, with \code{unserialize()}
+    for any stored with R's \code{serialize()} (append has no \code{attributes = FALSE} switch), so the
+    trusted-source note in \code{\link{read_fstx}} applies to those files.}
 }
 \details{
 Every page is encoded with the lightweight encoding that fits it best (bit-packing, frame-of-reference,
 delta, run-length, dictionary, ALP for doubles, FSST for strings); the profile decides what goes on top.
 Columns may be logical, integer, double or character vectors. Factors (and ordered factors), Date and
-POSIXct are stored natively; any other attributes (classes, units, labels) are kept and restored on read.
+POSIXct are stored natively; any other attributes (classes, units, labels) are kept and restored on read,
+in fstx's own checked encoding when they are plain vectors, else with R's \code{serialize()} (see
+\code{\link{read_fstx}}).
 Matrix and list columns are not supported. Strings are stored as UTF-8.
 Memory: besides the data and the pages in flight, the writer keeps the string pointers of character
 columns it does not dictionary-code, 12 bytes per string and at most 64 MB per call (past that it reads

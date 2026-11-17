@@ -50,16 +50,19 @@ NULL
   choices[k]
 }
 
-# Tests only: the write_fstx test hooks. .write_fstx(..., .encoding = , .crash = ) is write_fstx() with them
-# set; tests/testthat/helper-fstx.R points the tests' write_fstx at it.
+# Tests only: the write_fstx test hooks. .write_fstx(..., .encoding = , .crash = , .blobs = ) is write_fstx()
+# with them set; tests/testthat/helper-fstx.R points the tests' write_fstx at it. .blobs: a list with `table`
+# (raw) and / or `cols` (a list of raw or NULL, one per column) written instead of the attribute blobs.
 .test_hooks <- new.env(parent = emptyenv())
-.write_fstx <- function(..., .encoding = NULL, .crash = 0L) {
-  on.exit({   # registered first: an error while a hook is evaluated leaves neither set
+.write_fstx <- function(..., .encoding = NULL, .crash = 0L, .blobs = NULL) {
+  on.exit({   # registered first: an error while a hook is evaluated leaves none set
     .test_hooks$encoding <- NULL
     .test_hooks$crash <- NULL
+    .test_hooks$blobs <- NULL
   })
   .test_hooks$encoding <- .encoding
   .test_hooks$crash <- .crash
+  .test_hooks$blobs <- .blobs
   write_fstx(...)
 }
 
@@ -165,16 +168,19 @@ write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compre
       a[["class"]] <- NULL
       a[["tzone"]] <- NULL
     }
-    # anything else (other classes, units, labels, ...) travels as an R-serialized blob
-    if (length(a)) blobs[[i]] <- serialize(a, NULL, xdr = FALSE)
+    # anything else (other classes, units, labels, ...) travels as an attribute blob (attrs.R)
+    if (length(a)) blobs[[i]] <- .attr_encode(a)
   }
 
   ta <- attributes(x)
   ta[["names"]] <- NULL
   if (.row_names_info(x) < 0L) ta[["row.names"]] <- NULL   # automatic row names are rebuilt on read
   ta[[".internal.selfref"]] <- NULL                        # data.table pointer, rebuilt on read
-  table_blob <- if (length(ta)) serialize(ta, NULL, xdr = FALSE) else NULL
+  table_blob <- .attr_encode(ta)
   if (append) table_blob <- file_ta   # the file keeps its own class and table attributes
+  hb <- .test_hooks$blobs
+  if ("table" %in% names(hb)) table_blob <- hb$table
+  if ("cols" %in% names(hb)) blobs <- hb$cols
 
   utf8_locale <- isTRUE(l10n_info()[["UTF-8"]])
   for (attempt in seq_len(nc + 1L)) {
@@ -200,10 +206,11 @@ write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compre
 #' @return a data frame with the class it was written with.
 read_fstx <- function(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads(), verify = TRUE,
                       lazy = FALSE, strings = c("auto", "eager", "deferred"), as_factor = FALSE,
-                      rows = NULL, where = NULL) {
+                      rows = NULL, where = NULL, attributes = TRUE) {
   fn <- "read_fstx"
   path <- .path_arg(path, fn = fn)
   .flag(verify, "verify", fn)
+  .flag(attributes, "attributes", fn)
   wq <- substitute(where)
   if (!is.null(wq)) {
     if (!is.null(rows)) .err(fn, "use either 'rows' or 'where', not both")
@@ -254,13 +261,17 @@ read_fstx <- function(path, columns = NULL, from = 1, to = NULL, threads = fstx_
   for (i in which(r$factor_fallback)) res[[i]] <- factor(res[[i]])
   ca <- r$col_attrs
   for (i in which(!vapply(ca, is.null, NA))) {
+    what <- sprintf("column '%s'", r$names[i])
+    a <- .attr_decode(ca[[i]], path, what, attributes)   # attributes = FALSE: R-serialized blobs are skipped
+    if (is.null(a)) next
     col <- res[[i]]
     res[i] <- list(NULL)                     # drop the list's reference so the attributes are set in place
-    attributes(col) <- c(attributes(col), unserialize(ca[[i]]))
+    tryCatch(attributes(col) <- c(attributes(col), a), error = function(e) .attr_corrupt(path, what, conditionMessage(e)))
     res[[i]] <- col
   }
   n <- r$nrow
-  ta <- if (is.null(r$table_attrs)) list(class = "data.frame") else unserialize(r$table_attrs)
+  ta <- .attr_decode(r$table_attrs, path, "table", attributes)
+  ta <- if (is.null(ta)) list(class = "data.frame") else .table_attrs_check(ta, r$file_rows, r$names, path)
   part_rows <- n != r$file_rows || !is.null(rows)
   if (is.null(ta[["row.names"]])) {
     ta[["row.names"]] <- .set_row_names(as.integer(n))
@@ -277,7 +288,7 @@ read_fstx <- function(path, columns = NULL, from = 1, to = NULL, threads = fstx_
   }
   nms <- r$names
   if (!r$all_columns && anyDuplicated(nms)) nms <- make.unique(nms)   # as x[, cols] does
-  attributes(res) <- c(list(names = nms), ta)
+  tryCatch(attributes(res) <- c(list(names = nms), ta), error = function(e) .attr_corrupt(path, "table", conditionMessage(e)))
   if (inherits(res, "data.table") && requireNamespace("data.table", quietly = TRUE))
     res <- data.table::setalloccol(res)
   res
@@ -306,10 +317,11 @@ fstx_meta <- function(path) {
   m <- fstx_meta_impl(path)
   cls <- ifelse(m$logical == "", m$phys, m$logical)
   for (i in which(!vapply(m$col_attrs, is.null, NA))) {
-    a <- unserialize(m$col_attrs[[i]])
+    a <- .attr_decode(m$col_attrs[[i]], path, sprintf("column '%s'", m$name[i]))
     if (!is.null(a[["class"]])) cls[i] <- paste(a[["class"]], collapse = "/")
   }
-  ta <- if (is.null(m$table_attrs)) list() else unserialize(m$table_attrs)
+  ta <- .attr_decode(m$table_attrs, path, "table")
+  if (!is.null(ta)) ta <- .table_attrs_check(ta, m$nrow, m$name, path)
   structure(list(
     path = path, nrow = m$nrow, ncol = m$ncol, file_size = m$file_size, row_groups = m$row_groups,
     pages = m$pages, format_version = m$format_version, profile = m$profile, table_class = ta[["class"]],

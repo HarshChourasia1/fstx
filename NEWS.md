@@ -12,6 +12,10 @@
 * `fstx_arrow_stream()` reads a file as an Arrow C stream (through 'nanoarrow') without making R strings.
   Numeric, logical, factor and date-time columns are split into row parts across threads when a batch
   has fewer columns than threads.
+* Column and table attributes that are plain vectors (class, row names, data.table key and index, labels) are
+  stored in fstx's own checked encoding (spec section 9.4), so ordinary files are read without
+  `unserialize()`; other attributes still use `serialize()`, and `read_fstx(attributes = FALSE)` skips them.
+  Reads and appends check table attributes; appending rows to a data.table drops its key and indices.
 * `options(fstx.verify_nulls = TRUE)` (off by default) checks each page's stored missing-value count
   against its decoded values, in reads, filters and the Arrow stream, and refuses a page that disagrees
   as corrupt.
