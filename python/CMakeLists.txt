@@ -137,9 +137,9 @@ endif()
 option(FSTX_BUILD_PYTHON "build the Python extension fstx._core" ON)
 if(FSTX_BUILD_PYTHON)
   if(CMAKE_VERSION VERSION_LESS 3.26)
-    find_package(Python 3.9 REQUIRED COMPONENTS Interpreter Development.Module)
+    find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module)
   else()
-    find_package(Python 3.9 REQUIRED COMPONENTS Interpreter Development.Module
+    find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module
                  OPTIONAL_COMPONENTS Development.SABIModule)
   endif()
   if(NOT nanobind_DIR AND NOT nanobind_ROOT)
@@ -149,10 +149,11 @@ if(FSTX_BUILD_PYTHON)
   find_package(nanobind CONFIG REQUIRED)
 
   # One .cpp per area, each with an init_<area>(nb::module_&) called from module.cpp (see src/binding.h).
-  # STABLE_ABI: abi3 on CPython 3.12+, an ordinary module on 3.9 to 3.11.
+  # STABLE_ABI: abi3 on CPython 3.12+, an ordinary module on 3.10 and 3.11.
   nanobind_add_module(_core STABLE_ABI NB_STATIC
     src/module.cpp
-    src/file.cpp)
+    src/file.cpp
+    src/read.cpp)
   target_link_libraries(_core PRIVATE fstx_engine)
   target_compile_definitions(_core PRIVATE
     FSTX_PY_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")

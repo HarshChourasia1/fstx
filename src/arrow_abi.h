@@ -71,6 +71,7 @@ typedef struct fstx_arrow_args {
   int threads;               /* <= 0: all cores */
   uint64_t batch_rows;       /* rows per batch at most; 0 = one batch per row group. Batches never span row groups */
   int verify;                /* FSTX_VERIFY_HASH / FSTX_VERIFY_NULLS bits (fstx_core.h) */
+  int raw;                   /* != 0: Date and POSIXct columns come as stored (int32 / float64), not date32 / timestamp */
 } fstx_arrow_args;
 
 /* Opens path and fills *out (which must be released, i.e. out->release == NULL). The stream owns the open file

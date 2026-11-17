@@ -1,10 +1,5 @@
 [build-system]
-# nanobind 3 needs Python 3.10; Python 3.9 builds with the last nanobind 2.
-requires = [
-  "scikit-build-core>=0.10",
-  "nanobind>=2.4,<3; python_version < '3.10'",
-  "nanobind>=2.4; python_version >= '3.10'",
-]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.4"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -12,7 +7,10 @@ name = "fstx"
 version = "1.0.0.dev0"
 description = "Fast, safe column-store files (the FST-X format): Python on the fstx C++ engine"
 license = { text = "MIT" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
+# pyarrow 15 is the first with RecordBatchReader.from_stream (the Arrow PyCapsule stream protocol the
+# reader is built on); pandas and polars are optional (fstx.to_pandas / fstx.to_polars import them on use).
+dependencies = ["pyarrow>=15"]
 authors = [{ name = "Harsh Chourasia" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -22,7 +20,9 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=7"]
+pandas = ["pandas>=2"]
+polars = ["polars>=1"]
+test = ["pytest>=7", "pandas>=2", "polars>=1"]
 
 [project.urls]
 Homepage = "https://github.com/HarshChourasia1/fstx"
@@ -32,7 +32,7 @@ minimum-version = "build-system.requires"
 cmake.version = ">=3.21"
 cmake.build-type = "Release"
 build-dir = "build/{wheel_tag}"
-# One abi3 wheel for CPython 3.12 and later; 3.9 to 3.11 get an ordinary per-version wheel
+# One abi3 wheel for CPython 3.12 and later; 3.10 and 3.11 get an ordinary per-version wheel
 # (nanobind needs 3.12 for the stable ABI; scikit-build-core ignores this key on older Pythons).
 wheel.py-api = "cp312"
 wheel.packages = ["fstx"]

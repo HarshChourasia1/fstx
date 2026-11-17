@@ -22,6 +22,59 @@ needs nanobind 2: neither was run), the abi3 wheel on a newer Python, an sdist, 
 `.Rbuildignore` change (the change is one line, `^python$`; the two engine edits are behind
 `_MSC_VER && !__clang__`).
 
+## Step 2: reading (17 Nov 2026, branch `py-read`)
+
+`fstx.read_fstx`, `File.read`, `File.to_batches`, `File.schema`, `FileMeta.schema`, `ColumnMeta.r_class`,
+`fstx.to_pandas`, `fstx.to_polars` and the FXA1 decoder. Tested on the desktop (Windows x64, Python 3.12,
+pyarrow 26.0.1, pandas 3.1.1, polars 2.1.0, numpy 2.5.5):
+
+| compiler | wheel | pytest |
+|---|---|---|
+| Microsoft cl (Build Tools 2022) | `fstx-1.0.0.dev0-cp312-abi3-win_amd64.whl` (340 KB) | 413 passed (132 from step 1, 281 in `test_read.py`) |
+| clang-cl (Build Tools LLVM) | same name (421 KB) | 413 passed |
+
+R with the engine change (R 4.6.1, package built and installed into its own library): `test-arrow.R`,
+10 tests, 356 expectations, 0 failed, 1 skipped. The rest of the R suite and coretest were not rerun (the
+change touches `r_arrow.cpp` and `arrow_abi.h` only). Not tested: Linux, macOS, Python other than 3.12,
+pyarrow older than 26 (the floor `>=15` is where `RecordBatchReader.from_stream` appeared; not run), files
+with string columns over 2 GB (the `large_string` path), whether the GIL release speeds up threads (only that
+8 threads reading at once give right answers).
+
+How a read goes: `_core.stream()` opens the engine's Arrow C stream (`fstx_arrow_stream_open`) with the GIL
+released and returns an `arrow_array_stream` PyCapsule; pyarrow imports it (`RecordBatchReader.from_stream`)
+and pulls batches with the GIL released; `_read.py` finishes each batch (strings, integer64, classes kept in
+the attribute blob). Filters go through `_core.filter()` (`fstx_filter`), which returns the matching row
+numbers; those are then read through the stream's row-list path.
+
+Metadata on what is returned (the writer reads this back):
+
+- field `fstx.r`: JSON `{"phys","logical","class"?,"tzone"?}`, on every column that is not a plain vector
+  without attributes. `class` is the R class vector (absent when plain or unknown); `tzone` only for a native
+  POSIXct with a stored zone (`""` = stored empty, key absent = none stored).
+- field `fstx.attrs`: the column's attribute blob, raw bytes. schema `fstx.table_attrs`: the table blob, raw.
+- schema `fstx.row_names`: a JSON list, only on a partial or reordered read of a file with stored row names
+  (it replaces the blob's `row.names`; repeats are made unique as R's `make.unique`). `row_names(schema)` in
+  `_read.py` gives the row names either way.
+- `to_pandas`: the schema, serialized, in `df.attrs["fstx_schema"]` (`pyarrow.ipc.read_schema`); row names in
+  the index. `to_polars`: no metadata at all.
+
+What does not come back as R holds it:
+
+- Date and POSIXct with `datetimes="arrow"`: fractional days are floored, seconds rounded to the microsecond,
+  Inf / NaN become null. `datetimes="float"` gives the stored numbers.
+- Strings that are not valid UTF-8: replaced with U+FFFD plus a warning (default), or `binary`, or an error.
+- A factor with NA as a level reads as a dictionary with a null value (kept); pandas and polars cannot hold
+  it, so the two helpers return strings with a warning.
+- pandas 3 turns NaN into `<NA>` in `Float64` unless `future.distinguish_nan_and_na` is on.
+- polars: repeated column names are refused.
+- `as_factor` sorts levels by code point (R sorts in the session's locale).
+- Filters: `is_null` / `not_null` follow R's `is.na()` (NaN counts in double columns). integer64, difftime
+  and other classed columns, and columns whose attributes are R serialization, cannot be filtered (as in R).
+- Errors raised while a batch decodes carry the engine's message but no code (`FstxError.code` is None): the
+  Arrow stream keeps only the message.
+- `to_batches`: `invalid_utf8="binary"` makes every character column binary; no `as_factor`; rows only as a
+  slice or range; a read of zero rows yields no batch (the schema still has the types).
+
 ## Build and test
 
 From the repo root, in a shell with a C++17 compiler (Windows: "x64 Native Tools Command Prompt", or
@@ -48,15 +101,19 @@ python -m pytest python/tests -q -rs
 
 ```
 python/
-  pyproject.toml        scikit-build-core; abi3 (cp312) wheel; nanobind 2 on Python 3.9, nanobind 3 on 3.10+
+  pyproject.toml        scikit-build-core; abi3 (cp312) wheel; Python >= 3.10, nanobind >= 2.4, pyarrow >= 15
   CMakeLists.txt        fstx_engine (static: src/ engine + vendored libs), _core (nanobind), coretest (option)
   cmake/msvc_compat.h   cl.exe only, force-included (/FI): __builtin_ctzll / clzll, __attribute__ dropped
   src/binding.h         shared by the binding: File (holds fstx_file*), raise_error / check, init_* declarations
   src/module.cpp        NB_MODULE(_core): FstxError, ERR_* codes, build_info, set_simd, kernel_selftest, shutdown
   src/file.cpp          open, File (info, columns, column, levels, find_column, close)
+  src/read.cpp          _core.stream (Arrow C stream capsule), _core.filter, OP_* and VERIFY_* constants
   fstx/__init__.py      public names; registers _core.shutdown with atexit
   fstx/_file.py         FileMeta, ColumnMeta, File, open(), metadata()
-  tests/                conftest.py (golden sets), test_metadata.py, test_build.py, golden/ (from py-design)
+  fstx/_fxa1.py         FXA1 attribute blobs: decode(), kind(), RVector (the encoder is the write step's)
+  fstx/_filters.py      filters -> engine predicates, as R's .term_pred()
+  fstx/_read.py         read, to_batches, read_fstx, schema_of, row_names, to_pandas, to_polars, set_options
+  tests/                conftest.py (golden sets), test_metadata.py, test_build.py, test_read.py, golden/
   DESIGN.md, DEV.md
 ```
 
@@ -72,7 +129,7 @@ Rules for the next steps:
   runs on worker threads (`get_strings`) must not touch Python objects.
 - Stable ABI: the module is built with `Py_LIMITED_API` on 3.12+, so no CPython internals in the binding.
 - Python code: one private module per area (`_file.py`, later `_read.py`, `_write.py`), public names re-exported
-  in `__init__.py`. pyarrow is not a dependency yet; the read step adds it.
+  in `__init__.py`. pyarrow is a dependency since the read step; pandas, polars and numpy are optional.
 
 ## API so far
 
@@ -90,9 +147,18 @@ fstx.build_info()                 # engine version, compiler, abi3, SIMD targets
 fstx._core                        # private: open, File, set_simd, kernel_selftest, shutdown
 ```
 
-Against `DESIGN.md` section 2: `FileMeta.schema` (a pyarrow.Schema), `ColumnMeta.r_class` (needs the FXA1
-decoder) and `File.schema / read / to_batches` are for the read step; `File.columns` holds the stored column
-metadata meanwhile.
+Added by the read step:
+
+```python
+fstx.read_fstx(path, columns=None, rows=None, filters=None, *, threads=None, verify=True, as_factor=False,
+               attributes=True, datetimes="arrow", invalid_utf8="replace") -> pyarrow.Table
+File.read(columns, rows, filters, **same options)        File.schema
+File.to_batches(columns, batch_rows, filters, *, rows, threads, verify, attributes, datetimes, invalid_utf8)
+                                  # pyarrow.RecordBatchReader; File also has __arrow_c_stream__
+FileMeta.schema  .attributes  .table_class  .row_names   ColumnMeta.r_class  .attributes
+fstx.to_pandas(table)  fstx.to_polars(table)  fstx.set_options(verify_nulls=)  fstx.FstxWarning
+fstx._fxa1.decode(blob) -> {name: RVector(type, values, attrs)}
+```
 
 ## Changes to the engine sources (`src/`)
 
@@ -100,8 +166,14 @@ metadata meanwhile.
    `#if defined(_MSC_VER) && !defined(__clang__)`; the GCC / Clang vector-extension code is the `#else`, untouched.
 2. `src/enc_num.cpp`: the same for `any_int_na` and `any_nan`.
 
-Reason: cl.exe has no `__attribute__((vector_size))`. Results are the same (coretest hashes above). Nothing
-else in `src/` changed; `.Rbuildignore` gained `^python$`.
+Reason: cl.exe has no `__attribute__((vector_size))`. Results are the same (coretest hashes above).
+
+3. (read step) `src/arrow_abi.h`: `fstx_arrow_args` gains a last member `int raw`; `src/r_arrow.cpp`: when it
+   is set, Date and POSIXct columns leave the stream as stored (int32 / float64) instead of date32 /
+   timestamp. Reason: `datetimes="float"` must return the exact stored doubles, which the timestamp
+   conversion rounds. The R glue and `tools/fuzz/fuzz_arrow.cpp` zero the struct, so R never sets it.
+
+Nothing else in `src/` changed; `.Rbuildignore` gained `^python$`.
 
 Handled without source edits: `__builtin_ctzll` / `__builtin_clzll` (engine, vendor/fsst) and
 `__attribute__((always_inline))` / `format` through `cmake/msvc_compat.h` for cl only; clang-cl needs none of
@@ -109,8 +181,7 @@ this and compiles the engine as it is. Under cl the two `always_inline` helpers 
 `inline` (speed not measured).
 
 `r_arrow.cpp` (the Arrow C stream, `fstx_arrow_stream_open`) is in the engine library, compiled with
-`FSTX_ARROW_NO_R`, which leaves its R glue out; it compiles under cl and clang-cl. It is linked but not yet
-called from Python. `prof.cpp` is in too (no R code; counters compiled out).
+`FSTX_ARROW_NO_R`, which leaves its R glue out; it compiles under cl and clang-cl. Reading goes through it. `prof.cpp` is in too (no R code; counters compiled out).
 
 ## The `-Wa,-muse-unaligned-vector-move` flag
 
@@ -125,8 +196,11 @@ Floating point: files must be byte-identical on every CPU, so no fused multiply-
 
 ## Open points
 
-- Python 3.9: nanobind 3 needs 3.10. `pyproject.toml` pins nanobind 2 for 3.9, but that path was not built.
-  3.9 is past end of life; dropping it would remove the pin.
+- Python 3.9 was dropped in the read step (floor 3.10, no nanobind 2 pin).
+- The attribute blobs are raw bytes in the Arrow metadata (DESIGN.md section 4). polars panics on metadata
+  that is not UTF-8 (`pl.from_arrow(table)` on a table whose blob is R serialization, or FXA1 with bytes over
+  0x7F); `fstx.to_polars` drops the metadata for that reason. Storing the blobs as base64 would avoid it, at
+  the cost of changing the contract in DESIGN.md.
 - Which Windows compiler the wheels use: both pass. clang-cl compiles the same code paths as the R build
   (vector extensions, always_inline) and Highway recommends it over cl; cl is what pip and cibuildwheel use by
   default. No speed comparison was run.
