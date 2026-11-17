@@ -16,7 +16,8 @@ read_fstx(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads()
   \item{from, to}{first and last row to read (1-based, inclusive); \code{to = NULL} reads to the end.}
   \item{threads}{number of threads (default: all cores; see \code{\link{fstx-package}} for limits).}
   \item{verify}{check every page's checksum (header and footer checksums are always checked). Lazy
-    columns check a page when it is decoded. Must be \code{TRUE} or \code{FALSE}.}
+    columns check a page when it is decoded. Must be \code{TRUE} or \code{FALSE}. The missing-value check
+    is separate: \code{options(fstx.verify_nulls = TRUE)} (see Details).}
   \item{lazy}{\code{FALSE} (default) reads the data now. \code{TRUE} returns at once: every column is an
     ALTREP vector backed by the memory-mapped file and decoded a page at a time when it is used, so RAM
     covers only the columns (and pages) that are touched. The file stays open (and cannot be overwritten
@@ -52,6 +53,17 @@ Reads files in fstx format 1.0 (format version 3); files from fstx 0.x developme
 refused. A file written by a later fstx that uses something this version does not know (a column type, codec or file feature) is refused
 with a message that names it and ends "Update fstx", rather than reported as damaged. A damaged file gives
 an R error; with \code{verify = TRUE} (the default) every page checksum is checked as well.
+
+Each page records how many missing values it holds. fstx trusts that count: a page that says it has none is
+not searched for \code{NA}s by \code{\link{fstx_arrow_stream}} or by filters, and a lazy column tells R it has none.
+A crafted file can make the count wrong, which gives wrong answers (an \code{NA} reported as a value), not a
+crash. With \code{options(fstx.verify_nulls = TRUE)} every page that is decoded has its missing values counted,
+and a count that differs from the page's own refuses the file as corrupt. It is off by default because it costs
+one more pass over each decoded page (expected: a few percent on numeric columns, close to nothing on string
+columns) and, for \code{rows} and \code{where} reads, decodes whole pages instead of the parts that hold the
+rows. With the option on, a \code{where} filter decides nothing from the stored count; pages it skips by their
+min / max are not decoded, so they are not counted. Lazy and deferred columns take the option's value when
+\code{read_fstx()} runs: turning it on later does not check them, turning it off later does not stop it.
 
 Column and table attributes are stored with R's \code{serialize()} and restored with \code{unserialize()},
 as \code{readRDS()} does. Like an .rds file, only read .fstx files from sources you trust: a crafted file

@@ -38,6 +38,10 @@ NULL
   x
 }
 
+# The engine's verify bits (FSTX_VERIFY_* in src/fstx_core.h): 1 page checksums (verify = TRUE), 2 each decoded
+# page's missing values counted against its null_count (options(fstx.verify_nulls = TRUE); off by default).
+.verify_bits <- function(verify) as.integer(verify) + if (isTRUE(getOption("fstx.verify_nulls"))) 2L else 0L
+
 # match.arg() with the function and argument named in the error (same exact-then-partial matching)
 .pick <- function(x, choices, what, fn = NULL) {
   if (is.null(x) || identical(x, choices)) return(choices[1L])   # as match.arg(): NULL gives the default
@@ -205,7 +209,8 @@ read_fstx <- function(path, columns = NULL, from = 1, to = NULL, threads = fstx_
     if (!is.null(rows)) .err(fn, "use either 'rows' or 'where', not both")
     w <- .window(from, to, fn)
     preds <- .where_preds(path, wq, parent.frame(), fn)
-    rows <- fstx_filter_impl(path, preds, w[1L], w[2L], .whole(threads, "threads", 1, fn), verify, FALSE)$rows
+    rows <- fstx_filter_impl(path, preds, w[1L], w[2L], .whole(threads, "threads", 1, fn), .verify_bits(verify),
+                             FALSE)$rows
     from <- 1
     to <- NULL
   }
@@ -238,7 +243,7 @@ read_fstx <- function(path, columns = NULL, from = 1, to = NULL, threads = fstx_
   mode <- if (lazy) 2L else switch(strings, eager = 0L, auto = 3L, 1L)
   presize <- if (mode == 0L && isTRUE(getOption("fstx.presize", FALSE))) .presize else NULL
   r <- fstx_read_impl(path, columns, as.double(from), if (is.null(to)) NA_real_ else as.double(to),
-                      threads, verify, mode, as_factor, presize, rows)
+                      threads, .verify_bits(verify), mode, as_factor, presize, rows)
   res <- r$columns
   fd <- r$factor_dicts
   for (i in which(!vapply(fd, is.null, NA))) {   # factors straight from the dictionaries

@@ -39,6 +39,11 @@ Text is passed on as stored in the file; it is not checked for valid UTF-8 (fact
 made). Missing values become Arrow nulls. A double \code{NaN} stays \code{NaN}; \code{NaN} and infinite times and
 Dates become nulls. Other attributes and the table class are not carried.
 
+Page checksums are always checked. A page that records no missing values is not searched for them, so in a
+crafted file R's missing-value pattern on such a page is passed on as a value; with
+\code{options(fstx.verify_nulls = TRUE)} (set when the stream is made) every page's missing values are counted
+and a page whose count is wrong fails the stream as corrupt (see \code{\link{read_fstx}}).
+
 nanoarrow 0.9.0 cannot convert an ordered dictionary (an ordered factor) back to R.
 
 The stream holds the file open until it is released (dropped and garbage-collected). Its callbacks never call

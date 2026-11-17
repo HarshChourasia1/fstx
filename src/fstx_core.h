@@ -135,7 +135,13 @@ typedef struct fstx_read_host {
                        const char* bytes);
 } fstx_read_host;
 
-/* threads <= 0 means all cores. verify != 0 checks every page's xxh3 (header and footer are always checked). */
+/* verify (fstx_read, fstx_colsrc_open, fstx_arrow_args): bit flags. FSTX_VERIFY_HASH checks every page's xxh3
+ * (header and footer are always checked); FSTX_VERIFY_NULLS counts the missing values of every page decoded in
+ * full and refuses the file as corrupt when the count differs from the page's null_count (rows plans then decode
+ * whole pages; fstx_filter then decides no page from its null_count alone). */
+enum { FSTX_VERIFY_HASH = 1, FSTX_VERIFY_NULLS = 2 };
+
+/* threads <= 0 means all cores. */
 int fstx_read(const fstx_plan* p, const fstx_read_host* host, int threads, int verify, fstx_error* err);
 
 /* Plain (non-dictionary) string rows a plan delivers, and the raw bytes of their pages (heap pre-sizing). */
@@ -151,7 +157,7 @@ typedef struct fstx_colsrc_info {
   int phys, logical, mode;
   uint32_t n_pages, n_dicts;
   int all_dict;        /* every page is dictionary-coded (string columns) */
-  uint64_t null_count; /* 0 means no NA for sure */
+  uint64_t null_count; /* 0 means no NA for sure (never 0 under FSTX_VERIFY_NULLS: pages are checked on decode) */
   uint32_t pages_ready;
   uint64_t cached_bytes;
   int detached;

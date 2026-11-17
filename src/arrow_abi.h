@@ -70,7 +70,7 @@ typedef struct fstx_arrow_args {
   uint64_t n_rows;
   int threads;               /* <= 0: all cores */
   uint64_t batch_rows;       /* rows per batch at most; 0 = one batch per row group. Batches never span row groups */
-  int verify;                /* check every page's xxh3 */
+  int verify;                /* FSTX_VERIFY_HASH / FSTX_VERIFY_NULLS bits (fstx_core.h) */
 } fstx_arrow_args;
 
 /* Opens path and fills *out (which must be released, i.e. out->release == NULL). The stream owns the open file

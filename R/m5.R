@@ -248,7 +248,7 @@ fstx_explain <- function(path, where, from = 1, to = NULL, exact = FALSE, thread
   .flag(exact, "exact", fn)
   threads <- .whole(threads, "threads", 1, fn)
   preds <- .where_preds(path, substitute(where), parent.frame(), fn)
-  r <- fstx_filter_impl(path, preds, w[1L], w[2L], threads, TRUE, !exact)
+  r <- fstx_filter_impl(path, preds, w[1L], w[2L], threads, .verify_bits(TRUE), !exact)
   r$stats
 }
 
@@ -262,5 +262,5 @@ fstx_which <- function(path, where, from = 1, to = NULL, threads = fstx_hw_threa
   w <- .window(from, to, fn)
   threads <- .whole(threads, "threads", 1, fn)
   preds <- .where_preds(path, substitute(where), parent.frame(), fn)
-  fstx_filter_impl(path, preds, w[1L], w[2L], threads, TRUE, FALSE)$rows
+  fstx_filter_impl(path, preds, w[1L], w[2L], threads, .verify_bits(TRUE), FALSE)$rows
 }

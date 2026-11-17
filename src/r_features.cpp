@@ -46,6 +46,7 @@ SEXP forge(SEXP f) {
   g.kind0 = int_arg(f, "kind0");
   g.tag0 = int_arg(f, "tag0");
   g.na0 = int_arg(f, "na0");
+  g.nulls0 = int_arg(f, "nulls0");
   g.profile = int_arg(f, "profile");
   g.req = bits_arg(f, "required");
   g.opt = bits_arg(f, "optional");
