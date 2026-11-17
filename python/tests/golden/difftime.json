@@ -1,0 +1,316 @@
+{
+  "file": "difftime.fstx",
+  "about": "difftime in every unit and hms (double + class + units in the attribute blob)",
+  "fstx": "1.0.0",
+  "write_args": [],
+  "nrow": 3,
+  "ncol": 6,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 1840,
+  "table": {
+    "class": [
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+  },
+  "columns": [
+    {
+      "name": "secs",
+      "r_typeof": "double",
+      "r_class": [
+        "difftime"
+      ],
+      "stored": {
+        "phys": "double",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "FXA1",
+        "blob_hex": "465841010200000005000000636c6173730400000001000000080000006469666674696d650000000005000000756e6974730400000001000000040000007365637300000000"
+      },
+      "arrow_type": "double",
+      "n": 3,
+      "nulls": 1,
+      "md5": "e18346620aba095460e7180c28043659",
+      "values": [
+        1.5,
+        null,
+        -3
+      ],
+      "bits": [
+        "3ff8000000000000",
+        "7ff00000000007a2",
+        "c008000000000000"
+      ],
+      "attrs": {
+        "units": {
+          "type": "character",
+          "values": [
+            "secs"
+          ]
+        }
+      },
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 3,
+          "nulls": 1,
+          "codec": "zstd",
+          "kind": "double",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "mins",
+      "r_typeof": "double",
+      "r_class": [
+        "difftime"
+      ],
+      "stored": {
+        "phys": "double",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "FXA1",
+        "blob_hex": "465841010200000005000000636c6173730400000001000000080000006469666674696d650000000005000000756e6974730400000001000000040000006d696e7300000000"
+      },
+      "arrow_type": "double",
+      "n": 3,
+      "nulls": 1,
+      "md5": "052d3bbda96ad4fde9663dff95533156",
+      "values": [
+        1,
+        2.5,
+        null
+      ],
+      "bits": [
+        "3ff0000000000000",
+        "4004000000000000",
+        "7ff00000000007a2"
+      ],
+      "attrs": {
+        "units": {
+          "type": "character",
+          "values": [
+            "mins"
+          ]
+        }
+      },
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 3,
+          "nulls": 1,
+          "codec": "none",
+          "kind": "double",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "hours",
+      "r_typeof": "double",
+      "r_class": [
+        "difftime"
+      ],
+      "stored": {
+        "phys": "double",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "FXA1",
+        "blob_hex": "465841010200000005000000636c6173730400000001000000080000006469666674696d650000000005000000756e697473040000000100000005000000686f75727300000000"
+      },
+      "arrow_type": "double",
+      "n": 3,
+      "nulls": 0,
+      "md5": "be3388246fc5d1620418db6c5ab9d4af",
+      "values": [
+        0,
+        24,
+        1000000
+      ],
+      "bits": [
+        "0000000000000000",
+        "4038000000000000",
+        "412e848000000000"
+      ],
+      "attrs": {
+        "units": {
+          "type": "character",
+          "values": [
+            "hours"
+          ]
+        }
+      },
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 3,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "double",
+          "na": "none",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "days",
+      "r_typeof": "double",
+      "r_class": [
+        "difftime"
+      ],
+      "stored": {
+        "phys": "double",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "FXA1",
+        "blob_hex": "465841010200000005000000636c6173730400000001000000080000006469666674696d650000000005000000756e6974730400000001000000040000006461797300000000"
+      },
+      "arrow_type": "double",
+      "n": 3,
+      "nulls": 1,
+      "md5": "3a3c6c58be0083dae877f0e64cd7f27d",
+      "values": [
+        1,
+        null,
+        0.25
+      ],
+      "bits": [
+        "3ff0000000000000",
+        "7ff00000000007a2",
+        "3fd0000000000000"
+      ],
+      "attrs": {
+        "units": {
+          "type": "character",
+          "values": [
+            "days"
+          ]
+        }
+      },
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 3,
+          "nulls": 1,
+          "codec": "zstd",
+          "kind": "double",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "weeks",
+      "r_typeof": "double",
+      "r_class": [
+        "difftime"
+      ],
+      "stored": {
+        "phys": "double",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "FXA1",
+        "blob_hex": "465841010200000005000000636c6173730400000001000000080000006469666674696d650000000005000000756e6974730400000001000000050000007765656b7300000000"
+      },
+      "arrow_type": "double",
+      "n": 3,
+      "nulls": 0,
+      "md5": "0624eaa0304e00ed35f1e6569b5e039f",
+      "values": [
+        52,
+        1,
+        "NaN"
+      ],
+      "bits": [
+        "404a000000000000",
+        "3ff0000000000000",
+        "7ff8000000000000"
+      ],
+      "attrs": {
+        "units": {
+          "type": "character",
+          "values": [
+            "weeks"
+          ]
+        }
+      },
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 3,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "double",
+          "na": "none",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "hms",
+      "r_typeof": "double",
+      "r_class": [
+        "hms",
+        "difftime"
+      ],
+      "stored": {
+        "phys": "double",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "FXA1",
+        "blob_hex": "465841010200000005000000756e697473040000000100000004000000736563730000000005000000636c61737304000000020000000300000008000000686d736469666674696d6500000000"
+      },
+      "arrow_type": "double",
+      "n": 3,
+      "nulls": 1,
+      "md5": "da2494ff4c9f759a11995f83d6a6e0f3",
+      "values": [
+        0,
+        3661,
+        null
+      ],
+      "bits": [
+        "0000000000000000",
+        "40ac9a0000000000",
+        "7ff80000000007a2"
+      ],
+      "attrs": {
+        "units": {
+          "type": "character",
+          "values": [
+            "secs"
+          ]
+        }
+      },
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 3,
+          "nulls": 1,
+          "codec": "none",
+          "kind": "double",
+          "na": "none",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    }
+  ]
+}

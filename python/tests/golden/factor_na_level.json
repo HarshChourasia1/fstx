@@ -1,0 +1,63 @@
+{
+  "file": "factor_na_level.fstx",
+  "about": "factor with NA as a level (exclude = NULL): not stored natively (levels in the FXA1 blob); the NA-level code is a value, not a missing value",
+  "fstx": "1.0.0",
+  "write_args": [],
+  "nrow": 4,
+  "ncol": 1,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 560,
+  "table": {
+    "class": [
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+  },
+  "columns": [
+    {
+      "name": "f",
+      "r_typeof": "integer",
+      "r_class": [
+        "factor"
+      ],
+      "stored": {
+        "phys": "integer",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "FXA1",
+        "blob_hex": "4658410102000000060000006c6576656c7304000000030000000100000001000000ffffffff61620000000005000000636c617373040000000100000006000000666163746f7200000000"
+      },
+      "arrow_type": "dictionary<values=string, indices=int32, ordered=0>",
+      "n": 4,
+      "nulls": 0,
+      "md5": "d0d753862f606ab65f0e41b35edd8e6e",
+      "codes": [
+        1,
+        3,
+        2,
+        1
+      ],
+      "levels": [
+        "a",
+        "b",
+        null
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 4,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "int",
+          "na": "none",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    }
+  ]
+}

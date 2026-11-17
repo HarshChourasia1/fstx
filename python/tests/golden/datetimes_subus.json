@@ -1,0 +1,77 @@
+{
+  "file": "datetimes_subus.fstx",
+  "about": "POSIXct with sub-microsecond parts (as Sys.time() gives)",
+  "fstx": "1.0.0",
+  "write_args": [],
+  "nrow": 4,
+  "ncol": 1,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 488,
+  "table": {
+    "class": [
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+  },
+  "columns": [
+    {
+      "name": "t",
+      "r_typeof": "double",
+      "r_class": [
+        "POSIXct",
+        "POSIXt"
+      ],
+      "stored": {
+        "phys": "double",
+        "logical": "POSIXct",
+        "tzone_present": true,
+        "blob": "none",
+        "tzone": "UTC"
+      },
+      "arrow_type": "timestamp[us, tz=UTC]",
+      "n": 4,
+      "nulls": 0,
+      "md5": "b9ef0effda2a5f6b947b3cd228994345",
+      "seconds": [
+        1700000000.1234567,
+        1700000000.3333333,
+        3.9999999999999998e-07,
+        1.4999999999999999e-07
+      ],
+      "bits": [
+        "41d954fc4007e6b7",
+        "41d954fc40155555",
+        "3e9ad7f29abcaf48",
+        "3e8421f5f40d8376"
+      ],
+      "us": [
+        "1700000000123457",
+        "1700000000333333",
+        "0",
+        "0"
+      ],
+      "iso_utc": [
+        "2023-11-14T22:13:20.123456Z",
+        "2023-11-14T22:13:20.333333Z",
+        "1970-01-01T00:00:00.000000Z",
+        "1970-01-01T00:00:00.000000Z"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 4,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "double",
+          "na": "none",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    }
+  ]
+}

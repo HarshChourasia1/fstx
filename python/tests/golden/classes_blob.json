@@ -1,0 +1,170 @@
+{
+  "file": "classes_blob.fstx",
+  "about": "factor, Date and POSIXct with an extra class or a 2-value tzone: R stores them as plain int / double with the class in the attribute blob",
+  "fstx": "1.0.0",
+  "write_args": [],
+  "nrow": 3,
+  "ncol": 3,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 1072,
+  "table": {
+    "class": [
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+  },
+  "columns": [
+    {
+      "name": "f",
+      "r_typeof": "integer",
+      "r_class": [
+        "myfac",
+        "factor"
+      ],
+      "stored": {
+        "phys": "integer",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "FXA1",
+        "blob_hex": "4658410102000000060000006c6576656c730400000002000000010000000100000061620000000005000000636c617373040000000200000005000000060000006d79666163666163746f7200000000"
+      },
+      "arrow_type": "dictionary<values=string, indices=int32, ordered=0>",
+      "n": 3,
+      "nulls": 0,
+      "md5": "bc0e92f47174c2d729eaa91446dc1b55",
+      "codes": [
+        1,
+        2,
+        1
+      ],
+      "levels": [
+        "a",
+        "b"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 3,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "int",
+          "na": "none",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "d",
+      "r_typeof": "double",
+      "r_class": [
+        "mydate",
+        "Date"
+      ],
+      "stored": {
+        "phys": "double",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "FXA1",
+        "blob_hex": "465841010100000005000000636c617373040000000200000006000000040000006d79646174654461746500000000"
+      },
+      "arrow_type": "date32[day]",
+      "n": 3,
+      "nulls": 1,
+      "md5": "9d9c5e74c182d726f3efb59f77185e83",
+      "days": [
+        1,
+        2,
+        null
+      ],
+      "bits": [
+        "3ff0000000000000",
+        "4000000000000000",
+        "7ff00000000007a2"
+      ],
+      "date32": [
+        1,
+        2,
+        null
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 3,
+          "nulls": 1,
+          "codec": "none",
+          "kind": "double",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "t",
+      "r_typeof": "double",
+      "r_class": [
+        "POSIXct",
+        "POSIXt"
+      ],
+      "stored": {
+        "phys": "double",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "FXA1",
+        "blob_hex": "465841010200000005000000636c61737304000000020000000700000006000000504f5349586374504f534958740000000005000000747a6f6e650400000002000000030000000300000055544355544300000000"
+      },
+      "arrow_type": "timestamp[us, tz=UTC]",
+      "n": 3,
+      "nulls": 1,
+      "md5": "afaa100859ade15458ae6c9b3c47b3aa",
+      "seconds": [
+        0,
+        1,
+        null
+      ],
+      "bits": [
+        "0000000000000000",
+        "3ff0000000000000",
+        "7ff00000000007a2"
+      ],
+      "us": [
+        "0",
+        "1000000",
+        null
+      ],
+      "iso_utc": [
+        "1970-01-01T00:00:00.000000Z",
+        "1970-01-01T00:00:01.000000Z",
+        null
+      ],
+      "attrs": {
+        "tzone": {
+          "type": "character",
+          "values": [
+            "UTC",
+            "UTC"
+          ]
+        }
+      },
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 3,
+          "nulls": 1,
+          "codec": "none",
+          "kind": "double",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+{
+  "file": "strings_many.fstx",
+  "about": "600 distinct strings (FSST pages) and a 3-value column (dictionary pages: codes + dictionary)",
+  "fstx": "1.0.0",
+  "write_args": [],
+  "nrow": 600,
+  "ncol": 2,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 6992,
+  "table": {
+    "class": [
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+  },
+  "columns": [
+    {
+      "name": "many",
+      "r_typeof": "character",
+      "r_class": [],
+      "stored": {
+        "phys": "character",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "string",
+      "n": 600,
+      "nulls": 3,
+      "md5": "8a914b0da35ee32c8115891c3e53d4ef",
+      "values": [
+        "id-26691-south-wwxjjc",
+        "id-20474-west-uymmmw",
+        "id-70931-west-dtcehc",
+        "id-11347-south-cslwyd",
+        null,
+        "id-42936-north-ikfovv",
+        "id-39407-north-gbkjeo",
+        "id-97100-east-ubloid",
+        "id-87894-south-nxdepj",
+        "id-12159-south-nqonql",
+        "id-88701-west-ahnmfs",
+        "id-52869-west-flawqm"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 600,
+          "nulls": 3,
+          "codec": "zstd",
+          "kind": "string",
+          "na": "runs",
+          "encoding": "fsst"
+        }
+      ],
+      "values_truncated": true
+    },
+    {
+      "name": "few",
+      "r_typeof": "character",
+      "r_class": [],
+      "stored": {
+        "phys": "character",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "string",
+      "n": 600,
+      "nulls": 149,
+      "md5": "c82ab820e89538fb87dfd9775bfe49c8",
+      "values": [
+        null,
+        "red",
+        "red",
+        "red",
+        null,
+        null,
+        "red",
+        "green",
+        null,
+        "blue",
+        "blue",
+        null
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": true,
+          "rows": 3,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "dictionary",
+          "na": "none",
+          "encoding": "plain"
+        },
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 600,
+          "nulls": 149,
+          "codec": "zstd",
+          "kind": "codes",
+          "na": "bitmap",
+          "encoding": "for"
+        }
+      ],
+      "values_truncated": true
+    }
+  ]
+}

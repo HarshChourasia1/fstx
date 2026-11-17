@@ -1,0 +1,257 @@
+{
+  "file": "codec_lz4.fstx",
+  "about": "LZ4 block on every page",
+  "fstx": "1.0.0",
+  "write_args": {
+    "compress": "lz4"
+  },
+  "nrow": 2000,
+  "ncol": 5,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 17160,
+  "table": {
+    "class": [
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+  },
+  "columns": [
+    {
+      "name": "i",
+      "r_typeof": "integer",
+      "r_class": [],
+      "stored": {
+        "phys": "integer",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "int32",
+      "n": 2000,
+      "nulls": 0,
+      "md5": "27a668e6a38adac6b452ab511690a37f",
+      "values": [
+        0,
+        1,
+        4,
+        6,
+        9,
+        10,
+        13,
+        15,
+        17,
+        20,
+        23,
+        24
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 2000,
+          "nulls": 0,
+          "codec": "lz4",
+          "kind": "int",
+          "na": "none",
+          "encoding": "delta"
+        }
+      ],
+      "values_truncated": true
+    },
+    {
+      "name": "v",
+      "r_typeof": "double",
+      "r_class": [],
+      "stored": {
+        "phys": "double",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "double",
+      "n": 2000,
+      "nulls": 50,
+      "md5": "57d1070b93165834cc5f323a8737d126",
+      "values": [
+        67.069999999999993,
+        33.520000000000003,
+        12.73,
+        90.519999999999996,
+        16.530000000000001,
+        37.950000000000003,
+        1.3400000000000001,
+        41.100000000000001,
+        72.349999999999994,
+        30.390000000000001,
+        24.48,
+        84.010000000000005
+      ],
+      "bits": [
+        "4050c47ae147ae14",
+        "4040c28f5c28f5c3",
+        "402975c28f5c28f6",
+        "4056a147ae147ae1",
+        "403087ae147ae148",
+        "4042f9999999999a",
+        "3ff570a3d70a3d71",
+        "40448ccccccccccd",
+        "4052166666666666",
+        "403e63d70a3d70a4",
+        "40387ae147ae147b",
+        "405500a3d70a3d71"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 2000,
+          "nulls": 50,
+          "codec": "lz4",
+          "kind": "double",
+          "na": "bitmap",
+          "encoding": "alp"
+        }
+      ],
+      "values_truncated": true
+    },
+    {
+      "name": "s",
+      "r_typeof": "character",
+      "r_class": [],
+      "stored": {
+        "phys": "character",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "string",
+      "n": 2000,
+      "nulls": 0,
+      "md5": "ba853cd90282e1fc391cc9bd4c962e02",
+      "values": [
+        "gamma",
+        "beta",
+        "delta",
+        "gamma",
+        "gamma",
+        "beta",
+        "beta",
+        "alpha",
+        "beta",
+        "beta",
+        "delta",
+        "delta"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": true,
+          "rows": 4,
+          "nulls": 0,
+          "codec": "lz4",
+          "kind": "dictionary",
+          "na": "none",
+          "encoding": "plain"
+        },
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 2000,
+          "nulls": 0,
+          "codec": "lz4",
+          "kind": "codes",
+          "na": "none",
+          "encoding": "for"
+        }
+      ],
+      "values_truncated": true
+    },
+    {
+      "name": "w",
+      "r_typeof": "character",
+      "r_class": [],
+      "stored": {
+        "phys": "character",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "string",
+      "n": 2000,
+      "nulls": 0,
+      "md5": "222ae135b6a9fed1036dfcfeea018501",
+      "values": [
+        "item-67693-d",
+        "item-30617-c",
+        "item-97186-d",
+        "item-79180-i",
+        "item-50520-o",
+        "item-58832-p",
+        "item-85120-i",
+        "item-99334-z",
+        "item-28481-c",
+        "item-38505-e",
+        "item-21174-q",
+        "item-00383-j"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 2000,
+          "nulls": 0,
+          "codec": "lz4",
+          "kind": "string",
+          "na": "none",
+          "encoding": "fsst"
+        }
+      ],
+      "values_truncated": true
+    },
+    {
+      "name": "b",
+      "r_typeof": "logical",
+      "r_class": [],
+      "stored": {
+        "phys": "logical",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "bool",
+      "n": 2000,
+      "nulls": 672,
+      "md5": "0c74200b34605174e6c1e9d1b97a4842",
+      "values": [
+        true,
+        null,
+        false,
+        null,
+        false,
+        false,
+        null,
+        null,
+        true,
+        true,
+        true,
+        true
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 2000,
+          "nulls": 672,
+          "codec": "lz4",
+          "kind": "logical",
+          "na": "bitmap",
+          "encoding": "for"
+        }
+      ],
+      "values_truncated": true
+    }
+  ]
+}

@@ -1,0 +1,198 @@
+{
+  "file": "datatable.fstx",
+  "about": "data.table with a key (sorted) and a secondary index (index attribute with order vectors)",
+  "fstx": "1.0.0",
+  "write_args": [],
+  "nrow": 4,
+  "ncol": 3,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 1200,
+  "table": {
+    "class": [
+      "data.table",
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010300000005000000636c61737304000000020000000a0000000a000000646174612e7461626c65646174612e6672616d650000000006000000736f727465640400000001000000010000006b0000000005000000696e646578020000000000000001000000030000005f5f7602000000000000000600000006000000737461727473020000000300000001000000020000000400000000000000070000006d61786772706e0200000001000000020000000000000005000000616e796e610200000001000000000000000000000009000000616e79696e666e616e020000000100000000000000000000000b000000616e796e6f746173636969020000000100000000000000000000000a000000616e796e6f747574663802000000010000000000000000000000",
+    "attrs": {
+      "sorted": {
+        "type": "character",
+        "values": [
+          "k"
+        ]
+      },
+      "index": {
+        "type": "integer",
+        "values": [],
+        "attrs": {
+          "__v": {
+            "type": "integer",
+            "values": [],
+            "attrs": {
+              "starts": {
+                "type": "integer",
+                "values": [
+                  1,
+                  2,
+                  4
+                ]
+              },
+              "maxgrpn": {
+                "type": "integer",
+                "values": [
+                  2
+                ]
+              },
+              "anyna": {
+                "type": "integer",
+                "values": [
+                  0
+                ]
+              },
+              "anyinfnan": {
+                "type": "integer",
+                "values": [
+                  0
+                ]
+              },
+              "anynotascii": {
+                "type": "integer",
+                "values": [
+                  0
+                ]
+              },
+              "anynotutf8": {
+                "type": "integer",
+                "values": [
+                  0
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "columns": [
+    {
+      "name": "k",
+      "r_typeof": "integer",
+      "r_class": [],
+      "stored": {
+        "phys": "integer",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "int32",
+      "n": 4,
+      "nulls": 0,
+      "md5": "29cb84ca95a68ee91ecc9518176e959c",
+      "values": [
+        1,
+        2,
+        2,
+        3
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 4,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "int",
+          "na": "none",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "v",
+      "r_typeof": "character",
+      "r_class": [],
+      "stored": {
+        "phys": "character",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "string",
+      "n": 4,
+      "nulls": 0,
+      "md5": "0140c9dc9c97503d0f4c26ac5343e736",
+      "values": [
+        "a",
+        "b",
+        "b",
+        "c"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": true,
+          "rows": 3,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "dictionary",
+          "na": "none",
+          "encoding": "plain"
+        },
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 4,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "codes",
+          "na": "none",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "w",
+      "r_typeof": "double",
+      "r_class": [],
+      "stored": {
+        "phys": "double",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "double",
+      "n": 4,
+      "nulls": 0,
+      "md5": "cb37f5f75b01ca9ff7c3b66cde192d8b",
+      "values": [
+        1,
+        2,
+        3,
+        0.5
+      ],
+      "bits": [
+        "3ff0000000000000",
+        "4000000000000000",
+        "4008000000000000",
+        "3fe0000000000000"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 4,
+          "nulls": 0,
+          "codec": "zstd",
+          "kind": "double",
+          "na": "none",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    }
+  ]
+}

@@ -1,0 +1,142 @@
+{
+  "file": "datetimes_odd.fstx",
+  "about": "POSIXct Inf, -Inf, NaN, NA (Arrow has only null); a POSIXct stored as integer (kept as an attribute blob, not natively)",
+  "fstx": "1.0.0",
+  "write_args": [],
+  "nrow": 5,
+  "ncol": 2,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 760,
+  "table": {
+    "class": [
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+  },
+  "columns": [
+    {
+      "name": "t",
+      "r_typeof": "double",
+      "r_class": [
+        "POSIXct",
+        "POSIXt"
+      ],
+      "stored": {
+        "phys": "double",
+        "logical": "POSIXct",
+        "tzone_present": true,
+        "blob": "none",
+        "tzone": "UTC"
+      },
+      "arrow_type": "timestamp[us, tz=UTC]",
+      "n": 5,
+      "nulls": 4,
+      "md5": "40ac985335b87823d9883a6327c870b8",
+      "seconds": [
+        "Inf",
+        "-Inf",
+        "NaN",
+        null,
+        0
+      ],
+      "bits": [
+        "7ff0000000000000",
+        "fff0000000000000",
+        "7ff8000000000000",
+        "7ff00000000007a2",
+        "0000000000000000"
+      ],
+      "us": [
+        null,
+        null,
+        null,
+        null,
+        "0"
+      ],
+      "iso_utc": [
+        null,
+        null,
+        null,
+        null,
+        "1970-01-01T00:00:00.000000Z"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 5,
+          "nulls": 1,
+          "codec": "zstd",
+          "kind": "double",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "i",
+      "r_typeof": "integer",
+      "r_class": [
+        "POSIXct",
+        "POSIXt"
+      ],
+      "stored": {
+        "phys": "integer",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "FXA1",
+        "blob_hex": "465841010200000005000000636c61737304000000020000000700000006000000504f5349586374504f534958740000000005000000747a6f6e6504000000010000000300000055544300000000"
+      },
+      "arrow_type": "timestamp[us, tz=UTC]",
+      "n": 5,
+      "nulls": 1,
+      "md5": "c02e373b6ea31ed6c580497e2c9c9d9e",
+      "seconds": [
+        1,
+        null,
+        1700000000,
+        0,
+        -1
+      ],
+      "us": [
+        "1000000",
+        null,
+        "1700000000000000",
+        "0",
+        "-1000000"
+      ],
+      "iso_utc": [
+        "1970-01-01T00:00:01.000000Z",
+        null,
+        "2023-11-14T22:13:20.000000Z",
+        "1970-01-01T00:00:00.000000Z",
+        "1969-12-31T23:59:59.000000Z"
+      ],
+      "attrs": {
+        "tzone": {
+          "type": "character",
+          "values": [
+            "UTC"
+          ]
+        }
+      },
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 5,
+          "nulls": 1,
+          "codec": "none",
+          "kind": "int",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    }
+  ]
+}

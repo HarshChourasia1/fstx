@@ -1,0 +1,253 @@
+{
+  "fstx": "1.0.0",
+  "r": "R version 4.5.1 (2025-06-13 ucrt)",
+  "made": "2026-11-17",
+  "note": "pcodec (codec 4) is reserved and not written by fstx 1.0: no file can hold it; the refusal is covered by reserved_codec4.fstx and reserved_pcodec.fstx in format-1.0.json. roundtrip_pyarrow: read_fstx() -> pyarrow.Table -> write_fstx(); roundtrip_pandas: the same through fstx.to_pandas() and a pandas DataFrame (DESIGN.md section 2).",
+  "cases": [
+    {
+      "file": "basic.fstx",
+      "about": "logical, integer (INT_MAX, -INT_MAX, NA), double (NA, NaN, quiet NA = NA_real_ + 1, -0, Inf, -Inf, subnormal, max), character (\"\", NA, control characters)",
+      "bytes": 1352,
+      "roundtrip_pyarrow": "identical (the quiet NA 0x7FF80000000007A2 comes back as NA_real_ 0x7FF00000000007A2; identical() does not see payloads)",
+      "roundtrip_pandas": "not identical: integer NA makes int a double unless nullable dtypes are used; NA_real_ and NaN both become NaN, so R's NaN comes back as NA"
+    },
+    {
+      "file": "empty_0x0.fstx",
+      "about": "no columns, no rows",
+      "bytes": 256,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "zero_rows.fstx",
+      "about": "every type with 0 rows (the schema alone: levels, ordered, time zone, integer64 class)",
+      "bytes": 704,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "zero_cols_5rows.fstx",
+      "about": "no columns but 5 rows (Arrow: a table of 5 rows and no columns)",
+      "bytes": 320,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "all_na.fstx",
+      "about": "every type all NA, 3 rows (a factor with levels and one with none)",
+      "bytes": 2016,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "strings_long.fstx",
+      "about": "strings over 64 KB and over 2,000 bytes (given in the sidecar as byte count and md5)",
+      "bytes": 536,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "strings_many.fstx",
+      "about": "600 distinct strings (FSST pages) and a 3-value column (dictionary pages: codes + dictionary)",
+      "bytes": 6992,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "strings_indic.fstx",
+      "about": "Hindi, Marathi, Bengali, Tamil, Telugu, Kannada, Malayalam, Gujarati, Punjabi, Odia, Urdu, a ZWJ conjunct, the rupee sign, a 4-byte character; factor levels and a column name in Indian scripts",
+      "bytes": 1008,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "strings_latin1.fstx",
+      "about": "strings marked latin1 in R: stored as UTF-8 (R reads them back marked UTF-8; identical() still TRUE)",
+      "bytes": 536,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "strings_invalid_utf8.fstx",
+      "about": "strings that are not valid UTF-8 (allowed by spec 9 rule 7; sidecar gives their bytes in hex)",
+      "bytes": 536,
+      "roundtrip_pyarrow": "not identical by default: bad bytes become U+FFFD (identical only with invalid_utf8 = 'binary')",
+      "roundtrip_pandas": "not identical (as pyarrow)"
+    },
+    {
+      "file": "integer64.fstx",
+      "about": "bit64 integer64 (a double column with class integer64): big values, NA, and values whose bits are NA_real_, Inf or NaN (they must come back as numbers)",
+      "bytes": 600,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "datetimes.fstx",
+      "about": "POSIXct in UTC, Asia/Kolkata (+05:30), America/New_York (DST), tzone \"\" and no tzone; whole, half and microsecond seconds, before 1970, 9999-12-31 23:59:59, NA",
+      "bytes": 1600,
+      "roundtrip_pyarrow": "identical if the writer restores tzone \"\" vs none from the field metadata; both read as naive timestamp[us]",
+      "roundtrip_pandas": "identical through to_pandas() with the metadata kept; tz \"\" vs none is lost without it"
+    },
+    {
+      "file": "datetimes_subus.fstx",
+      "about": "POSIXct with sub-microsecond parts (as Sys.time() gives)",
+      "bytes": 488,
+      "roundtrip_pyarrow": "not identical: timestamp[us] rounds to the microsecond (exact only with datetimes = 'float')",
+      "roundtrip_pandas": "not identical (as pyarrow)"
+    },
+    {
+      "file": "datetimes_odd.fstx",
+      "about": "POSIXct Inf, -Inf, NaN, NA (Arrow has only null); a POSIXct stored as integer (kept as an attribute blob, not natively)",
+      "bytes": 760,
+      "roundtrip_pyarrow": "not identical: Inf, -Inf and NaN become null and come back NA (exact only with datetimes = 'float'); the integer POSIXct comes back as int32 storage only if the writer keeps phys from the metadata",
+      "roundtrip_pandas": "not identical (as pyarrow)"
+    },
+    {
+      "file": "dates.fstx",
+      "about": "Date stored as double (as.Date) and as integer, from year 1 to 9999, NA",
+      "bytes": 720,
+      "roundtrip_pyarrow": "identical if the writer restores double vs integer storage from the field metadata (date32 alone cannot tell)",
+      "roundtrip_pandas": "identical if dates stay datetime.date objects (pyarrow's default) and the metadata is kept; datetime64[ns] cannot hold years 1 and 9999"
+    },
+    {
+      "file": "dates_odd.fstx",
+      "about": "fractional Dates, Inf, -Inf, NaN, NA",
+      "bytes": 536,
+      "roundtrip_pyarrow": "not identical: date32 floors fractions and makes Inf / NaN null (exact only with datetimes = 'float')",
+      "roundtrip_pandas": "not identical (as pyarrow)"
+    },
+    {
+      "file": "factors.fstx",
+      "about": "factor with NA codes, with unused levels (kept), ordered factor, one level, Indian-script levels in a non-sorted order",
+      "bytes": 1448,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "factor_na_level.fstx",
+      "about": "factor with NA as a level (exclude = NULL): not stored natively (levels in the FXA1 blob); the NA-level code is a value, not a missing value",
+      "bytes": 560,
+      "roundtrip_pyarrow": "identical if the writer turns a null dictionary entry back into an NA level",
+      "roundtrip_pandas": "fails: pandas categories cannot hold NA (to_pandas must raise or turn the column into strings)"
+    },
+    {
+      "file": "classes_blob.fstx",
+      "about": "factor, Date and POSIXct with an extra class or a 2-value tzone: R stores them as plain int / double with the class in the attribute blob",
+      "bytes": 1072,
+      "roundtrip_pyarrow": "identical if the class vector and blob travel in the field metadata",
+      "roundtrip_pandas": "identical only if to_pandas keeps the metadata"
+    },
+    {
+      "file": "difftime.fstx",
+      "about": "difftime in every unit and hms (double + class + units in the attribute blob)",
+      "bytes": 1840,
+      "roundtrip_pyarrow": "identical (double with class and units in the metadata)",
+      "roundtrip_pandas": "identical if kept as float; not identical if turned into timedelta64 (units become seconds)"
+    },
+    {
+      "file": "attrs_fxa1.fstx",
+      "about": "column labels, units, a named-vector attribute, comment; table attributes (all in FXA1)",
+      "bytes": 1128,
+      "roundtrip_pyarrow": "identical if the blobs travel in the metadata",
+      "roundtrip_pandas": "identical only if the metadata is kept"
+    },
+    {
+      "file": "attrs_serialized.fstx",
+      "about": "list-valued column and table attributes: stored with R serialize() (Python cannot decode them; it keeps the bytes)",
+      "bytes": 800,
+      "roundtrip_pyarrow": "identical only if the opaque blobs are written back unchanged",
+      "roundtrip_pandas": "identical only if the metadata is kept"
+    },
+    {
+      "file": "rownames_char.fstx",
+      "about": "character row names (pandas: the index)",
+      "bytes": 496,
+      "roundtrip_pyarrow": "identical (row names in the table metadata)",
+      "roundtrip_pandas": "identical if to_pandas makes them the index and from_pandas stores a string index as row names"
+    },
+    {
+      "file": "rownames_int.fstx",
+      "about": "integer row names that are not automatic (x[c(4, 2), ] keeps 4, 2)",
+      "bytes": 664,
+      "roundtrip_pyarrow": "identical (row names in the table metadata)",
+      "roundtrip_pandas": "identical if an integer index other than 0..n-1 becomes integer row names"
+    },
+    {
+      "file": "datatable.fstx",
+      "about": "data.table with a key (sorted) and a secondary index (index attribute with order vectors)",
+      "bytes": 1200,
+      "roundtrip_pyarrow": "not identical: the Python writer drops the index (it cannot tell whether rows were reordered); the key is kept because k is still sorted",
+      "roundtrip_pandas": "not identical (as pyarrow)"
+    },
+    {
+      "file": "tibble.fstx",
+      "about": "tibble class (tbl_df, tbl, data.frame)",
+      "bytes": 792,
+      "roundtrip_pyarrow": "identical (class in the table blob)",
+      "roundtrip_pandas": "identical only if the metadata is kept"
+    },
+    {
+      "file": "names.fstx",
+      "about": "duplicate names, an empty name, spaces and punctuation, a Hindi name, the name \"NA\"",
+      "bytes": 1312,
+      "roundtrip_pyarrow": "identical (Arrow allows duplicate and empty names)",
+      "roundtrip_pandas": "identical (pandas allows duplicate names; selecting by a duplicate name gives both)"
+    },
+    {
+      "file": "codec_none.fstx",
+      "about": "compress none on every page",
+      "bytes": 17288,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "codec_lz4.fstx",
+      "about": "LZ4 block on every page",
+      "bytes": 17160,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "codec_zstd1.fstx",
+      "about": "Zstandard level 1 on every page",
+      "bytes": 15304,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "codec_zstd19.fstx",
+      "about": "Zstandard level 19 on every page",
+      "bytes": 14792,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "profile_fast.fstx",
+      "about": "profile fast (no codec)",
+      "bytes": 17288,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "profile_balanced.fstx",
+      "about": "profile balanced (zstd 3 where it saves 10%)",
+      "bytes": 15432,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "profile_small.fstx",
+      "about": "profile small (zstd 9)",
+      "bytes": 15176,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    },
+    {
+      "file": "appended.fstx",
+      "about": "written then appended twice: 3 row groups, factor levels a b + c + d, old footers inside the file",
+      "bytes": 3472,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical"
+    }
+  ]
+}

@@ -1,0 +1,380 @@
+{
+  "file": "datetimes.fstx",
+  "about": "POSIXct in UTC, Asia/Kolkata (+05:30), America/New_York (DST), tzone \"\" and no tzone; whole, half and microsecond seconds, before 1970, 9999-12-31 23:59:59, NA",
+  "fstx": "1.0.0",
+  "write_args": [],
+  "nrow": 8,
+  "ncol": 5,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 1600,
+  "table": {
+    "class": [
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+  },
+  "columns": [
+    {
+      "name": "utc",
+      "r_typeof": "double",
+      "r_class": [
+        "POSIXct",
+        "POSIXt"
+      ],
+      "stored": {
+        "phys": "double",
+        "logical": "POSIXct",
+        "tzone_present": true,
+        "blob": "none",
+        "tzone": "UTC"
+      },
+      "arrow_type": "timestamp[us, tz=UTC]",
+      "n": 8,
+      "nulls": 1,
+      "md5": "9489027fd15e1f1f8dec5159538d0621",
+      "seconds": [
+        0,
+        1700000000,
+        1700000000.5,
+        -86400.25,
+        1711929600,
+        1699999999.123456,
+        null,
+        253402300799
+      ],
+      "bits": [
+        "0000000000000000",
+        "41d954fc40000000",
+        "41d954fc40200000",
+        "c0f5180400000000",
+        "41d9827e40000000",
+        "41d954fc3fc7e6b4",
+        "7ff00000000007a2",
+        "424d7ffa20bf8000"
+      ],
+      "us": [
+        "0",
+        "1700000000000000",
+        "1700000000500000",
+        "-86400250000",
+        "1711929600000000",
+        "1699999999123456",
+        null,
+        "253402300799000000"
+      ],
+      "iso_utc": [
+        "1970-01-01T00:00:00.000000Z",
+        "2023-11-14T22:13:20.000000Z",
+        "2023-11-14T22:13:20.500000Z",
+        "1969-12-30T23:59:59.750000Z",
+        "2024-04-01T00:00:00.000000Z",
+        "2023-11-14T22:13:19.123456Z",
+        null,
+        "9999-12-31T23:59:59.000000Z"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 8,
+          "nulls": 1,
+          "codec": "zstd",
+          "kind": "double",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "kolkata",
+      "r_typeof": "double",
+      "r_class": [
+        "POSIXct",
+        "POSIXt"
+      ],
+      "stored": {
+        "phys": "double",
+        "logical": "POSIXct",
+        "tzone_present": true,
+        "blob": "none",
+        "tzone": "Asia/Kolkata"
+      },
+      "arrow_type": "timestamp[us, tz=Asia/Kolkata]",
+      "n": 8,
+      "nulls": 1,
+      "md5": "9489027fd15e1f1f8dec5159538d0621",
+      "seconds": [
+        0,
+        1700000000,
+        1700000000.5,
+        -86400.25,
+        1711929600,
+        1699999999.123456,
+        null,
+        253402300799
+      ],
+      "bits": [
+        "0000000000000000",
+        "41d954fc40000000",
+        "41d954fc40200000",
+        "c0f5180400000000",
+        "41d9827e40000000",
+        "41d954fc3fc7e6b4",
+        "7ff00000000007a2",
+        "424d7ffa20bf8000"
+      ],
+      "us": [
+        "0",
+        "1700000000000000",
+        "1700000000500000",
+        "-86400250000",
+        "1711929600000000",
+        "1699999999123456",
+        null,
+        "253402300799000000"
+      ],
+      "iso_utc": [
+        "1970-01-01T00:00:00.000000Z",
+        "2023-11-14T22:13:20.000000Z",
+        "2023-11-14T22:13:20.500000Z",
+        "1969-12-30T23:59:59.750000Z",
+        "2024-04-01T00:00:00.000000Z",
+        "2023-11-14T22:13:19.123456Z",
+        null,
+        "9999-12-31T23:59:59.000000Z"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 8,
+          "nulls": 1,
+          "codec": "zstd",
+          "kind": "double",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "new_york",
+      "r_typeof": "double",
+      "r_class": [
+        "POSIXct",
+        "POSIXt"
+      ],
+      "stored": {
+        "phys": "double",
+        "logical": "POSIXct",
+        "tzone_present": true,
+        "blob": "none",
+        "tzone": "America/New_York"
+      },
+      "arrow_type": "timestamp[us, tz=America/New_York]",
+      "n": 8,
+      "nulls": 1,
+      "md5": "9489027fd15e1f1f8dec5159538d0621",
+      "seconds": [
+        0,
+        1700000000,
+        1700000000.5,
+        -86400.25,
+        1711929600,
+        1699999999.123456,
+        null,
+        253402300799
+      ],
+      "bits": [
+        "0000000000000000",
+        "41d954fc40000000",
+        "41d954fc40200000",
+        "c0f5180400000000",
+        "41d9827e40000000",
+        "41d954fc3fc7e6b4",
+        "7ff00000000007a2",
+        "424d7ffa20bf8000"
+      ],
+      "us": [
+        "0",
+        "1700000000000000",
+        "1700000000500000",
+        "-86400250000",
+        "1711929600000000",
+        "1699999999123456",
+        null,
+        "253402300799000000"
+      ],
+      "iso_utc": [
+        "1970-01-01T00:00:00.000000Z",
+        "2023-11-14T22:13:20.000000Z",
+        "2023-11-14T22:13:20.500000Z",
+        "1969-12-30T23:59:59.750000Z",
+        "2024-04-01T00:00:00.000000Z",
+        "2023-11-14T22:13:19.123456Z",
+        null,
+        "9999-12-31T23:59:59.000000Z"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 8,
+          "nulls": 1,
+          "codec": "zstd",
+          "kind": "double",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "tz_empty",
+      "r_typeof": "double",
+      "r_class": [
+        "POSIXct",
+        "POSIXt"
+      ],
+      "stored": {
+        "phys": "double",
+        "logical": "POSIXct",
+        "tzone_present": true,
+        "blob": "none",
+        "tzone": ""
+      },
+      "arrow_type": "timestamp[us]",
+      "n": 8,
+      "nulls": 1,
+      "md5": "9489027fd15e1f1f8dec5159538d0621",
+      "seconds": [
+        0,
+        1700000000,
+        1700000000.5,
+        -86400.25,
+        1711929600,
+        1699999999.123456,
+        null,
+        253402300799
+      ],
+      "bits": [
+        "0000000000000000",
+        "41d954fc40000000",
+        "41d954fc40200000",
+        "c0f5180400000000",
+        "41d9827e40000000",
+        "41d954fc3fc7e6b4",
+        "7ff00000000007a2",
+        "424d7ffa20bf8000"
+      ],
+      "us": [
+        "0",
+        "1700000000000000",
+        "1700000000500000",
+        "-86400250000",
+        "1711929600000000",
+        "1699999999123456",
+        null,
+        "253402300799000000"
+      ],
+      "iso_utc": [
+        "1970-01-01T00:00:00.000000Z",
+        "2023-11-14T22:13:20.000000Z",
+        "2023-11-14T22:13:20.500000Z",
+        "1969-12-30T23:59:59.750000Z",
+        "2024-04-01T00:00:00.000000Z",
+        "2023-11-14T22:13:19.123456Z",
+        null,
+        "9999-12-31T23:59:59.000000Z"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 8,
+          "nulls": 1,
+          "codec": "zstd",
+          "kind": "double",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "tz_none",
+      "r_typeof": "double",
+      "r_class": [
+        "POSIXct",
+        "POSIXt"
+      ],
+      "stored": {
+        "phys": "double",
+        "logical": "POSIXct",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "timestamp[us]",
+      "n": 8,
+      "nulls": 1,
+      "md5": "9489027fd15e1f1f8dec5159538d0621",
+      "seconds": [
+        0,
+        1700000000,
+        1700000000.5,
+        -86400.25,
+        1711929600,
+        1699999999.123456,
+        null,
+        253402300799
+      ],
+      "bits": [
+        "0000000000000000",
+        "41d954fc40000000",
+        "41d954fc40200000",
+        "c0f5180400000000",
+        "41d9827e40000000",
+        "41d954fc3fc7e6b4",
+        "7ff00000000007a2",
+        "424d7ffa20bf8000"
+      ],
+      "us": [
+        "0",
+        "1700000000000000",
+        "1700000000500000",
+        "-86400250000",
+        "1711929600000000",
+        "1699999999123456",
+        null,
+        "253402300799000000"
+      ],
+      "iso_utc": [
+        "1970-01-01T00:00:00.000000Z",
+        "2023-11-14T22:13:20.000000Z",
+        "2023-11-14T22:13:20.500000Z",
+        "1969-12-30T23:59:59.750000Z",
+        "2024-04-01T00:00:00.000000Z",
+        "2023-11-14T22:13:19.123456Z",
+        null,
+        "9999-12-31T23:59:59.000000Z"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 8,
+          "nulls": 1,
+          "codec": "zstd",
+          "kind": "double",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    }
+  ]
+}

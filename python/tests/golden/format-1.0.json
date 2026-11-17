@@ -1,0 +1,6534 @@
+{
+  "source": "tests/testthat/fixtures/golden-1.0 (read from there; not copied)",
+  "fstx": "1.0.0",
+  "files": [
+    {
+      "file": "mix_int.fstx",
+      "md5_file": "9dd4a010a1cf05e112af2f4495a4dc35",
+      "expect": "read",
+      "nrow": 3360,
+      "ncol": 3,
+      "profile": "balanced",
+      "row_groups": 21,
+      "file_bytes": 28952,
+      "table": {
+        "class": [
+          "data.frame"
+        ],
+        "blob": "FXA1",
+        "row_names": "automatic",
+        "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+      },
+      "columns": [
+        {
+          "name": "x_0",
+          "r_typeof": "integer",
+          "r_class": [],
+          "stored": {
+            "phys": "integer",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "int32",
+          "n": 3360,
+          "nulls": 0,
+          "md5": "e2df73996de19b35ce36e27912794ac3",
+          "values": [
+            3,
+            8,
+            8,
+            -4,
+            3,
+            8,
+            1,
+            1,
+            1,
+            -4,
+            1,
+            8
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "int",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "int",
+              "na": "none",
+              "encoding": "const"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "int",
+              "na": "none",
+              "encoding": "for"
+            },
+            {
+              "row_group": 4,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "int",
+              "na": "none",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 5,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "int",
+              "na": "none",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 6,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "int",
+              "na": "none",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 7,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "int",
+              "na": "none",
+              "encoding": "split"
+            },
+            {
+              "row_group": 8,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 9,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "none",
+              "encoding": "const"
+            },
+            {
+              "row_group": 10,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "none",
+              "encoding": "for"
+            },
+            {
+              "row_group": 11,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "none",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 12,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "none",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 13,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "none",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 14,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "none",
+              "encoding": "split"
+            },
+            {
+              "row_group": 15,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 16,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "none",
+              "encoding": "const"
+            },
+            {
+              "row_group": 17,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "none",
+              "encoding": "for"
+            },
+            {
+              "row_group": 18,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "none",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 19,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "none",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 20,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "none",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 21,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "none",
+              "encoding": "split"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "x_b",
+          "r_typeof": "integer",
+          "r_class": [],
+          "stored": {
+            "phys": "integer",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "int32",
+          "n": 3360,
+          "nulls": 252,
+          "md5": "acaaa342de3e6ed5a0dee96c5fd06b39",
+          "values": [
+            3,
+            8,
+            8,
+            -4,
+            3,
+            8,
+            1,
+            1,
+            1,
+            -4,
+            null,
+            8
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "const"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "for"
+            },
+            {
+              "row_group": 4,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 5,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 6,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 7,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "split"
+            },
+            {
+              "row_group": 8,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 9,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "const"
+            },
+            {
+              "row_group": 10,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "for"
+            },
+            {
+              "row_group": 11,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 12,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 13,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 14,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "split"
+            },
+            {
+              "row_group": 15,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 16,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "const"
+            },
+            {
+              "row_group": 17,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "for"
+            },
+            {
+              "row_group": 18,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 19,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 20,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 21,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "split"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "x_r",
+          "r_typeof": "integer",
+          "r_class": [],
+          "stored": {
+            "phys": "integer",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "int32",
+          "n": 3360,
+          "nulls": 1260,
+          "md5": "cff4e8c3da87e886804f320afdd8d50d",
+          "values": [
+            3,
+            8,
+            8,
+            -4,
+            3,
+            8,
+            1,
+            1,
+            1,
+            -4,
+            1,
+            8
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "const"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "for"
+            },
+            {
+              "row_group": 4,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 5,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 6,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 7,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "split"
+            },
+            {
+              "row_group": 8,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 9,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "const"
+            },
+            {
+              "row_group": 10,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "for"
+            },
+            {
+              "row_group": 11,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 12,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 13,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 14,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "split"
+            },
+            {
+              "row_group": 15,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 16,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "const"
+            },
+            {
+              "row_group": 17,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "for"
+            },
+            {
+              "row_group": 18,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 19,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 20,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 21,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "split"
+            }
+          ],
+          "values_truncated": true
+        }
+      ]
+    },
+    {
+      "file": "mix_lgl.fstx",
+      "md5_file": "384596e103439215f8659d78a6f5ef16",
+      "expect": "read",
+      "nrow": 3360,
+      "ncol": 3,
+      "profile": "balanced",
+      "row_groups": 21,
+      "file_bytes": 21168,
+      "table": {
+        "class": [
+          "data.frame"
+        ],
+        "blob": "FXA1",
+        "row_names": "automatic",
+        "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+      },
+      "columns": [
+        {
+          "name": "x_0",
+          "r_typeof": "logical",
+          "r_class": [],
+          "stored": {
+            "phys": "logical",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "bool",
+          "n": 3360,
+          "nulls": 0,
+          "md5": "89aa72bdfe76a2c6f32ed6a9d7f7eab2",
+          "values": [
+            true,
+            false,
+            true,
+            true,
+            true,
+            true,
+            false,
+            true,
+            false,
+            false,
+            false,
+            true
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "const"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "for"
+            },
+            {
+              "row_group": 4,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 5,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 6,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 7,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "split"
+            },
+            {
+              "row_group": 8,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 9,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "const"
+            },
+            {
+              "row_group": 10,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "for"
+            },
+            {
+              "row_group": 11,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 12,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 13,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 14,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "split"
+            },
+            {
+              "row_group": 15,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 16,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "const"
+            },
+            {
+              "row_group": 17,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "for"
+            },
+            {
+              "row_group": 18,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 19,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 20,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 21,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "none",
+              "encoding": "split"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "x_b",
+          "r_typeof": "logical",
+          "r_class": [],
+          "stored": {
+            "phys": "logical",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "bool",
+          "n": 3360,
+          "nulls": 252,
+          "md5": "d153c1a326d3d51f7b3c5c5e9eb73486",
+          "values": [
+            true,
+            false,
+            true,
+            true,
+            true,
+            true,
+            false,
+            true,
+            false,
+            false,
+            null,
+            true
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "const"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "for"
+            },
+            {
+              "row_group": 4,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 5,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 6,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 7,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "split"
+            },
+            {
+              "row_group": 8,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 9,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "const"
+            },
+            {
+              "row_group": 10,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "for"
+            },
+            {
+              "row_group": 11,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 12,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 13,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 14,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "split"
+            },
+            {
+              "row_group": 15,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 16,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "const"
+            },
+            {
+              "row_group": 17,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "for"
+            },
+            {
+              "row_group": 18,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 19,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 20,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 21,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "split"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "x_r",
+          "r_typeof": "logical",
+          "r_class": [],
+          "stored": {
+            "phys": "logical",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "bool",
+          "n": 3360,
+          "nulls": 1260,
+          "md5": "9518168b28aa5981c4d8d18de22054f1",
+          "values": [
+            true,
+            false,
+            true,
+            true,
+            true,
+            true,
+            false,
+            true,
+            false,
+            false,
+            false,
+            true
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "const"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "for"
+            },
+            {
+              "row_group": 4,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 5,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 6,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 7,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "split"
+            },
+            {
+              "row_group": 8,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 9,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "const"
+            },
+            {
+              "row_group": 10,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "for"
+            },
+            {
+              "row_group": 11,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 12,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 13,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 14,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "split"
+            },
+            {
+              "row_group": 15,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 16,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "const"
+            },
+            {
+              "row_group": 17,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "for"
+            },
+            {
+              "row_group": 18,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 19,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 20,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 21,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "runs",
+              "encoding": "split"
+            }
+          ],
+          "values_truncated": true
+        }
+      ]
+    },
+    {
+      "file": "mix_dbl.fstx",
+      "md5_file": "2b42d6761c18b059984c3e971acf82e8",
+      "expect": "read",
+      "nrow": 4320,
+      "ncol": 3,
+      "profile": "balanced",
+      "row_groups": 27,
+      "file_bytes": 90840,
+      "table": {
+        "class": [
+          "data.frame"
+        ],
+        "blob": "FXA1",
+        "row_names": "automatic",
+        "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+      },
+      "columns": [
+        {
+          "name": "x_0",
+          "r_typeof": "double",
+          "r_class": [],
+          "stored": {
+            "phys": "double",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "double",
+          "n": 4320,
+          "nulls": 0,
+          "md5": "530165e361f0c704c976d1e34e2b0a3f",
+          "values": [
+            -2,
+            -2,
+            3,
+            7.0999999999999996,
+            1.25,
+            3,
+            1.25,
+            1.25,
+            100.75,
+            0.5,
+            0.5,
+            100.75
+          ],
+          "bits": [
+            "c000000000000000",
+            "c000000000000000",
+            "4008000000000000",
+            "401c666666666666",
+            "3ff4000000000000",
+            "4008000000000000",
+            "3ff4000000000000",
+            "3ff4000000000000",
+            "4059300000000000",
+            "3fe0000000000000",
+            "3fe0000000000000",
+            "4059300000000000"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "double",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "double",
+              "na": "none",
+              "encoding": "const"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "double",
+              "na": "none",
+              "encoding": "for"
+            },
+            {
+              "row_group": 4,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "double",
+              "na": "none",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 5,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "double",
+              "na": "none",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 6,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "double",
+              "na": "none",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 7,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "double",
+              "na": "none",
+              "encoding": "split"
+            },
+            {
+              "row_group": 8,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "double",
+              "na": "none",
+              "encoding": "alp"
+            },
+            {
+              "row_group": 9,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "double",
+              "na": "none",
+              "encoding": "alprd"
+            },
+            {
+              "row_group": 10,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 11,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "none",
+              "encoding": "const"
+            },
+            {
+              "row_group": 12,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "none",
+              "encoding": "for"
+            },
+            {
+              "row_group": 13,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "none",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 14,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "none",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 15,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "none",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 16,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "none",
+              "encoding": "split"
+            },
+            {
+              "row_group": 17,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "none",
+              "encoding": "alp"
+            },
+            {
+              "row_group": 18,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "none",
+              "encoding": "alprd"
+            },
+            {
+              "row_group": 19,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 20,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "const"
+            },
+            {
+              "row_group": 21,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "for"
+            },
+            {
+              "row_group": 22,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 23,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 24,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 25,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "split"
+            },
+            {
+              "row_group": 26,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "alp"
+            },
+            {
+              "row_group": 27,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "alprd"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "x_b",
+          "r_typeof": "double",
+          "r_class": [],
+          "stored": {
+            "phys": "double",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "double",
+          "n": 4320,
+          "nulls": 324,
+          "md5": "3433f428f0daa83b92b74349371f0c80",
+          "values": [
+            -2,
+            -2,
+            3,
+            7.0999999999999996,
+            1.25,
+            3,
+            1.25,
+            1.25,
+            100.75,
+            0.5,
+            null,
+            100.75
+          ],
+          "bits": [
+            "c000000000000000",
+            "c000000000000000",
+            "4008000000000000",
+            "401c666666666666",
+            "3ff4000000000000",
+            "4008000000000000",
+            "3ff4000000000000",
+            "3ff4000000000000",
+            "4059300000000000",
+            "3fe0000000000000",
+            "7ff00000000007a2",
+            "4059300000000000"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "const"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "for"
+            },
+            {
+              "row_group": 4,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 5,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 6,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 7,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "split"
+            },
+            {
+              "row_group": 8,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "alp"
+            },
+            {
+              "row_group": 9,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "alprd"
+            },
+            {
+              "row_group": 10,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 11,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "const"
+            },
+            {
+              "row_group": 12,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "for"
+            },
+            {
+              "row_group": 13,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 14,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 15,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 16,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "split"
+            },
+            {
+              "row_group": 17,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "alp"
+            },
+            {
+              "row_group": 18,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "alprd"
+            },
+            {
+              "row_group": 19,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 20,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "const"
+            },
+            {
+              "row_group": 21,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "for"
+            },
+            {
+              "row_group": 22,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 23,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 24,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 25,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "split"
+            },
+            {
+              "row_group": 26,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "alp"
+            },
+            {
+              "row_group": 27,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "alprd"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "x_r",
+          "r_typeof": "double",
+          "r_class": [],
+          "stored": {
+            "phys": "double",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "double",
+          "n": 4320,
+          "nulls": 1620,
+          "md5": "dceef2d1390d1a5f22e2307bf79a9250",
+          "values": [
+            -2,
+            -2,
+            3,
+            7.0999999999999996,
+            1.25,
+            3,
+            1.25,
+            1.25,
+            100.75,
+            0.5,
+            0.5,
+            100.75
+          ],
+          "bits": [
+            "c000000000000000",
+            "c000000000000000",
+            "4008000000000000",
+            "401c666666666666",
+            "3ff4000000000000",
+            "4008000000000000",
+            "3ff4000000000000",
+            "3ff4000000000000",
+            "4059300000000000",
+            "3fe0000000000000",
+            "3fe0000000000000",
+            "4059300000000000"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "const"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "for"
+            },
+            {
+              "row_group": 4,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 5,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 6,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 7,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "split"
+            },
+            {
+              "row_group": 8,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "alp"
+            },
+            {
+              "row_group": 9,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "alprd"
+            },
+            {
+              "row_group": 10,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 11,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "const"
+            },
+            {
+              "row_group": 12,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "for"
+            },
+            {
+              "row_group": 13,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 14,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 15,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 16,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "split"
+            },
+            {
+              "row_group": 17,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "alp"
+            },
+            {
+              "row_group": 18,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "alprd"
+            },
+            {
+              "row_group": 19,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 20,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "const"
+            },
+            {
+              "row_group": 21,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "for"
+            },
+            {
+              "row_group": 22,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 23,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 24,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 25,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "split"
+            },
+            {
+              "row_group": 26,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "alp"
+            },
+            {
+              "row_group": 27,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "runs",
+              "encoding": "alprd"
+            }
+          ],
+          "values_truncated": true
+        }
+      ]
+    },
+    {
+      "file": "mix_str.fstx",
+      "md5_file": "c5476298f5003e7a049c8abc095027dd",
+      "expect": "read",
+      "nrow": 960,
+      "ncol": 3,
+      "profile": "balanced",
+      "row_groups": 6,
+      "file_bytes": 13328,
+      "table": {
+        "class": [
+          "data.frame"
+        ],
+        "blob": "FXA1",
+        "row_names": "automatic",
+        "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+      },
+      "columns": [
+        {
+          "name": "x_0",
+          "r_typeof": "character",
+          "r_class": [],
+          "stored": {
+            "phys": "character",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "string",
+          "n": 960,
+          "nulls": 0,
+          "md5": "fd7c16a05fa52c8d15fedd222ece3b5b",
+          "values": [
+            "delta-a-bit-longer",
+            "alpha",
+            "delta-a-bit-longer",
+            "café",
+            "beta",
+            "delta-a-bit-longer",
+            "alpha",
+            "beta",
+            "日本語",
+            "日本語",
+            "café",
+            ""
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "string",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "string",
+              "na": "none",
+              "encoding": "fsst"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "string",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 4,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "string",
+              "na": "none",
+              "encoding": "fsst"
+            },
+            {
+              "row_group": 5,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "string",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 6,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "string",
+              "na": "none",
+              "encoding": "fsst"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "x_b",
+          "r_typeof": "character",
+          "r_class": [],
+          "stored": {
+            "phys": "character",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "string",
+          "n": 960,
+          "nulls": 72,
+          "md5": "5c1498bdcaa00e4a50da49d750ac202b",
+          "values": [
+            "delta-a-bit-longer",
+            "alpha",
+            "delta-a-bit-longer",
+            "café",
+            "beta",
+            "delta-a-bit-longer",
+            "alpha",
+            "beta",
+            "日本語",
+            "日本語",
+            null,
+            ""
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "string",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "string",
+              "na": "bitmap",
+              "encoding": "fsst"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "string",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 4,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "string",
+              "na": "bitmap",
+              "encoding": "fsst"
+            },
+            {
+              "row_group": 5,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "string",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 6,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "string",
+              "na": "bitmap",
+              "encoding": "fsst"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "x_r",
+          "r_typeof": "character",
+          "r_class": [],
+          "stored": {
+            "phys": "character",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "string",
+          "n": 960,
+          "nulls": 360,
+          "md5": "168be65f2e78087e023a8a32674c8019",
+          "values": [
+            "delta-a-bit-longer",
+            "alpha",
+            "delta-a-bit-longer",
+            "café",
+            "beta",
+            "delta-a-bit-longer",
+            "alpha",
+            "beta",
+            "日本語",
+            "日本語",
+            "café",
+            ""
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "string",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "string",
+              "na": "runs",
+              "encoding": "fsst"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "string",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 4,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "string",
+              "na": "runs",
+              "encoding": "fsst"
+            },
+            {
+              "row_group": 5,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "string",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 6,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "string",
+              "na": "runs",
+              "encoding": "fsst"
+            }
+          ],
+          "values_truncated": true
+        }
+      ]
+    },
+    {
+      "file": "mix_codes.fstx",
+      "md5_file": "d8a1a2c466636e93e5b6df991038c6d7",
+      "expect": "read",
+      "nrow": 3840,
+      "ncol": 3,
+      "profile": "balanced",
+      "row_groups": 24,
+      "file_bytes": 44680,
+      "table": {
+        "class": [
+          "data.frame"
+        ],
+        "blob": "FXA1",
+        "row_names": "automatic",
+        "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+      },
+      "columns": [
+        {
+          "name": "x_0",
+          "r_typeof": "character",
+          "r_class": [],
+          "stored": {
+            "phys": "character",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "string",
+          "n": 3840,
+          "nulls": 0,
+          "md5": "9d7ad19e2620f044845192f588a4624a",
+          "values": [
+            "beta",
+            "delta-a-bit-longer",
+            "delta-a-bit-longer",
+            "",
+            "delta-a-bit-longer",
+            "delta-a-bit-longer",
+            "beta",
+            "café",
+            "alpha",
+            "beta",
+            "café",
+            "beta"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": true,
+              "rows": 1,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "const"
+            },
+            {
+              "row_group": 3,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "for"
+            },
+            {
+              "row_group": 4,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 4,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 5,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 5,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 6,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 6,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 7,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 7,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "split"
+            },
+            {
+              "row_group": 8,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "fsst"
+            },
+            {
+              "row_group": 8,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 9,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 9,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 10,
+              "dictionary": true,
+              "rows": 1,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 10,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "const"
+            },
+            {
+              "row_group": 11,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 11,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "for"
+            },
+            {
+              "row_group": 12,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 12,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 13,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 13,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 14,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 14,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 15,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 15,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "split"
+            },
+            {
+              "row_group": 16,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "fsst"
+            },
+            {
+              "row_group": 16,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 17,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 17,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 18,
+              "dictionary": true,
+              "rows": 1,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 18,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "const"
+            },
+            {
+              "row_group": 19,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 19,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "for"
+            },
+            {
+              "row_group": 20,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 20,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 21,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 21,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 22,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 22,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 23,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 23,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "split"
+            },
+            {
+              "row_group": 24,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "fsst"
+            },
+            {
+              "row_group": 24,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "none",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "x_b",
+          "r_typeof": "character",
+          "r_class": [],
+          "stored": {
+            "phys": "character",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "string",
+          "n": 3840,
+          "nulls": 288,
+          "md5": "730d5f17dc0bdf672e87b65c0bfb9e85",
+          "values": [
+            "beta",
+            "delta-a-bit-longer",
+            "delta-a-bit-longer",
+            "",
+            "delta-a-bit-longer",
+            "delta-a-bit-longer",
+            "beta",
+            "café",
+            "alpha",
+            "beta",
+            null,
+            "beta"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": true,
+              "rows": 1,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "const"
+            },
+            {
+              "row_group": 3,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "for"
+            },
+            {
+              "row_group": 4,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 4,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 5,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 5,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 6,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 6,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 7,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 7,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "split"
+            },
+            {
+              "row_group": 8,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "fsst"
+            },
+            {
+              "row_group": 8,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "none",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 9,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 9,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 10,
+              "dictionary": true,
+              "rows": 1,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 10,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "const"
+            },
+            {
+              "row_group": 11,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 11,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "for"
+            },
+            {
+              "row_group": 12,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 12,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 13,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 13,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 14,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 14,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 15,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 15,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "split"
+            },
+            {
+              "row_group": 16,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "fsst"
+            },
+            {
+              "row_group": 16,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 17,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 17,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 18,
+              "dictionary": true,
+              "rows": 1,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 18,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "const"
+            },
+            {
+              "row_group": 19,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 19,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "for"
+            },
+            {
+              "row_group": 20,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 20,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 21,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 21,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 22,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 22,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 23,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 23,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "split"
+            },
+            {
+              "row_group": 24,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "fsst"
+            },
+            {
+              "row_group": 24,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 12,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "x_r",
+          "r_typeof": "character",
+          "r_class": [],
+          "stored": {
+            "phys": "character",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "string",
+          "n": 3840,
+          "nulls": 1440,
+          "md5": "f22c3ff94dafdb7fde91f93ca70269a2",
+          "values": [
+            "beta",
+            "delta-a-bit-longer",
+            "delta-a-bit-longer",
+            "",
+            "delta-a-bit-longer",
+            "delta-a-bit-longer",
+            "beta",
+            "café",
+            "alpha",
+            "beta",
+            "café",
+            "beta"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": true,
+              "rows": 1,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "const"
+            },
+            {
+              "row_group": 3,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "for"
+            },
+            {
+              "row_group": 4,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 4,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 5,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 5,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 6,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 6,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 7,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 7,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "split"
+            },
+            {
+              "row_group": 8,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "fsst"
+            },
+            {
+              "row_group": 8,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "none",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 9,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 9,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 10,
+              "dictionary": true,
+              "rows": 1,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 10,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "const"
+            },
+            {
+              "row_group": 11,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 11,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "for"
+            },
+            {
+              "row_group": 12,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 12,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 13,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 13,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 14,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 14,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 15,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 15,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "split"
+            },
+            {
+              "row_group": 16,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "lz4",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "fsst"
+            },
+            {
+              "row_group": 16,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "lz4",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 17,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 17,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 18,
+              "dictionary": true,
+              "rows": 1,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 18,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "const"
+            },
+            {
+              "row_group": 19,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 19,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "for"
+            },
+            {
+              "row_group": 20,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 20,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 21,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 21,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "rle"
+            },
+            {
+              "row_group": 22,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 22,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "dict"
+            },
+            {
+              "row_group": 23,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 23,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "split"
+            },
+            {
+              "row_group": 24,
+              "dictionary": true,
+              "rows": 6,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "fsst"
+            },
+            {
+              "row_group": 24,
+              "dictionary": false,
+              "rows": 160,
+              "nulls": 60,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "runs",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": true
+        }
+      ]
+    },
+    {
+      "file": "types.fstx",
+      "md5_file": "0fc6b17588e9f91d008af916aaaf8199",
+      "expect": "read",
+      "nrow": 200,
+      "ncol": 11,
+      "profile": "balanced",
+      "row_groups": 1,
+      "file_bytes": 7472,
+      "table": {
+        "class": [
+          "data.frame"
+        ],
+        "blob": "FXA1",
+        "row_names": {
+          "type": "character",
+          "values": [
+            "r001",
+            "r002",
+            "r003",
+            "r004",
+            "r005",
+            "r006",
+            "r007",
+            "r008",
+            "r009",
+            "r010",
+            "r011",
+            "r012",
+            "r013",
+            "r014",
+            "r015",
+            "r016",
+            "r017",
+            "r018",
+            "r019",
+            "r020",
+            "r021",
+            "r022",
+            "r023",
+            "r024",
+            "r025",
+            "r026",
+            "r027",
+            "r028",
+            "r029",
+            "r030",
+            "r031",
+            "r032",
+            "r033",
+            "r034",
+            "r035",
+            "r036",
+            "r037",
+            "r038",
+            "r039",
+            "r040",
+            "r041",
+            "r042",
+            "r043",
+            "r044",
+            "r045",
+            "r046",
+            "r047",
+            "r048",
+            "r049",
+            "r050",
+            "r051",
+            "r052",
+            "r053",
+            "r054",
+            "r055",
+            "r056",
+            "r057",
+            "r058",
+            "r059",
+            "r060",
+            "r061",
+            "r062",
+            "r063",
+            "r064",
+            "r065",
+            "r066",
+            "r067",
+            "r068",
+            "r069",
+            "r070",
+            "r071",
+            "r072",
+            "r073",
+            "r074",
+            "r075",
+            "r076",
+            "r077",
+            "r078",
+            "r079",
+            "r080",
+            "r081",
+            "r082",
+            "r083",
+            "r084",
+            "r085",
+            "r086",
+            "r087",
+            "r088",
+            "r089",
+            "r090",
+            "r091",
+            "r092",
+            "r093",
+            "r094",
+            "r095",
+            "r096",
+            "r097",
+            "r098",
+            "r099",
+            "r100",
+            "r101",
+            "r102",
+            "r103",
+            "r104",
+            "r105",
+            "r106",
+            "r107",
+            "r108",
+            "r109",
+            "r110",
+            "r111",
+            "r112",
+            "r113",
+            "r114",
+            "r115",
+            "r116",
+            "r117",
+            "r118",
+            "r119",
+            "r120",
+            "r121",
+            "r122",
+            "r123",
+            "r124",
+            "r125",
+            "r126",
+            "r127",
+            "r128",
+            "r129",
+            "r130",
+            "r131",
+            "r132",
+            "r133",
+            "r134",
+            "r135",
+            "r136",
+            "r137",
+            "r138",
+            "r139",
+            "r140",
+            "r141",
+            "r142",
+            "r143",
+            "r144",
+            "r145",
+            "r146",
+            "r147",
+            "r148",
+            "r149",
+            "r150",
+            "r151",
+            "r152",
+            "r153",
+            "r154",
+            "r155",
+            "r156",
+            "r157",
+            "r158",
+            "r159",
+            "r160",
+            "r161",
+            "r162",
+            "r163",
+            "r164",
+            "r165",
+            "r166",
+            "r167",
+            "r168",
+            "r169",
+            "r170",
+            "r171",
+            "r172",
+            "r173",
+            "r174",
+            "r175",
+            "r176",
+            "r177",
+            "r178",
+            "r179",
+            "r180",
+            "r181",
+            "r182",
+            "r183",
+            "r184",
+            "r185",
+            "r186",
+            "r187",
+            "r188",
+            "r189",
+            "r190",
+            "r191",
+            "r192",
+            "r193",
+            "r194",
+            "r195",
+            "r196",
+            "r197",
+            "r198",
+            "r199",
+            "r200"
+          ]
+        },
+        "blob_hex": "465841010300000009000000726f772e6e616d657304000000c8000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000004000000040000000400000072303031723030327230303372303034723030357230303672303037723030387230303972303130723031317230313272303133723031347230313572303136723031377230313872303139723032307230323172303232723032337230323472303235723032367230323772303238723032397230333072303331723033327230333372303334723033357230333672303337723033387230333972303430723034317230343272303433723034347230343572303436723034377230343872303439723035307230353172303532723035337230353472303535723035367230353772303538723035397230363072303631723036327230363372303634723036357230363672303637723036387230363972303730723037317230373272303733723037347230373572303736723037377230373872303739723038307230383172303832723038337230383472303835723038367230383772303838723038397230393072303931723039327230393372303934723039357230393672303937723039387230393972313030723130317231303272313033723130347231303572313036723130377231303872313039723131307231313172313132723131337231313472313135723131367231313772313138723131397231323072313231723132327231323372313234723132357231323672313237723132387231323972313330723133317231333272313333723133347231333572313336723133377231333872313339723134307231343172313432723134337231343472313435723134367231343772313438723134397231353072313531723135327231353372313534723135357231353672313537723135387231353972313630723136317231363272313633723136347231363572313636723136377231363872313639723137307231373172313732723137337231373472313735723137367231373772313738723137397231383072313831723138327231383372313834723138357231383672313837723138387231383972313930723139317231393272313933723139347231393572313936723139377231393872313939723230300000000005000000636c61737304000000010000000a000000646174612e6672616d6500000000040000006e6f7465040000000100000016000000676f6c64656e207461626c652061747472696275746500000000",
+        "attrs": {
+          "note": {
+            "type": "character",
+            "values": [
+              "golden table attribute"
+            ]
+          }
+        }
+      },
+      "columns": [
+        {
+          "name": "int",
+          "r_typeof": "integer",
+          "r_class": [],
+          "stored": {
+            "phys": "integer",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "int32",
+          "n": 200,
+          "nulls": 1,
+          "md5": "86b26f897d7fb9da669be37e013a8c65",
+          "values": [
+            42,
+            19,
+            31,
+            28,
+            39,
+            2,
+            15,
+            26,
+            8,
+            3,
+            24,
+            40
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 200,
+              "nulls": 1,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "runs",
+              "encoding": "for"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "dbl",
+          "r_typeof": "double",
+          "r_class": [],
+          "stored": {
+            "phys": "double",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "double",
+          "n": 200,
+          "nulls": 13,
+          "md5": "1b7e2be5ce9f5366cf956fbc46148594",
+          "values": [
+            -0.22700000000000001,
+            0.98099999999999998,
+            "-0",
+            -0.58299999999999996,
+            null,
+            "Inf",
+            "-0",
+            -1.6379999999999999,
+            -0.26500000000000001,
+            0.017000000000000001,
+            -0.188,
+            "Inf"
+          ],
+          "bits": [
+            "bfcd0e5604189375",
+            "3fef645a1cac0831",
+            "8000000000000000",
+            "bfe2a7ef9db22d0e",
+            "7ff00000000007a2",
+            "7ff0000000000000",
+            "8000000000000000",
+            "bffa353f7ced9168",
+            "bfd0f5c28f5c28f6",
+            "3f916872b020c49c",
+            "bfc810624dd2f1aa",
+            "7ff0000000000000"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 200,
+              "nulls": 13,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "bitmap",
+              "encoding": "dict"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "lgl",
+          "r_typeof": "logical",
+          "r_class": [],
+          "stored": {
+            "phys": "logical",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "bool",
+          "n": 200,
+          "nulls": 46,
+          "md5": "31aa7e0d8d42261aff4fcb8478f8bacb",
+          "values": [
+            null,
+            null,
+            true,
+            false,
+            null,
+            true,
+            null,
+            false,
+            true,
+            false,
+            false,
+            false
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 200,
+              "nulls": 46,
+              "codec": "zstd",
+              "kind": "logical",
+              "na": "bitmap",
+              "encoding": "for"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "chr",
+          "r_typeof": "character",
+          "r_class": [],
+          "stored": {
+            "phys": "character",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "string",
+          "n": 200,
+          "nulls": 43,
+          "md5": "2f2cc73580102a8a199a3509ed8526b6",
+          "values": [
+            null,
+            "",
+            "bb",
+            null,
+            "a",
+            "",
+            null,
+            null,
+            "bb",
+            "",
+            "a",
+            ""
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": true,
+              "rows": 4,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 200,
+              "nulls": 43,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "for"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "fac",
+          "r_typeof": "integer",
+          "r_class": [
+            "factor"
+          ],
+          "stored": {
+            "phys": "integer",
+            "logical": "factor",
+            "tzone_present": false,
+            "blob": "none",
+            "ordered": false,
+            "levels": [
+              "lo",
+              "mid",
+              "hi"
+            ]
+          },
+          "arrow_type": "dictionary<values=string, indices=int32, ordered=0>",
+          "n": 200,
+          "nulls": 56,
+          "md5": "deb05a66ba623e84a8c48aec85fd4bb8",
+          "codes": [
+            2,
+            2,
+            null,
+            3,
+            null,
+            1,
+            1,
+            null,
+            2,
+            1,
+            3,
+            null
+          ],
+          "levels": [
+            "lo",
+            "mid",
+            "hi"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 200,
+              "nulls": 56,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "for"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "ord",
+          "r_typeof": "integer",
+          "r_class": [
+            "ordered",
+            "factor"
+          ],
+          "stored": {
+            "phys": "integer",
+            "logical": "factor",
+            "tzone_present": false,
+            "blob": "none",
+            "ordered": true,
+            "levels": [
+              "s",
+              "m",
+              "l"
+            ]
+          },
+          "arrow_type": "dictionary<values=string, indices=int32, ordered=1>",
+          "n": 200,
+          "nulls": 0,
+          "md5": "0ffadeeca4e95cc3022a7a12214cf2a5",
+          "codes": [
+            3,
+            3,
+            1,
+            2,
+            1,
+            1,
+            2,
+            3,
+            1,
+            2,
+            2,
+            3
+          ],
+          "levels": [
+            "s",
+            "m",
+            "l"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 200,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "none",
+              "encoding": "for"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "date",
+          "r_typeof": "double",
+          "r_class": [
+            "Date"
+          ],
+          "stored": {
+            "phys": "double",
+            "logical": "Date",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "date32[day]",
+          "n": 200,
+          "nulls": 1,
+          "md5": "82ca30adc2d7f8d491e950f87c85d850",
+          "days": [
+            20508,
+            20481,
+            20792,
+            20590,
+            20838,
+            20709,
+            20658,
+            20682,
+            20848,
+            20790,
+            20497,
+            20538
+          ],
+          "bits": [
+            "40d4070000000000",
+            "40d4004000000000",
+            "40d44e0000000000",
+            "40d41b8000000000",
+            "40d4598000000000",
+            "40d4394000000000",
+            "40d42c8000000000",
+            "40d4328000000000",
+            "40d45c0000000000",
+            "40d44d8000000000",
+            "40d4044000000000",
+            "40d40e8000000000"
+          ],
+          "date32": [
+            20508,
+            20481,
+            20792,
+            20590,
+            20838,
+            20709,
+            20658,
+            20682,
+            20848,
+            20790,
+            20497,
+            20538
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 200,
+              "nulls": 1,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "alp"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "date_dbl",
+          "r_typeof": "double",
+          "r_class": [
+            "Date"
+          ],
+          "stored": {
+            "phys": "double",
+            "logical": "Date",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "date32[day]",
+          "n": 200,
+          "nulls": 0,
+          "md5": "bafa37cd4d1f8337f9688aad103631ba",
+          "days": [
+            104.5,
+            331.5,
+            40.5,
+            27.5,
+            162.5,
+            296.5,
+            387.5,
+            322.5,
+            272.5,
+            82.5,
+            243.5,
+            219.5
+          ],
+          "bits": [
+            "405a200000000000",
+            "4074b80000000000",
+            "4044400000000000",
+            "403b800000000000",
+            "4064500000000000",
+            "4072880000000000",
+            "4078380000000000",
+            "4074280000000000",
+            "4071080000000000",
+            "4054a00000000000",
+            "406e700000000000",
+            "406b700000000000"
+          ],
+          "date32": [
+            104,
+            331,
+            40,
+            27,
+            162,
+            296,
+            387,
+            322,
+            272,
+            82,
+            243,
+            219
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 200,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "alp"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "ct",
+          "r_typeof": "double",
+          "r_class": [
+            "POSIXct",
+            "POSIXt"
+          ],
+          "stored": {
+            "phys": "double",
+            "logical": "POSIXct",
+            "tzone_present": true,
+            "blob": "none",
+            "tzone": "UTC"
+          },
+          "arrow_type": "timestamp[us, tz=UTC]",
+          "n": 200,
+          "nulls": 0,
+          "md5": "a3834ce89ed355f81f3d3545a3c309cd",
+          "seconds": [
+            1700085013,
+            1700002427,
+            1700010474,
+            1700058777,
+            1700029409,
+            1700068908,
+            1700068050,
+            1700073610,
+            1700019381,
+            1700086405,
+            1700079567,
+            1700042479
+          ],
+          "bits": [
+            "41d9554f45400000",
+            "41d954fe9ec00000",
+            "41d955067a800000",
+            "41d95535a6400000",
+            "41d95518f8400000",
+            "41d9553f8b000000",
+            "41d9553eb4800000",
+            "41d9554422800000",
+            "41d9550f2d400000",
+            "41d95550a1400000",
+            "41d95549f3c00000",
+            "41d95525bbc00000"
+          ],
+          "us": [
+            "1700085013000000",
+            "1700002427000000",
+            "1700010474000000",
+            "1700058777000000",
+            "1700029409000000",
+            "1700068908000000",
+            "1700068050000000",
+            "1700073610000000",
+            "1700019381000000",
+            "1700086405000000",
+            "1700079567000000",
+            "1700042479000000"
+          ],
+          "iso_utc": [
+            "2023-11-15T21:50:13.000000Z",
+            "2023-11-14T22:53:47.000000Z",
+            "2023-11-15T01:07:54.000000Z",
+            "2023-11-15T14:32:57.000000Z",
+            "2023-11-15T06:23:29.000000Z",
+            "2023-11-15T17:21:48.000000Z",
+            "2023-11-15T17:07:30.000000Z",
+            "2023-11-15T18:40:10.000000Z",
+            "2023-11-15T03:36:21.000000Z",
+            "2023-11-15T22:13:25.000000Z",
+            "2023-11-15T20:19:27.000000Z",
+            "2023-11-15T10:01:19.000000Z"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 200,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "ct_notz",
+          "r_typeof": "double",
+          "r_class": [
+            "POSIXct",
+            "POSIXt"
+          ],
+          "stored": {
+            "phys": "double",
+            "logical": "POSIXct",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "timestamp[us]",
+          "n": 200,
+          "nulls": 0,
+          "md5": "5b8ce1182cdaf021b1a4a3ba350f36b6",
+          "seconds": [
+            1700022111,
+            1700024594,
+            1700074510,
+            1700048913,
+            1700008426,
+            1700072995,
+            1700033019,
+            1700013553,
+            1700017914,
+            1700074839,
+            1700020496,
+            1700029191
+          ],
+          "bits": [
+            "41d95511d7c00000",
+            "41d9551444800000",
+            "41d9554503800000",
+            "41d9552c04400000",
+            "41d955047a800000",
+            "41d9554388c00000",
+            "41d9551c7ec00000",
+            "41d955097c400000",
+            "41d9550dbe800000",
+            "41d9554555c00000",
+            "41d9551044000000",
+            "41d95518c1c00000"
+          ],
+          "us": [
+            "1700022111000000",
+            "1700024594000000",
+            "1700074510000000",
+            "1700048913000000",
+            "1700008426000000",
+            "1700072995000000",
+            "1700033019000000",
+            "1700013553000000",
+            "1700017914000000",
+            "1700074839000000",
+            "1700020496000000",
+            "1700029191000000"
+          ],
+          "iso_utc": [
+            "2023-11-15T04:21:51.000000Z",
+            "2023-11-15T05:03:14.000000Z",
+            "2023-11-15T18:55:10.000000Z",
+            "2023-11-15T11:48:33.000000Z",
+            "2023-11-15T00:33:46.000000Z",
+            "2023-11-15T18:29:55.000000Z",
+            "2023-11-15T07:23:39.000000Z",
+            "2023-11-15T01:59:13.000000Z",
+            "2023-11-15T03:11:54.000000Z",
+            "2023-11-15T19:00:39.000000Z",
+            "2023-11-15T03:54:56.000000Z",
+            "2023-11-15T06:19:51.000000Z"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 200,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "labelled",
+          "r_typeof": "integer",
+          "r_class": [
+            "golden_class"
+          ],
+          "stored": {
+            "phys": "integer",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "FXA1",
+            "blob_hex": "4658410102000000050000006c6162656c04000000010000000700000061206c6162656c0000000005000000636c61737304000000010000000c000000676f6c64656e5f636c61737300000000"
+          },
+          "arrow_type": "int32",
+          "n": 200,
+          "nulls": 0,
+          "md5": "e718f3dc9574afb00709214f1521f74f",
+          "values": [
+            3,
+            2,
+            5,
+            4,
+            4,
+            4,
+            3,
+            3,
+            5,
+            5,
+            4,
+            1
+          ],
+          "attrs": {
+            "label": {
+              "type": "character",
+              "values": [
+                "a label"
+              ]
+            }
+          },
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 200,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "none",
+              "encoding": "for"
+            }
+          ],
+          "values_truncated": true
+        }
+      ]
+    },
+    {
+      "file": "empty.fstx",
+      "md5_file": "6ccb90b33b1bdde50e70b9d4dc0bcb29",
+      "expect": "read",
+      "nrow": 0,
+      "ncol": 11,
+      "profile": "balanced",
+      "row_groups": 0,
+      "file_bytes": 816,
+      "table": {
+        "class": [
+          "data.frame"
+        ],
+        "blob": "FXA1",
+        "row_names": {
+          "type": "integer",
+          "values": []
+        },
+        "blob_hex": "465841010200000009000000726f772e6e616d657302000000000000000000000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+      },
+      "columns": [
+        {
+          "name": "int",
+          "r_typeof": "integer",
+          "r_class": [],
+          "stored": {
+            "phys": "integer",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "int32",
+          "n": 0,
+          "nulls": 0,
+          "md5": "d41d8cd98f00b204e9800998ecf8427e",
+          "values": [],
+          "values_truncated": false
+        },
+        {
+          "name": "dbl",
+          "r_typeof": "double",
+          "r_class": [],
+          "stored": {
+            "phys": "double",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "double",
+          "n": 0,
+          "nulls": 0,
+          "md5": "d41d8cd98f00b204e9800998ecf8427e",
+          "values": [],
+          "bits": [],
+          "values_truncated": false
+        },
+        {
+          "name": "lgl",
+          "r_typeof": "logical",
+          "r_class": [],
+          "stored": {
+            "phys": "logical",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "bool",
+          "n": 0,
+          "nulls": 0,
+          "md5": "d41d8cd98f00b204e9800998ecf8427e",
+          "values": [],
+          "values_truncated": false
+        },
+        {
+          "name": "chr",
+          "r_typeof": "character",
+          "r_class": [],
+          "stored": {
+            "phys": "character",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "string",
+          "n": 0,
+          "nulls": 0,
+          "md5": "d41d8cd98f00b204e9800998ecf8427e",
+          "values": [],
+          "values_truncated": false
+        },
+        {
+          "name": "fac",
+          "r_typeof": "integer",
+          "r_class": [
+            "factor"
+          ],
+          "stored": {
+            "phys": "integer",
+            "logical": "factor",
+            "tzone_present": false,
+            "blob": "none",
+            "ordered": false,
+            "levels": [
+              "lo",
+              "mid",
+              "hi"
+            ]
+          },
+          "arrow_type": "dictionary<values=string, indices=int32, ordered=0>",
+          "n": 0,
+          "nulls": 0,
+          "md5": "f7df71f8f87d9a1b4237b911ec7578ee",
+          "codes": [],
+          "levels": [
+            "lo",
+            "mid",
+            "hi"
+          ],
+          "values_truncated": false
+        },
+        {
+          "name": "ord",
+          "r_typeof": "integer",
+          "r_class": [
+            "ordered",
+            "factor"
+          ],
+          "stored": {
+            "phys": "integer",
+            "logical": "factor",
+            "tzone_present": false,
+            "blob": "none",
+            "ordered": true,
+            "levels": [
+              "s",
+              "m",
+              "l"
+            ]
+          },
+          "arrow_type": "dictionary<values=string, indices=int32, ordered=1>",
+          "n": 0,
+          "nulls": 0,
+          "md5": "85e0aa7c8151484a93501c80b88b5119",
+          "codes": [],
+          "levels": [
+            "s",
+            "m",
+            "l"
+          ],
+          "values_truncated": false
+        },
+        {
+          "name": "date",
+          "r_typeof": "double",
+          "r_class": [
+            "Date"
+          ],
+          "stored": {
+            "phys": "double",
+            "logical": "Date",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "date32[day]",
+          "n": 0,
+          "nulls": 0,
+          "md5": "d41d8cd98f00b204e9800998ecf8427e",
+          "days": [],
+          "bits": [],
+          "date32": [],
+          "values_truncated": false
+        },
+        {
+          "name": "date_dbl",
+          "r_typeof": "double",
+          "r_class": [
+            "Date"
+          ],
+          "stored": {
+            "phys": "double",
+            "logical": "Date",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "date32[day]",
+          "n": 0,
+          "nulls": 0,
+          "md5": "d41d8cd98f00b204e9800998ecf8427e",
+          "days": [],
+          "bits": [],
+          "date32": [],
+          "values_truncated": false
+        },
+        {
+          "name": "ct",
+          "r_typeof": "double",
+          "r_class": [
+            "POSIXct",
+            "POSIXt"
+          ],
+          "stored": {
+            "phys": "double",
+            "logical": "POSIXct",
+            "tzone_present": true,
+            "blob": "none",
+            "tzone": "UTC"
+          },
+          "arrow_type": "timestamp[us, tz=UTC]",
+          "n": 0,
+          "nulls": 0,
+          "md5": "d41d8cd98f00b204e9800998ecf8427e",
+          "seconds": [],
+          "bits": [],
+          "us": [],
+          "iso_utc": [],
+          "values_truncated": false
+        },
+        {
+          "name": "ct_notz",
+          "r_typeof": "double",
+          "r_class": [
+            "POSIXct",
+            "POSIXt"
+          ],
+          "stored": {
+            "phys": "double",
+            "logical": "POSIXct",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "timestamp[us]",
+          "n": 0,
+          "nulls": 0,
+          "md5": "d41d8cd98f00b204e9800998ecf8427e",
+          "seconds": [],
+          "bits": [],
+          "us": [],
+          "iso_utc": [],
+          "values_truncated": false
+        },
+        {
+          "name": "labelled",
+          "r_typeof": "integer",
+          "r_class": [
+            "golden_class"
+          ],
+          "stored": {
+            "phys": "integer",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "FXA1",
+            "blob_hex": "4658410102000000050000006c6162656c04000000010000000700000061206c6162656c0000000005000000636c61737304000000010000000c000000676f6c64656e5f636c61737300000000"
+          },
+          "arrow_type": "int32",
+          "n": 0,
+          "nulls": 0,
+          "md5": "d41d8cd98f00b204e9800998ecf8427e",
+          "values": [],
+          "attrs": {
+            "label": {
+              "type": "character",
+              "values": [
+                "a label"
+              ]
+            }
+          },
+          "values_truncated": false
+        }
+      ]
+    },
+    {
+      "file": "zero_cols.fstx",
+      "md5_file": "c06058d97461a39a53094c0ea5daf549",
+      "expect": "read",
+      "nrow": 0,
+      "ncol": 0,
+      "profile": "balanced",
+      "row_groups": 0,
+      "file_bytes": 256,
+      "table": {
+        "class": [
+          "data.frame"
+        ],
+        "blob": "FXA1",
+        "row_names": {
+          "type": "integer",
+          "values": []
+        },
+        "blob_hex": "465841010200000009000000726f772e6e616d657302000000000000000000000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+      },
+      "columns": []
+    },
+    {
+      "file": "zero_cols_rows.fstx",
+      "md5_file": "e4d0beed034ba8eae72b968e86b121b6",
+      "expect": "read",
+      "nrow": 5,
+      "ncol": 0,
+      "profile": "balanced",
+      "row_groups": 1,
+      "file_bytes": 280,
+      "table": {
+        "class": [
+          "data.frame"
+        ],
+        "blob": "FXA1",
+        "row_names": "automatic",
+        "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+      },
+      "columns": []
+    },
+    {
+      "file": "nonascii.fstx",
+      "md5_file": "2182f1f1da4e234166ed8aacf62a500e",
+      "expect": "read",
+      "nrow": 5,
+      "ncol": 3,
+      "profile": "balanced",
+      "row_groups": 1,
+      "file_bytes": 936,
+      "table": {
+        "class": [
+          "data.frame"
+        ],
+        "blob": "FXA1",
+        "row_names": "automatic",
+        "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+      },
+      "columns": [
+        {
+          "name": "café",
+          "r_typeof": "character",
+          "r_class": [],
+          "stored": {
+            "phys": "character",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "string",
+          "n": 5,
+          "nulls": 1,
+          "md5": "de8fb30ac6163fb11e2f8b0128ab460d",
+          "values": [
+            "café",
+            "日本",
+            null,
+            "Ωmega",
+            "plain"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 5,
+              "nulls": 1,
+              "codec": "zstd",
+              "kind": "string",
+              "na": "bitmap",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": false
+        },
+        {
+          "name": "日本",
+          "r_typeof": "integer",
+          "r_class": [
+            "factor"
+          ],
+          "stored": {
+            "phys": "integer",
+            "logical": "factor",
+            "tzone_present": false,
+            "blob": "none",
+            "ordered": false,
+            "levels": [
+              "naïve",
+              "über"
+            ]
+          },
+          "arrow_type": "dictionary<values=string, indices=int32, ordered=0>",
+          "n": 5,
+          "nulls": 1,
+          "md5": "7d259f6b168e6af7f1a2c9c71c252e4f",
+          "codes": [
+            2,
+            1,
+            2,
+            null,
+            1
+          ],
+          "levels": [
+            "naïve",
+            "über"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 5,
+              "nulls": 1,
+              "codec": "zstd",
+              "kind": "int",
+              "na": "bitmap",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": false
+        },
+        {
+          "name": "Ω",
+          "r_typeof": "integer",
+          "r_class": [],
+          "stored": {
+            "phys": "integer",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "int32",
+          "n": 5,
+          "nulls": 0,
+          "md5": "fe054ad2e7b98bee673f9ff22d50f00c",
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 5,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "int",
+              "na": "none",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": false
+        }
+      ]
+    },
+    {
+      "file": "appended.fstx",
+      "md5_file": "42f4ee6490a3d2ca1bb1556b376ca29e",
+      "expect": "read",
+      "nrow": 180,
+      "ncol": 3,
+      "profile": "balanced",
+      "row_groups": 3,
+      "file_bytes": 4792,
+      "table": {
+        "class": [
+          "data.frame"
+        ],
+        "blob": "FXA1",
+        "row_names": "automatic",
+        "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+      },
+      "columns": [
+        {
+          "name": "id",
+          "r_typeof": "integer",
+          "r_class": [],
+          "stored": {
+            "phys": "integer",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "int32",
+          "n": 180,
+          "nulls": 0,
+          "md5": "3393e565eda54e5fb40131d69d966454",
+          "values": [
+            101,
+            102,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            110,
+            111,
+            112
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "int",
+              "na": "none",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "int",
+              "na": "none",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "int",
+              "na": "none",
+              "encoding": "delta"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "v",
+          "r_typeof": "double",
+          "r_class": [],
+          "stored": {
+            "phys": "double",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "double",
+          "n": 180,
+          "nulls": 0,
+          "md5": "866b2db49398f8730bdb545c8c4dfec3",
+          "values": [
+            0.17000000000000001,
+            0.81000000000000005,
+            0.38,
+            0.33000000000000002,
+            0.59999999999999998,
+            0.59999999999999998,
+            0.12,
+            0.28999999999999998,
+            0.57999999999999996,
+            0.63,
+            0.51000000000000001,
+            0.51000000000000001
+          ],
+          "bits": [
+            "3fc5c28f5c28f5c3",
+            "3fe9eb851eb851ec",
+            "3fd851eb851eb852",
+            "3fd51eb851eb851f",
+            "3fe3333333333333",
+            "3fe3333333333333",
+            "3fbeb851eb851eb8",
+            "3fd28f5c28f5c28f",
+            "3fe28f5c28f5c28f",
+            "3fe428f5c28f5c29",
+            "3fe051eb851eb852",
+            "3fe051eb851eb852"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "s",
+          "r_typeof": "character",
+          "r_class": [],
+          "stored": {
+            "phys": "character",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "string",
+          "n": 180,
+          "nulls": 40,
+          "md5": "ea12f53289dd98ef72a1462c84ef4b7a",
+          "values": [
+            "x",
+            null,
+            "zz",
+            "y",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "y",
+            null,
+            "y"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": true,
+              "rows": 3,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 14,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": true,
+              "rows": 3,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 18,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 3,
+              "dictionary": true,
+              "rows": 3,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 8,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": true
+        }
+      ]
+    },
+    {
+      "file": "compacted.fstx",
+      "md5_file": "79cacc2df8fc80cd1cb3966ab84a5391",
+      "expect": "read",
+      "nrow": 180,
+      "ncol": 3,
+      "profile": "balanced",
+      "row_groups": 3,
+      "file_bytes": 3128,
+      "table": {
+        "class": [
+          "data.frame"
+        ],
+        "blob": "FXA1",
+        "row_names": "automatic",
+        "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+      },
+      "columns": [
+        {
+          "name": "id",
+          "r_typeof": "integer",
+          "r_class": [],
+          "stored": {
+            "phys": "integer",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "int32",
+          "n": 180,
+          "nulls": 0,
+          "md5": "3393e565eda54e5fb40131d69d966454",
+          "values": [
+            101,
+            102,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            110,
+            111,
+            112
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "int",
+              "na": "none",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "int",
+              "na": "none",
+              "encoding": "delta"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "int",
+              "na": "none",
+              "encoding": "delta"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "v",
+          "r_typeof": "double",
+          "r_class": [],
+          "stored": {
+            "phys": "double",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "double",
+          "n": 180,
+          "nulls": 0,
+          "md5": "866b2db49398f8730bdb545c8c4dfec3",
+          "values": [
+            0.17000000000000001,
+            0.81000000000000005,
+            0.38,
+            0.33000000000000002,
+            0.59999999999999998,
+            0.59999999999999998,
+            0.12,
+            0.28999999999999998,
+            0.57999999999999996,
+            0.63,
+            0.51000000000000001,
+            0.51000000000000001
+          ],
+          "bits": [
+            "3fc5c28f5c28f5c3",
+            "3fe9eb851eb851ec",
+            "3fd851eb851eb852",
+            "3fd51eb851eb851f",
+            "3fe3333333333333",
+            "3fe3333333333333",
+            "3fbeb851eb851eb8",
+            "3fd28f5c28f5c28f",
+            "3fe28f5c28f5c28f",
+            "3fe428f5c28f5c29",
+            "3fe051eb851eb852",
+            "3fe051eb851eb852"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "double",
+              "na": "none",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": true
+        },
+        {
+          "name": "s",
+          "r_typeof": "character",
+          "r_class": [],
+          "stored": {
+            "phys": "character",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "string",
+          "n": 180,
+          "nulls": 40,
+          "md5": "ea12f53289dd98ef72a1462c84ef4b7a",
+          "values": [
+            "x",
+            null,
+            "zz",
+            "y",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "y",
+            null,
+            "y"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": true,
+              "rows": 3,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 14,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": true,
+              "rows": 3,
+              "nulls": 0,
+              "codec": "zstd",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 2,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 18,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 3,
+              "dictionary": true,
+              "rows": 3,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "dictionary",
+              "na": "none",
+              "encoding": "plain"
+            },
+            {
+              "row_group": 3,
+              "dictionary": false,
+              "rows": 60,
+              "nulls": 8,
+              "codec": "zstd",
+              "kind": "codes",
+              "na": "bitmap",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": true
+        }
+      ]
+    },
+    {
+      "file": "reserved_version4.fstx",
+      "md5_file": "606ff2c7dcfaa9fffec5659fa805d7fd",
+      "expect": "refuse",
+      "message_regex": "format version 4; this reader supports up to 3\\. Update fstx"
+    },
+    {
+      "file": "reserved_phys4.fstx",
+      "md5_file": "4f5bb3e6e26d52e1800f1863920ee108",
+      "expect": "refuse",
+      "message_regex": "64-bit integer columns \\(column 'id', type 4\\)"
+    },
+    {
+      "file": "reserved_phys5.fstx",
+      "md5_file": "7e5f3a66d3d4d6a4de77b6bf4f7343b6",
+      "expect": "refuse",
+      "message_regex": "binary columns \\(column 'id', type 5\\)"
+    },
+    {
+      "file": "reserved_phys6.fstx",
+      "md5_file": "73fea0a1648d14962311bebfb5d8f659",
+      "expect": "refuse",
+      "message_regex": "column type 6 \\(column 'id'\\)"
+    },
+    {
+      "file": "reserved_logical4.fstx",
+      "md5_file": "d69f8fae103cd537e522310a69b15107",
+      "expect": "refuse",
+      "message_regex": "logical type 4 \\(column 'id'\\)"
+    },
+    {
+      "file": "reserved_codec3.fstx",
+      "md5_file": "5952e0c7c860d8d4a4779d960fea5a63",
+      "expect": "refuse",
+      "message_regex": "codec 'zstd with a dictionary' \\(codec 3"
+    },
+    {
+      "file": "reserved_codec4.fstx",
+      "md5_file": "ac60f158bd598872881818fc651d92d0",
+      "expect": "refuse",
+      "message_regex": "codec 'Pcodec' \\(codec 4"
+    },
+    {
+      "file": "reserved_codec5.fstx",
+      "md5_file": "663e678db1e504e8fc7984dab10ae48c",
+      "expect": "refuse",
+      "message_regex": "uses codec 5 \\(column 'id'\\)"
+    },
+    {
+      "file": "reserved_codec128.fstx",
+      "md5_file": "e5f9de252c570d157681e1c2315fc627",
+      "expect": "refuse",
+      "message_regex": "experimental codec 128"
+    },
+    {
+      "file": "reserved_kind7.fstx",
+      "md5_file": "e824934eb6c221ee2e5c8ccc839dd2ad",
+      "expect": "refuse",
+      "message_regex": "page kind 7 \\(column 'id'\\)"
+    },
+    {
+      "file": "reserved_na3.fstx",
+      "md5_file": "b42745feb05426eb2ae1d885c9d42275",
+      "expect": "refuse",
+      "message_regex": "missing-value mode 3 \\(column 'id'\\)"
+    },
+    {
+      "file": "reserved_tag11.fstx",
+      "md5_file": "a66207dc38572a327e9cee188c3498ab",
+      "expect": "refuse",
+      "message_regex": "encoding 11 \\(column 'id'\\)"
+    },
+    {
+      "file": "reserved_hdrbit3.fstx",
+      "md5_file": "5f34ab8a1d55c84a39191a96102bc2db",
+      "expect": "refuse",
+      "message_regex": "feature bit 3, which this fstx .* cannot read\\. Update fstx"
+    },
+    {
+      "file": "reserved_int64.fstx",
+      "md5_file": "7b2342b9aadbf8a6a31c98d828e388b1",
+      "expect": "refuse",
+      "message_regex": "'int64' \\(bit 16\\).*Update fstx"
+    },
+    {
+      "file": "reserved_binary.fstx",
+      "md5_file": "b5328316435c760b78e74729e832367c",
+      "expect": "refuse",
+      "message_regex": "'binary' \\(bit 17\\).*Update fstx"
+    },
+    {
+      "file": "reserved_zstd_dict.fstx",
+      "md5_file": "5ff63b09ef5bf912ced4da5ea3b528a6",
+      "expect": "refuse",
+      "message_regex": "'zstd_dict' \\(bit 18\\).*Update fstx"
+    },
+    {
+      "file": "reserved_pcodec.fstx",
+      "md5_file": "df1a33dd3acfa1cc7ec0c8515afe6ea1",
+      "expect": "refuse",
+      "message_regex": "'pcodec' \\(bit 19\\).*Update fstx"
+    },
+    {
+      "file": "reserved_experimental.fstx",
+      "md5_file": "364ced81b9af4a7029a7b5075c532b68",
+      "expect": "refuse",
+      "message_regex": "'experimental' \\(bit 63\\).*Update fstx"
+    },
+    {
+      "file": "reserved_named40.fstx",
+      "md5_file": "524f4c78a1977f815a46162d7e0fd6a9",
+      "expect": "refuse",
+      "message_regex": "'future_thing' \\(bit 40\\).*Update fstx"
+    },
+    {
+      "file": "reserved_optional50.fstx",
+      "md5_file": "bb4e0522f0d8e3b989dae97e1181f9ad",
+      "expect": "read",
+      "nrow": 3,
+      "ncol": 3,
+      "profile": "balanced",
+      "row_groups": 1,
+      "file_bytes": 848,
+      "table": {
+        "class": [
+          "data.frame"
+        ],
+        "blob": "FXA1",
+        "row_names": "automatic",
+        "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+      },
+      "columns": [
+        {
+          "name": "id",
+          "r_typeof": "integer",
+          "r_class": [],
+          "stored": {
+            "phys": "integer",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "int32",
+          "n": 3,
+          "nulls": 0,
+          "md5": "2a1dd1e1e59d0a384c26951e316cd7e6",
+          "values": [
+            1,
+            2,
+            3
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 3,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "int",
+              "na": "none",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": false
+        },
+        {
+          "name": "v",
+          "r_typeof": "double",
+          "r_class": [],
+          "stored": {
+            "phys": "double",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "double",
+          "n": 3,
+          "nulls": 0,
+          "md5": "194d8e168a0316c25401ec16df067e98",
+          "values": [
+            0.5,
+            1,
+            1.5
+          ],
+          "bits": [
+            "3fe0000000000000",
+            "3ff0000000000000",
+            "3ff8000000000000"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 3,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "double",
+              "na": "none",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": false
+        },
+        {
+          "name": "s",
+          "r_typeof": "character",
+          "r_class": [],
+          "stored": {
+            "phys": "character",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "string",
+          "n": 3,
+          "nulls": 0,
+          "md5": "3f8eb389bdaa238707027972983d421b",
+          "values": [
+            "a",
+            "b",
+            "c"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 3,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "string",
+              "na": "none",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": false
+        }
+      ]
+    },
+    {
+      "file": "reserved_profile3.fstx",
+      "md5_file": "dbda4988ddf9b453ce9ed8c8b973698f",
+      "expect": "read",
+      "nrow": 3,
+      "ncol": 3,
+      "profile": "unknown",
+      "row_groups": 1,
+      "file_bytes": 808,
+      "table": {
+        "class": [
+          "data.frame"
+        ],
+        "blob": "FXA1",
+        "row_names": "automatic",
+        "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+      },
+      "columns": [
+        {
+          "name": "id",
+          "r_typeof": "integer",
+          "r_class": [],
+          "stored": {
+            "phys": "integer",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "int32",
+          "n": 3,
+          "nulls": 0,
+          "md5": "2a1dd1e1e59d0a384c26951e316cd7e6",
+          "values": [
+            1,
+            2,
+            3
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 3,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "int",
+              "na": "none",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": false
+        },
+        {
+          "name": "v",
+          "r_typeof": "double",
+          "r_class": [],
+          "stored": {
+            "phys": "double",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "double",
+          "n": 3,
+          "nulls": 0,
+          "md5": "194d8e168a0316c25401ec16df067e98",
+          "values": [
+            0.5,
+            1,
+            1.5
+          ],
+          "bits": [
+            "3fe0000000000000",
+            "3ff0000000000000",
+            "3ff8000000000000"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 3,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "double",
+              "na": "none",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": false
+        },
+        {
+          "name": "s",
+          "r_typeof": "character",
+          "r_class": [],
+          "stored": {
+            "phys": "character",
+            "logical": "none",
+            "tzone_present": false,
+            "blob": "none"
+          },
+          "arrow_type": "string",
+          "n": 3,
+          "nulls": 0,
+          "md5": "3f8eb389bdaa238707027972983d421b",
+          "values": [
+            "a",
+            "b",
+            "c"
+          ],
+          "pages": [
+            {
+              "row_group": 1,
+              "dictionary": false,
+              "rows": 3,
+              "nulls": 0,
+              "codec": "none",
+              "kind": "string",
+              "na": "none",
+              "encoding": "plain"
+            }
+          ],
+          "values_truncated": false
+        }
+      ]
+    }
+  ]
+}
