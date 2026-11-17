@@ -1,0 +1,265 @@
+{
+  "file": "factors.fstx",
+  "about": "factor with NA codes, with unused levels (kept), ordered factor, one level, Indian-script levels in a non-sorted order",
+  "fstx": "1.0.0",
+  "write_args": [],
+  "nrow": 6,
+  "ncol": 5,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 1448,
+  "table": {
+    "class": [
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+  },
+  "columns": [
+    {
+      "name": "plain",
+      "r_typeof": "integer",
+      "r_class": [
+        "factor"
+      ],
+      "stored": {
+        "phys": "integer",
+        "logical": "factor",
+        "tzone_present": false,
+        "blob": "none",
+        "ordered": false,
+        "levels": [
+          "a",
+          "b",
+          "c"
+        ]
+      },
+      "arrow_type": "dictionary<values=string, indices=int32, ordered=0>",
+      "n": 6,
+      "nulls": 1,
+      "md5": "2edbf5d51be0d604afa456f59bf55b8b",
+      "codes": [
+        2,
+        1,
+        null,
+        3,
+        1,
+        2
+      ],
+      "levels": [
+        "a",
+        "b",
+        "c"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 6,
+          "nulls": 1,
+          "codec": "none",
+          "kind": "int",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "unused",
+      "r_typeof": "integer",
+      "r_class": [
+        "factor"
+      ],
+      "stored": {
+        "phys": "integer",
+        "logical": "factor",
+        "tzone_present": false,
+        "blob": "none",
+        "ordered": false,
+        "levels": [
+          "w",
+          "x",
+          "y",
+          "z"
+        ]
+      },
+      "arrow_type": "dictionary<values=string, indices=int32, ordered=0>",
+      "n": 6,
+      "nulls": 1,
+      "md5": "5654dd6cb262da1987a31cb3761b2de2",
+      "codes": [
+        2,
+        2,
+        4,
+        null,
+        2,
+        4
+      ],
+      "levels": [
+        "w",
+        "x",
+        "y",
+        "z"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 6,
+          "nulls": 1,
+          "codec": "none",
+          "kind": "int",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "ord",
+      "r_typeof": "integer",
+      "r_class": [
+        "ordered",
+        "factor"
+      ],
+      "stored": {
+        "phys": "integer",
+        "logical": "factor",
+        "tzone_present": false,
+        "blob": "none",
+        "ordered": true,
+        "levels": [
+          "lo",
+          "mid",
+          "hi"
+        ]
+      },
+      "arrow_type": "dictionary<values=string, indices=int32, ordered=1>",
+      "n": 6,
+      "nulls": 1,
+      "md5": "50872eb3796d2b6b833e01ee9ccc8a15",
+      "codes": [
+        1,
+        3,
+        2,
+        null,
+        3,
+        1
+      ],
+      "levels": [
+        "lo",
+        "mid",
+        "hi"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 6,
+          "nulls": 1,
+          "codec": "none",
+          "kind": "int",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "one",
+      "r_typeof": "integer",
+      "r_class": [
+        "factor"
+      ],
+      "stored": {
+        "phys": "integer",
+        "logical": "factor",
+        "tzone_present": false,
+        "blob": "none",
+        "ordered": false,
+        "levels": [
+          "only"
+        ]
+      },
+      "arrow_type": "dictionary<values=string, indices=int32, ordered=0>",
+      "n": 6,
+      "nulls": 0,
+      "md5": "1e38bf89f774850e18d22d63ac74e5a1",
+      "codes": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "levels": [
+        "only"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 6,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "int",
+          "na": "none",
+          "encoding": "const"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "indic",
+      "r_typeof": "integer",
+      "r_class": [
+        "factor"
+      ],
+      "stored": {
+        "phys": "integer",
+        "logical": "factor",
+        "tzone_present": false,
+        "blob": "none",
+        "ordered": false,
+        "levels": [
+          "পূর্ব",
+          "தெற்கு",
+          "उत्तर"
+        ]
+      },
+      "arrow_type": "dictionary<values=string, indices=int32, ordered=0>",
+      "n": 6,
+      "nulls": 0,
+      "md5": "014cf403913c84e4aef4a0d1f614f0bd",
+      "codes": [
+        3,
+        2,
+        1,
+        3,
+        2,
+        1
+      ],
+      "levels": [
+        "পূর্ব",
+        "தெற்கு",
+        "उत्तर"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 6,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "int",
+          "na": "none",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    }
+  ]
+}

@@ -1,0 +1,121 @@
+{
+  "file": "dates.fstx",
+  "about": "Date stored as double (as.Date) and as integer, from year 1 to 9999, NA",
+  "fstx": "1.0.0",
+  "write_args": [],
+  "nrow": 6,
+  "ncol": 2,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 720,
+  "table": {
+    "class": [
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+  },
+  "columns": [
+    {
+      "name": "dbl",
+      "r_typeof": "double",
+      "r_class": [
+        "Date"
+      ],
+      "stored": {
+        "phys": "double",
+        "logical": "Date",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "date32[day]",
+      "n": 6,
+      "nulls": 1,
+      "md5": "cc7351563debda429a9f2ab5ac9caf5f",
+      "days": [
+        0,
+        20774,
+        -8175,
+        -719162,
+        2932896,
+        null
+      ],
+      "bits": [
+        "0000000000000000",
+        "40d4498000000000",
+        "c0bfef0000000000",
+        "c125f27400000000",
+        "4146605000000000",
+        "7ff00000000007a2"
+      ],
+      "date32": [
+        0,
+        20774,
+        -8175,
+        -719162,
+        2932896,
+        null
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 6,
+          "nulls": 1,
+          "codec": "zstd",
+          "kind": "double",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "int",
+      "r_typeof": "integer",
+      "r_class": [
+        "Date"
+      ],
+      "stored": {
+        "phys": "integer",
+        "logical": "Date",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "date32[day]",
+      "n": 6,
+      "nulls": 1,
+      "md5": "907a1126d251d31fa82054a65caadc58",
+      "days": [
+        0,
+        20774,
+        -8175,
+        -719162,
+        2932896,
+        null
+      ],
+      "date32": [
+        0,
+        20774,
+        -8175,
+        -719162,
+        2932896,
+        null
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 6,
+          "nulls": 1,
+          "codec": "none",
+          "kind": "int",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    }
+  ]
+}

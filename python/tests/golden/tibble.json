@@ -1,0 +1,99 @@
+{
+  "file": "tibble.fstx",
+  "about": "tibble class (tbl_df, tbl, data.frame)",
+  "fstx": "1.0.0",
+  "write_args": [],
+  "nrow": 3,
+  "ncol": 2,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 792,
+  "table": {
+    "class": [
+      "tbl_df",
+      "tbl",
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010100000005000000636c617373040000000300000006000000030000000a00000074626c5f646674626c646174612e6672616d6500000000"
+  },
+  "columns": [
+    {
+      "name": "a",
+      "r_typeof": "integer",
+      "r_class": [],
+      "stored": {
+        "phys": "integer",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "int32",
+      "n": 3,
+      "nulls": 0,
+      "md5": "2a1dd1e1e59d0a384c26951e316cd7e6",
+      "values": [
+        1,
+        2,
+        3
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 3,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "int",
+          "na": "none",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "b",
+      "r_typeof": "character",
+      "r_class": [],
+      "stored": {
+        "phys": "character",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "string",
+      "n": 3,
+      "nulls": 1,
+      "md5": "587b02b65acb5957ebad8ac3b8b66e25",
+      "values": [
+        "x",
+        "y",
+        null
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": true,
+          "rows": 2,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "dictionary",
+          "na": "none",
+          "encoding": "plain"
+        },
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 3,
+          "nulls": 1,
+          "codec": "none",
+          "kind": "codes",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    }
+  ]
+}

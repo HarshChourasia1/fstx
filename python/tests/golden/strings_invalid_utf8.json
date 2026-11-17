@@ -1,0 +1,63 @@
+{
+  "file": "strings_invalid_utf8.fstx",
+  "about": "strings that are not valid UTF-8 (allowed by spec 9 rule 7; sidecar gives their bytes in hex)",
+  "fstx": "1.0.0",
+  "write_args": [],
+  "nrow": 5,
+  "ncol": 1,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 536,
+  "table": {
+    "class": [
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+  },
+  "columns": [
+    {
+      "name": "s",
+      "r_typeof": "character",
+      "r_class": [],
+      "stored": {
+        "phys": "character",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "string",
+      "n": 5,
+      "nulls": 1,
+      "md5": "f56d02f312e24caf8c5aaf6be064bd97",
+      "values": [
+        "ok",
+        null,
+        null,
+        "café",
+        null
+      ],
+      "hex": [
+        "6f6b",
+        "626164ff62797465",
+        "e0a4",
+        "636166c3a9",
+        null
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 5,
+          "nulls": 1,
+          "codec": "zstd",
+          "kind": "string",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    }
+  ]
+}

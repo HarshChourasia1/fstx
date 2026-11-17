@@ -1,0 +1,126 @@
+{
+  "file": "strings_indic.fstx",
+  "about": "Hindi, Marathi, Bengali, Tamil, Telugu, Kannada, Malayalam, Gujarati, Punjabi, Odia, Urdu, a ZWJ conjunct, the rupee sign, a 4-byte character; factor levels and a column name in Indian scripts",
+  "fstx": "1.0.0",
+  "write_args": [],
+  "nrow": 16,
+  "ncol": 2,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 1008,
+  "table": {
+    "class": [
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+  },
+  "columns": [
+    {
+      "name": "text",
+      "r_typeof": "character",
+      "r_class": [],
+      "stored": {
+        "phys": "character",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "string",
+      "n": 16,
+      "nulls": 1,
+      "md5": "762c354be9f0e077ff01ca0807bfd2c8",
+      "values": [
+        "नमस्ते दुनिया",
+        "महाराष्ट्र",
+        "নমস্কার",
+        "வணக்கம்",
+        "నమస్కారం",
+        "ನಮಸ್ಕಾರ",
+        "നമസ്കാരം",
+        "નમસ્તે",
+        "ਸਤ ਸ੍ਰੀ ਅਕਾਲ",
+        "ନମସ୍କାର",
+        "السلام علیکم",
+        "क्‍ष",
+        "₹ 1,23,456.78",
+        "𠮟",
+        null,
+        ""
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 16,
+          "nulls": 1,
+          "codec": "zstd",
+          "kind": "string",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "शहर",
+      "r_typeof": "integer",
+      "r_class": [
+        "factor"
+      ],
+      "stored": {
+        "phys": "integer",
+        "logical": "factor",
+        "tzone_present": false,
+        "blob": "none",
+        "ordered": false,
+        "levels": [
+          "उत्तर",
+          "தெற்கு",
+          "পূর্ব"
+        ]
+      },
+      "arrow_type": "dictionary<values=string, indices=int32, ordered=0>",
+      "n": 16,
+      "nulls": 4,
+      "md5": "e91a8e05925cef3a5a3937b17b34f646",
+      "codes": [
+        1,
+        2,
+        3,
+        null,
+        1,
+        2,
+        3,
+        null,
+        1,
+        2,
+        3,
+        null,
+        1,
+        2,
+        3,
+        null
+      ],
+      "levels": [
+        "उत्तर",
+        "தெற்கு",
+        "পূর্ব"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 16,
+          "nulls": 4,
+          "codec": "zstd",
+          "kind": "int",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    }
+  ]
+}

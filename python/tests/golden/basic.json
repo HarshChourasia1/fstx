@@ -1,0 +1,231 @@
+{
+  "file": "basic.fstx",
+  "about": "logical, integer (INT_MAX, -INT_MAX, NA), double (NA, NaN, quiet NA = NA_real_ + 1, -0, Inf, -Inf, subnormal, max), character (\"\", NA, control characters)",
+  "fstx": "1.0.0",
+  "write_args": [],
+  "nrow": 8,
+  "ncol": 5,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 1352,
+  "table": {
+    "class": [
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+  },
+  "columns": [
+    {
+      "name": "lgl",
+      "r_typeof": "logical",
+      "r_class": [],
+      "stored": {
+        "phys": "logical",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "bool",
+      "n": 8,
+      "nulls": 2,
+      "md5": "90b0de52d6b99879b5dfe58fc0377fb4",
+      "values": [
+        true,
+        false,
+        null,
+        true,
+        false,
+        null,
+        true,
+        true
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 8,
+          "nulls": 2,
+          "codec": "zstd",
+          "kind": "logical",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "int",
+      "r_typeof": "integer",
+      "r_class": [],
+      "stored": {
+        "phys": "integer",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "int32",
+      "n": 8,
+      "nulls": 1,
+      "md5": "bfc30d278d75fc528bbca40b8fa7489f",
+      "values": [
+        0,
+        1,
+        -1,
+        2147483647,
+        -2147483647,
+        null,
+        42,
+        7
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 8,
+          "nulls": 1,
+          "codec": "zstd",
+          "kind": "int",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "dbl",
+      "r_typeof": "double",
+      "r_class": [],
+      "stored": {
+        "phys": "double",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "double",
+      "n": 8,
+      "nulls": 2,
+      "md5": "a39c09c419e3feacdadcf8484abbd113",
+      "values": [
+        0.10000000000000001,
+        null,
+        "NaN",
+        null,
+        "-0",
+        "Inf",
+        "-Inf",
+        4.9406564584124654e-324
+      ],
+      "bits": [
+        "3fb999999999999a",
+        "7ff00000000007a2",
+        "7ff8000000000000",
+        "7ff80000000007a2",
+        "8000000000000000",
+        "7ff0000000000000",
+        "fff0000000000000",
+        "0000000000000001"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 8,
+          "nulls": 2,
+          "codec": "zstd",
+          "kind": "double",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "dbl2",
+      "r_typeof": "double",
+      "r_class": [],
+      "stored": {
+        "phys": "double",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "double",
+      "n": 8,
+      "nulls": 0,
+      "md5": "df9af8e59c4fc6a025e7552621ab6551",
+      "values": [
+        1.7976931348623157e+308,
+        -2.5,
+        1e-300,
+        3,
+        0.33333333333333331,
+        123456.789,
+        -1000000000000000,
+        9007199254740994
+      ],
+      "bits": [
+        "7fefffffffffffff",
+        "c004000000000000",
+        "01a56e1fc2f8f359",
+        "4008000000000000",
+        "3fd5555555555555",
+        "40fe240c9fbe76c9",
+        "c30c6bf526340000",
+        "4340000000000001"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 8,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "double",
+          "na": "none",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    },
+    {
+      "name": "chr",
+      "r_typeof": "character",
+      "r_class": [],
+      "stored": {
+        "phys": "character",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "string",
+      "n": 8,
+      "nulls": 1,
+      "md5": "b61e202c3693b89fc8dd7e460eeccba4",
+      "values": [
+        "a",
+        "",
+        null,
+        "tab\there",
+        "line\nbreak",
+        "quote\"s",
+        "back\\slash",
+        "spaces  "
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 8,
+          "nulls": 1,
+          "codec": "zstd",
+          "kind": "string",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "file": "strings_long.fstx",
+  "about": "strings over 64 KB and over 2,000 bytes (given in the sidecar as byte count and md5)",
+  "fstx": "1.0.0",
+  "write_args": [],
+  "nrow": 5,
+  "ncol": 1,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 536,
+  "table": {
+    "class": [
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+  },
+  "columns": [
+    {
+      "name": "s",
+      "r_typeof": "character",
+      "r_class": [],
+      "stored": {
+        "phys": "character",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "string",
+      "n": 5,
+      "nulls": 1,
+      "md5": "edd829d0b1620d89f5d6c239d22863cf",
+      "values": [
+        {
+          "bytes": 70000,
+          "md5": "f91a28da786c611817111cec85a66344"
+        },
+        {
+          "bytes": 11400,
+          "md5": "a793b01d22a4fec54c2321021bbb311e"
+        },
+        "",
+        null,
+        "short"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 5,
+          "nulls": 1,
+          "codec": "zstd",
+          "kind": "string",
+          "na": "bitmap",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    }
+  ]
+}

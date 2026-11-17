@@ -1,0 +1,67 @@
+{
+  "file": "attrs_serialized.fstx",
+  "about": "list-valued column and table attributes: stored with R serialize() (Python cannot decode them; it keeps the bytes)",
+  "fstx": "1.0.0",
+  "write_args": [],
+  "nrow": 3,
+  "ncol": 1,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 800,
+  "table": {
+    "class": [
+      "data.frame"
+    ],
+    "blob": "R-serialization",
+    "row_names": "automatic",
+    "blob_hex": "420a030000000105040000050300050000005554462d3813020000020000001000000001000000090004000a000000646174612e6672616d6513020000020000000e00000001000000000000000000f03f1000000001000000090004000300000074776f020400000100000009000400050000006e616d65731000000002000000090004000100000061090004000100000062fe00000002040000ff01000010000000020000000900040005000000636c6173730900040004000000696e666ffe000000",
+    "attrs": {
+      "info": {
+        "type": "list",
+        "opaque": true
+      }
+    }
+  },
+  "columns": [
+    {
+      "name": "v",
+      "r_typeof": "integer",
+      "r_class": [],
+      "stored": {
+        "phys": "integer",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "R-serialization",
+        "blob_hex": "420a030000000105040000050300050000005554462d38130200000100000013020000020000001000000001000000090004000900000073796e7468657469630d0000000100000003000000020400000100000009000400050000006e616d657310000000020000000900040006000000736f7572636509000400010000006efe00000002040000ff010000100000000100000009000400040000006d657461fe000000"
+      },
+      "arrow_type": "int32",
+      "n": 3,
+      "nulls": 0,
+      "md5": "2a1dd1e1e59d0a384c26951e316cd7e6",
+      "values": [
+        1,
+        2,
+        3
+      ],
+      "attrs": {
+        "meta": {
+          "type": "list",
+          "opaque": true
+        }
+      },
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 3,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "int",
+          "na": "none",
+          "encoding": "plain"
+        }
+      ],
+      "values_truncated": false
+    }
+  ]
+}
