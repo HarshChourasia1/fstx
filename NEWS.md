@@ -10,6 +10,13 @@
 * Partial reads by column, row window or row list; filters that skip pages by their statistics;
   crash-safe appends and compaction.
 * `fstx_arrow_stream()` reads a file as an Arrow C stream (through 'nanoarrow') without making R strings.
+  Numeric, logical, factor and date-time columns are split into row parts across threads when a batch
+  has fewer columns than threads.
+* `options(fstx.verify_nulls = TRUE)` (off by default) checks each page's stored missing-value count
+  against its decoded values, in reads, filters and the Arrow stream, and refuses a page that disagrees
+  as corrupt.
+* Writing a file that is open in this R session is refused, also through another spelling of its path;
+  on Windows the check uses the 128-bit file id (ReFS) and falls back to the 64-bit file index.
 * The default thread count is at most 2 under R CMD check core limits (`_R_CHECK_LIMIT_CORES_`) and
   at most `OMP_THREAD_LIMIT` when that is set.
 
