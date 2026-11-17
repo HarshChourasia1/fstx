@@ -20,9 +20,11 @@ write_fstx(x, path, profile = c("balanced", "fast", "small"), compress = NULL,
     of an existing file (a missing file is simply written). Columns must match the file's in names, order,
     type and class; factor levels may grow (the file's levels first, new ones after; ordered factors need
     the same levels); POSIXct columns need the same time zone; files with stored row names cannot be
-    appended to. The profile defaults to the file's (a profile written by a later fstx: the new rows are
-    encoded as \code{"balanced"} and the file keeps its stored value). An interrupted append leaves the old
-    table readable. A file with an optional feature this fstx does not know cannot be appended to ("Update fstx to change this
+    appended to. Appending rows to a data.table drops its key and indices (the new rows may not follow
+    them; set them again with \code{setkey()} / \code{setindex()}); appending 0 rows keeps them.
+    The profile defaults to the file's (a profile written by a later fstx: the new rows are encoded as
+    \code{"balanced"} and the file keeps its stored value). An interrupted append leaves the old table readable.
+    A file with an optional feature this fstx does not know cannot be appended to ("Update fstx to change this
     file; reading works"). Appending reads the file's table and column attributes, with \code{unserialize()}
     for any stored with R's \code{serialize()} (append has no \code{attributes = FALSE} switch), so the
     trusted-source note in \code{\link{read_fstx}} applies to those files.}

@@ -14,7 +14,11 @@
     stop("write_fstx: cannot append rows with row names (remove them with rownames(x) <- NULL)", call. = FALSE)
   tab <- m$table_attrs
   ta[["row.names"]] <- NULL
-  if (!identical(ta, ta0)) tab <- .attr_encode(ta)   # row names gone, or a bad key or index dropped
+  if (.row_names_info(x, 2L) > 0L) {   # new rows can break a data.table key or index: drop both
+    ta[["sorted"]] <- NULL
+    ta[["index"]] <- NULL
+  }
+  if (!identical(ta, ta0)) tab <- .attr_encode(ta)   # row names, key or index gone, or a bad one dropped
   proto <- read_fstx(path, from = 1, to = 0, threads = 1L)
   fn <- names(proto)
   xn <- names(x)

@@ -328,3 +328,33 @@ test_that("fuzz: nested and string-heavy attribute lists round trip; damaged one
   many <- list(class = "data.frame", row.names = c(sprintf("r%05d", 1:20000), NA, ""), s = strrep("é", 1e5))
   expect_identical(dec(fstx:::.attr_encode(many)), many)
 })
+
+test_that("appending rows to a data.table drops its key and index (0 rows keeps them); data.table answers stay right", {
+  skip_if_not_installed("data.table")
+  dt <- data.table::data.table(k = c(1L, 3L, 5L, 7L), g = c("b", "a", "b", "c"), v = c(10, 30, 50, 70))
+  data.table::setkeyv(dt, "k")
+  data.table::setindexv(dt, "g")
+  p <- tempfile(fileext = ".fstx")
+  on.exit(unlink(p))
+  write_fstx(dt, p, threads = 1L)
+  add <- data.table::data.table(k = c(2L, 0L), g = c("a", "d"), v = c(20, 0))   # breaks the order of k and g
+  write_fstx(data.table::data.table(k = integer(0), g = character(0), v = numeric(0)), p, threads = 1L, append = TRUE)
+  y0 <- read_fstx(p)
+  expect_identical(data.table::key(y0), "k")
+  expect_identical(data.table::indices(y0), "g")
+  write_fstx(add, p, threads = 1L, append = TRUE)
+  expect_identical(blobs_of(p)$table, "fxa")
+  y <- read_fstx(p)
+  expect_null(data.table::key(y))
+  expect_null(data.table::indices(y))
+  want <- data.table::data.table(k = c(1L, 3L, 5L, 7L, 2L, 0L), g = c("b", "a", "b", "c", "a", "d"),
+                                 v = c(10, 30, 50, 70, 20, 0))
+  expect_equal(y, want)
+  expect_identical(class(y), class(want))
+  # data.table's own subset and join, run where data.table syntax is enabled (the global environment)
+  e <- new.env(parent = globalenv())
+  e$y <- y
+  r <- evalq(list(eq = y[k == 2L, v], idx = y[g == "a", k], on = y[data.table::data.table(k = c(0L, 2L, 7L)), on = "k"]$v,
+                  keyed = { data.table::setkeyv(y, "k"); y[list(2L), v] }, keyed_g = y[g == "b", k]), e)
+  expect_identical(r, list(eq = 20, idx = c(3L, 2L), on = c(0, 20, 70), keyed = 20, keyed_g = c(1L, 5L)))
+})

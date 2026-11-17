@@ -607,6 +607,11 @@ between, and follow the layout rules of section 1 from there.
 A new factor level may be added by an append only after the file's levels (the file's levels must be the
 first levels of the new rows' factor).
 
+The new footer keeps the file's table attributes (section 9.4), except that stored row names are removed and,
+when the append adds at least one row, so are a data.table key (`sorted`) and `index`, which the new rows may
+not follow. When anything is removed the blob is encoded again (FXA1 when it can hold it); otherwise its bytes
+are kept.
+
 Page-copy compaction (`fstx_compact()`) copies every page's stored bytes unchanged, checksum checked, into a
 fresh file: per row group, per column, the dictionary page first, then the data pages.
 
