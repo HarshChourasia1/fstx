@@ -3,7 +3,7 @@ Type: Package
 Title: Fast, Safe Column-Store Files for R Data Frames
 Version: 1.0.0
 Authors@R: c(
-    person("Harsh", "Chourasia", role = c("aut", "cre"), email = "fstx-maintainer@example.invalid"),
+    person("Harsh", "Chourasia", role = c("aut", "cre"), email = "31harshchourasia@gmail.com"),
     person("Meta Platforms, Inc. and affiliates", role = "cph", comment = "bundled 'Zstandard' library"),
     person("Yann Collet", role = "cph", comment = "bundled 'LZ4' and 'xxHash' libraries"),
     person("Google Inc.", role = "cph", comment = "bundled 'FlatBuffers' runtime headers"),
@@ -23,6 +23,8 @@ Description: Reads and writes data frames in a column-store file format built
     statistics, crash-safe appends and compaction. The file format (fstx
     format 1.0) is written down in a specification shipped with the package.
 License: MIT + file LICENSE
+URL: https://github.com/HarshChourasia1/fstx
+BugReports: https://github.com/HarshChourasia1/fstx/issues
 Encoding: UTF-8
 Depends: R (>= 4.4.0)
 LinkingTo: cpp11
