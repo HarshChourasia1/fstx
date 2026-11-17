@@ -80,6 +80,28 @@ test_that("writing to a lazily mapped path gives a clear error, other paths are 
   expect_silent(write_fstx(x, p))
 })
 
+test_that("the open-file check knows the file by its id, not its name (hard link, other spelling, copy)", {
+  x <- make_df(100)
+  p <- tempfile(fileext = ".fstx")
+  q <- tempfile(fileext = ".fstx")
+  h <- tempfile(fileext = ".fstx")
+  on.exit(unlink(c(p, q, h)), add = TRUE)
+  write_fstx(x, p)
+  expect_true(file.copy(p, q))
+  z <- read_fstx(p, lazy = TRUE)
+  if (.Platform$OS.type == "windows") {                 # other spellings of the same path
+    if (grepl("/", p, fixed = TRUE))
+      expect_error(write_fstx(x, gsub("/", "\\", p, fixed = TRUE)), "open in this R session")
+    expect_error(write_fstx(x, file.path(dirname(p), toupper(basename(p)))), "open in this R session")
+  }
+  if (isTRUE(suppressWarnings(file.link(p, h))))        # same file through a second name
+    expect_error(write_fstx(x, h), "open in this R session")
+  expect_silent(write_fstx(x, q))                       # a different file with the same bytes is not refused
+  rm(z)
+  invisible(gc())
+  expect_silent(write_fstx(x, p))
+})
+
 test_that("modifying lazy columns copies them and leaves the source alone", {
   x <- make_df(5000)
   p <- tempfile(fileext = ".fstx")

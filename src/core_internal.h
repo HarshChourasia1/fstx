@@ -93,12 +93,17 @@ inline uint64_t align_up(uint64_t x) { return (x + kAlign - 1) & ~(kAlign - 1); 
 uint64_t hash64(const void* p, size_t n);
 
 // ---------------------------------------------------------------- files
-// Identity of a file on disk (volume + file index on Windows, device + inode on POSIX), so two spellings of
-// one path compare equal.
+// Identity of a file on disk, so two spellings of one path compare equal. Windows: a = volume serial (low 32
+// bits), (b, c) = the 128-bit file id (FileIdInfo; ReFS needs all 128 bits), or b = 0 and c = the 64-bit file index
+// where FileIdInfo is not available. POSIX: a = device, b = inode, c = 0. In memory only, never written to a file.
 struct FileId {
-  uint64_t a = 0, b = 0;
+  uint64_t a = 0, b = 0, c = 0;
   bool ok = false;
-  bool operator<(const FileId& o) const { return a < o.a || (a == o.a && b < o.b); }
+  bool operator<(const FileId& o) const {
+    if (a != o.a) return a < o.a;
+    if (b != o.b) return b < o.b;
+    return c < o.c;
+  }
 };
 FileId file_id_of_path(const std::string& path_utf8);  // ok = false when the file does not exist
 // Files open in this process (fstx_open .. fstx_close). The writer refuses to replace one of them.
