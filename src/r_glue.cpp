@@ -1,7 +1,9 @@
 // FST-X R layer (cpp11). The only file that sees both R and the engine.
 // R errors raised inside engine callbacks are caught with cpp11::unwind_protect, turned into an error code
 // for the engine, and re-raised only after the engine has unwound and returned, so no longjmp ever crosses
-// engine C++ frames.
+// engine C++ frames. In the entry points every R call that can raise an error while a C++ object is alive
+// (translation, ALTREP data pointers, coercion, allocation) goes through cpp11::safe, and argument types are
+// checked (cpp11::stop) before typed accessors, so an error unwinds C++ frames and runs their destructors.
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -19,8 +21,8 @@ struct PlanFree {
 using FilePtr = std::unique_ptr<fstx_file, FileCloser>;
 using PlanPtr = std::unique_ptr<fstx_plan, PlanFree>;
 
-std::string utf8_of(SEXP s) {  // s: a CHARSXP
-  return std::string(Rf_translateCharUTF8(s));
+std::string utf8_of(SEXP s) {  // s: a CHARSXP; translation can fail (bytes encoding): through cpp11::safe
+  return std::string(cpp11::safe[Rf_translateCharUTF8](s));
 }
 
 std::string path_of(SEXP path) {
@@ -94,6 +96,16 @@ int fstx_write_impl(SEXP cols, SEXP path, SEXP names, SEXP phys, SEXP logical, S
   if (Rf_xlength(names) != nc || Rf_xlength(phys) != nc || Rf_xlength(logical) != nc || Rf_xlength(ordered) != nc ||
       Rf_xlength(levels) != nc || Rf_xlength(tzone) != nc || Rf_xlength(attrs) != nc)
     cpp11::stop("fstx: internal error, column spec lengths differ");
+  if (TYPEOF(cols) != VECSXP || TYPEOF(names) != STRSXP || TYPEOF(phys) != INTSXP || TYPEOF(logical) != INTSXP ||
+      TYPEOF(ordered) != LGLSXP || TYPEOF(levels) != VECSXP || TYPEOF(tzone) != VECSXP || TYPEOF(attrs) != VECSXP ||
+      (table_attrs != R_NilValue && TYPEOF(table_attrs) != RAWSXP))
+    cpp11::stop("fstx: internal error, bad column spec");
+  for (R_xlen_t j = 0; j < nc; ++j) {
+    SEXP l = VECTOR_ELT(levels, j), t = VECTOR_ELT(tzone, j), a = VECTOR_ELT(attrs, j);
+    if ((l != R_NilValue && TYPEOF(l) != STRSXP) || (t != R_NilValue && (TYPEOF(t) != STRSXP || Rf_xlength(t) < 1)) ||
+        (a != R_NilValue && TYPEOF(a) != RAWSXP))
+      cpp11::stop("fstx: internal error, bad column spec");
+  }
   if (!(nrow >= 0)) cpp11::stop("fstx: bad row count");
   const uint64_t n = (uint64_t)nrow;
 
@@ -146,19 +158,19 @@ int fstx_write_impl(SEXP cols, SEXP path, SEXP names, SEXP phys, SEXP logical, S
     switch (TYPEOF(x)) {
       case INTSXP:
         if (d.phys != FSTX_INT32) cpp11::stop("fstx: internal type mismatch");
-        cd.data = INTEGER_RO(x);  // ALTREP sequences are expanded here, on the main thread
+        cd.data = cpp11::safe[INTEGER_RO](x);  // ALTREP vectors are expanded here (can fail), on the main thread
         break;
       case LGLSXP:
         if (d.phys != FSTX_LOGICAL) cpp11::stop("fstx: internal type mismatch");
-        cd.data = LOGICAL_RO(x);
+        cd.data = cpp11::safe[LOGICAL_RO](x);
         break;
       case REALSXP:
         if (d.phys != FSTX_FLOAT64) cpp11::stop("fstx: internal type mismatch");
-        cd.data = REAL_RO(x);
+        cd.data = cpp11::safe[REAL_RO](x);
         break;
       case STRSXP:
         if (d.phys != FSTX_STRING) cpp11::stop("fstx: internal type mismatch");
-        srcs[(size_t)j] = StrSrc{STRING_PTR_RO(x), NA_STRING, utf8_locale};
+        srcs[(size_t)j] = StrSrc{cpp11::safe[STRING_PTR_RO](x), NA_STRING, utf8_locale};
         cd.get_strings = get_strings;
         cd.ctx = &srcs[(size_t)j];
         break;
@@ -706,8 +718,10 @@ SEXP fstx_filter_impl(SEXP path, SEXP preds, double from, double to, int threads
   std::vector<std::vector<std::string>> strs((size_t)np);
   std::vector<std::vector<const char*>> sp((size_t)np);
   std::vector<std::vector<int32_t>> sl((size_t)np);
+  if (TYPEOF(preds) != VECSXP) cpp11::stop("fstx: internal error, bad filter");
   auto field = [](SEXP l, const char* nm) -> SEXP {
     SEXP names = Rf_getAttrib(l, R_NamesSymbol);
+    if (TYPEOF(l) != VECSXP || TYPEOF(names) != STRSXP) return R_NilValue;
     for (R_xlen_t i = 0; i < Rf_xlength(l); ++i)
       if (std::strcmp(CHAR(STRING_ELT(names, i)), nm) == 0) return VECTOR_ELT(l, i);
     return R_NilValue;
@@ -722,18 +736,19 @@ SEXP fstx_filter_impl(SEXP path, SEXP preds, double from, double to, int threads
     const int64_t c = fstx_find_column(f.get(), nm.data(), nm.size());
     if (c < 0) cpp11::stop("fstx: column '%s' is not in the file", nm.c_str());
     d.col = (uint32_t)c;
-    d.op = Rf_asInteger(field(q, "op"));
+    d.op = cpp11::safe[Rf_asInteger](field(q, "op"));
     SEXP v = field(q, "value");
-    d.value = v == R_NilValue ? NA_REAL : Rf_asReal(v);
-    SEXP set = field(q, "set");
+    d.value = v == R_NilValue ? NA_REAL : cpp11::safe[Rf_asReal](v);
+    SEXP set = field(q, "set"), st = field(q, "strs");
+    if ((set != R_NilValue && TYPEOF(set) != REALSXP) || (st != R_NilValue && TYPEOF(st) != STRSXP))
+      cpp11::stop("fstx: internal error, bad filter");
     if (set != R_NilValue) {
       d.set = REAL(set);
       d.n_set = (uint64_t)Rf_xlength(set);
     }
     SEXP sna = field(q, "set_na"), snan = field(q, "set_nan");
-    d.set_na = sna != R_NilValue && Rf_asLogical(sna) == TRUE;
-    d.set_nan = snan != R_NilValue && Rf_asLogical(snan) == TRUE;
-    SEXP st = field(q, "strs");
+    d.set_na = sna != R_NilValue && cpp11::safe[Rf_asLogical](sna) == TRUE;
+    d.set_nan = snan != R_NilValue && cpp11::safe[Rf_asLogical](snan) == TRUE;
     if (st != R_NilValue) {
       for (R_xlen_t k = 0; k < Rf_xlength(st); ++k) {
         SEXP e = STRING_ELT(st, k);

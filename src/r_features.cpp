@@ -11,6 +11,7 @@ namespace {
 
 SEXP arg(SEXP args, const char* name) {
   SEXP nm = Rf_getAttrib(args, R_NamesSymbol);
+  if (TYPEOF(args) != VECSXP || TYPEOF(nm) != STRSXP) return R_NilValue;
   for (R_xlen_t i = 0; i < Rf_xlength(args); ++i)
     if (nm != R_NilValue && std::string(CHAR(STRING_ELT(nm, i))) == name) return VECTOR_ELT(args, i);
   return R_NilValue;
@@ -18,13 +19,14 @@ SEXP arg(SEXP args, const char* name) {
 
 int int_arg(SEXP l, const char* name) {
   SEXP x = arg(l, name);
-  return x == R_NilValue ? -1 : Rf_asInteger(x);
+  return x == R_NilValue ? -1 : cpp11::safe[Rf_asInteger](x);  // forge() holds C++ objects: errors unwind
 }
 
 uint64_t bits_arg(SEXP l, const char* name) {  // feature bits as an integer vector of bit numbers
   SEXP x = arg(l, name);
   uint64_t r = 0;
   if (x == R_NilValue) return r;
+  if (TYPEOF(x) != INTSXP) cpp11::stop("fstx: internal error, feature bits must be integer");
   for (R_xlen_t i = 0; i < Rf_xlength(x); ++i) {
     const int b = INTEGER(x)[i];
     if (b < 0 || b > 63) cpp11::stop("fstx: feature bit out of range");
@@ -47,9 +49,12 @@ SEXP forge(SEXP f) {
   g.profile = int_arg(f, "profile");
   g.req = bits_arg(f, "required");
   g.opt = bits_arg(f, "optional");
-  SEXP nm = arg(f, "names");
+  SEXP nm = arg(f, "names"), s = arg(f, "src"), d = arg(f, "dst");
+  if ((nm != R_NilValue && TYPEOF(nm) != STRSXP) || TYPEOF(s) != STRSXP || Rf_xlength(s) < 1 || TYPEOF(d) != STRSXP ||
+      Rf_xlength(d) < 1)
+    cpp11::stop("fstx: internal error, bad forge arguments");
   for (R_xlen_t i = 0; nm != R_NilValue && i < Rf_xlength(nm); ++i) g.names.push_back(CHAR(STRING_ELT(nm, i)));
-  const std::string src = CHAR(STRING_ELT(arg(f, "src"), 0)), dst = CHAR(STRING_ELT(arg(f, "dst"), 0));
+  const std::string src = CHAR(STRING_ELT(s, 0)), dst = CHAR(STRING_ELT(d, 0));
   std::string msg;
   try {
     fstx::forge_copy(src, dst, g);

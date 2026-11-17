@@ -735,6 +735,7 @@ namespace {
 
 SEXP arg(SEXP l, const char* nm) {
   SEXP names = Rf_getAttrib(l, R_NamesSymbol);
+  if (TYPEOF(l) != VECSXP || TYPEOF(names) != STRSXP) return R_NilValue;
   for (R_xlen_t i = 0; i < Rf_xlength(l); ++i)
     if (std::strcmp(CHAR(STRING_ELT(names, i)), nm) == 0) return VECTOR_ELT(l, i);
   return R_NilValue;
@@ -755,6 +756,7 @@ ArrowArrayStream* stream_xp(SEXP xp) {
 [[cpp11::register]]
 SEXP fstx_arrow_stream_impl(SEXP args) {
   SEXP op = arg(args, "op");
+  if (op != R_NilValue && (TYPEOF(op) != STRSXP || Rf_xlength(op) != 1)) cpp11::stop("fstx: internal error, bad op");
   const std::string o = op == R_NilValue ? "" : CHAR(STRING_ELT(op, 0));
   using namespace cpp11::literals;
   if (o == "live") return cpp11::as_sexp((double)g_live.load());
@@ -799,13 +801,14 @@ SEXP fstx_arrow_stream_impl(SEXP args) {
   if (TYPEOF(path) != STRSXP || Rf_xlength(path) != 1 || TYPEOF(cols) != INTSXP || TYPEOF(names) != STRSXP ||
       Rf_xlength(names) != Rf_xlength(cols) || (rows != R_NilValue && TYPEOF(rows) != REALSXP))
     cpp11::stop("fstx: internal error, bad arguments to the Arrow stream");
-  const std::string p = Rf_translateCharUTF8(STRING_ELT(path, 0));
+  // C++ objects are alive from here on: R calls that can raise an error go through cpp11::safe
+  const std::string p = cpp11::safe[Rf_translateCharUTF8](STRING_ELT(path, 0));
   std::vector<uint32_t> ci;
   std::vector<std::string> nm;
   std::vector<const char*> np;
   for (R_xlen_t j = 0; j < Rf_xlength(cols); ++j) {
     ci.push_back((uint32_t)INTEGER(cols)[j]);
-    nm.push_back(Rf_translateCharUTF8(STRING_ELT(names, j)));
+    nm.push_back(cpp11::safe[Rf_translateCharUTF8](STRING_ELT(names, j)));
   }
   for (const std::string& s : nm) np.push_back(s.c_str());
   std::vector<uint64_t> rv;
@@ -818,15 +821,15 @@ SEXP fstx_arrow_stream_impl(SEXP args) {
   A.cols = ci.data();
   A.names = np.data();
   A.n_cols = (uint32_t)ci.size();
-  A.from = (uint64_t)Rf_asReal(arg(args, "from"));
-  A.to = (uint64_t)Rf_asReal(arg(args, "to"));
+  A.from = (uint64_t)cpp11::safe[Rf_asReal](arg(args, "from"));
+  A.to = (uint64_t)cpp11::safe[Rf_asReal](arg(args, "to"));
   A.rows = rows == R_NilValue ? nullptr : rv.data();
   A.n_rows = rv.size();
   static const uint64_t no_row = 0;
   if (rows != R_NilValue && rv.empty()) A.rows = &no_row;  // an empty selection: a stream with no batches
-  A.threads = Rf_asInteger(arg(args, "threads"));
+  A.threads = cpp11::safe[Rf_asInteger](arg(args, "threads"));
   SEXP br = arg(args, "batch_rows");
-  A.batch_rows = br == R_NilValue ? 0 : (uint64_t)Rf_asReal(br);
+  A.batch_rows = br == R_NilValue ? 0 : (uint64_t)cpp11::safe[Rf_asReal](br);
   A.verify = 1;
   fstx_error err;
   if (fstx_arrow_stream_open(p.c_str(), &A, out, &err) != FSTX_OK) cpp11::stop("fstx: %s", err.message);

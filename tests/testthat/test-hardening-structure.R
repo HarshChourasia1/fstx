@@ -350,6 +350,19 @@ test_that("a cut at every structural boundary gives an error, never a crash", {
   }
 })
 
+test_that("R errors inside the C++ glue keep R's message (they unwind through cpp11, so destructors run)", {
+  # valgrind (E, 1a194b9) found the write glue's locals lost when Rf_translateCharUTF8 failed on "bytes" levels
+  bad <- c("ok", rawToChar(as.raw(c(0xff, 0xfe))))
+  Encoding(bad) <- "bytes"
+  p <- tempfile(fileext = ".fstx")
+  on.exit(unlink(p))
+  expect_error(write_fstx(data.frame(f = factor(bad, levels = bad)), p), 'translating strings with "bytes" encoding')
+  expect_error(fstx:::fstx_write_impl(list(1:2), p, "a", 0, 0L, FALSE, list(NULL), list(NULL), list(NULL), NULL,
+                                      2, 2L, 1L, 1L, TRUE, 1L, 0L, 0L, FALSE, 0L), "internal error, bad column spec")
+  expect_error(fstx:::fstx_write_impl(list(1:2), p, "a", 0L, 0L, FALSE, list(1), list(NULL), list(NULL), NULL,
+                                      2, 2L, 1L, 1L, TRUE, 1L, 0L, 0L, FALSE, 0L), "internal error, bad column spec")
+})
+
 test_that("factor levels that are not valid UTF-8 never crash a write or a read", {
   bad <- c("ok", rawToChar(as.raw(c(0xff, 0xfe))), rawToChar(as.raw(c(0x61, 0xc0, 0xaf))))
   Encoding(bad) <- "bytes"
