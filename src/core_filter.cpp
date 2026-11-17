@@ -107,7 +107,8 @@ bool set_hits(const Pred& q, double mn, double mx) {
   return it != q.set.end() && *it <= mx;
 }
 
-Verdict num_verdict(const Pred& q, const fb::Page* p, bool dbl) {
+// known = false (FSTX_VERIFY_NULLS): null_count is checked only when the page is decoded, so no verdict rests on it
+Verdict num_verdict(const Pred& q, const fb::Page* p, bool dbl, bool known) {
   const uint32_t n = p->row_count(), nc = p->null_count();
   const bool mm = (p->flags() & kFlagMinMax) != 0;
   const double mn = p->min(), mx = p->max();
@@ -116,16 +117,17 @@ Verdict num_verdict(const Pred& q, const fb::Page* p, bool dbl) {
     case FSTX_OP_NONE: return V_SKIP;
     case FSTX_OP_ISNA:
       if (dbl) return mm ? V_MAYBE : V_ALL;
+      if (!known) return V_MAYBE;
       return nc == 0 ? V_SKIP : nc == n ? V_ALL : V_MAYBE;
     case FSTX_OP_NOTNA:
       if (!mm) return V_SKIP;
-      return (!dbl && nc == 0) ? V_ALL : V_MAYBE;
+      return (!dbl && known && nc == 0) ? V_ALL : V_MAYBE;
     case FSTX_OP_IN: {
       const bool hit = mm && set_hits(q, mn, mx);
       if (dbl && q.set_nan) return V_MAYBE;
-      if (q.set_na && nc > 0) return (!dbl && !mm) ? V_ALL : V_MAYBE;
+      if (q.set_na && (nc > 0 || !known)) return (!dbl && !mm && known) ? V_ALL : V_MAYBE;
       if (!hit) return V_SKIP;
-      if (!dbl && nc == 0 && mn == mx) return V_ALL;
+      if (!dbl && known && nc == 0 && mn == mx) return V_ALL;
       return V_MAYBE;
     }
     default: break;
@@ -143,16 +145,17 @@ Verdict num_verdict(const Pred& q, const fb::Page* p, bool dbl) {
     default: break;
   }
   if (skip) return V_SKIP;
-  return (all && nc == 0 && !dbl) ? V_ALL : V_MAYBE;
+  return (all && known && nc == 0 && !dbl) ? V_ALL : V_MAYBE;
 }
 
-Verdict str_verdict(const Pred& q, const fb::Page* p, const DictMatch* d) {
+Verdict str_verdict(const Pred& q, const fb::Page* p, const DictMatch* d, bool known) {
   const uint32_t n = p->row_count(), nc = p->null_count();
   const bool na_ok = q.op == FSTX_OP_ISNA || (q.op == FSTX_OP_IN && q.set_na);
   if (q.op == FSTX_OP_NONE) return V_SKIP;
+  if (!known && (q.op == FSTX_OP_ISNA || q.op == FSTX_OP_NOTNA)) return V_MAYBE;
   if (q.op == FSTX_OP_ISNA) return nc == 0 ? V_SKIP : nc == n ? V_ALL : V_MAYBE;
   if (q.op == FSTX_OP_NOTNA) return nc == n ? V_SKIP : nc == 0 ? V_ALL : V_MAYBE;
-  const bool some_na = nc > 0, some_val = nc < n;
+  const bool some_na = !known || nc > 0, some_val = !known || nc < n;
   if (d) {
     const bool can = (some_val && d->any) || (some_na && na_ok);
     if (!can) return V_SKIP;
@@ -168,13 +171,14 @@ struct Filter {
   std::vector<Pred> preds;
   uint64_t from, to;
   int threads;
-  bool verify;
+  bool verify, nulls;  // FSTX_VERIFY_HASH, FSTX_VERIFY_NULLS
   std::vector<DictMatch> dm;
   std::vector<std::vector<PageRef>> keep;  // [pred]: pages not skipped
   std::vector<std::atomic<uint64_t>> bits;
   fstx_filter_stats st{};
 
-  Filter(const fstx_file& f, uint64_t a, uint64_t b, int t, bool v) : F(f), from(a), to(b), threads(t), verify(v) {}
+  Filter(const fstx_file& f, uint64_t a, uint64_t b, int t, int v)
+      : F(f), from(a), to(b), threads(t), verify((v & FSTX_VERIFY_HASH) != 0), nulls((v & FSTX_VERIFY_NULLS) != 0) {}
 
   void load_dict(const Pred& q, uint32_t col, const fb::Page* p, CodecContext& cc, DictMatch& d) {
     std::vector<uint8_t> buf, fbuf;
@@ -224,8 +228,8 @@ struct Filter {
           const uint64_t fr = p->first_row(), e = fr + p->row_count();
           if (fr >= to || e <= from) continue;
           ++st.pages_total;
-          const Verdict v = q.phys == FSTX_STRING ? str_verdict(q, p, di >= 0 ? &dm[(size_t)di] : nullptr)
-                                                  : num_verdict(q, p, dbl);
+          const Verdict v = q.phys == FSTX_STRING ? str_verdict(q, p, di >= 0 ? &dm[(size_t)di] : nullptr, !nulls)
+                                                  : num_verdict(q, p, dbl, !nulls);
           if (v == V_SKIP) {
             ++st.pages_skipped;
             continue;
@@ -299,18 +303,21 @@ struct Filter {
         if (S.vals.size() < (size_t)n * 8) S.vals.resize((size_t)n * 8);
         double* x = (double*)S.vals.data();
         enc::decode_dbl_page(b, len, p->chain(), n, x);
+        if (nulls) check_nulls(p, x, n);
         for (uint64_t row = r.r0; row < r.r1; ++row)
           if (!dbl_match(q, x[row - fr])) clear(row - from);
       } else if (q.phys != FSTX_STRING) {
         if (S.vals.size() < (size_t)n * 4) S.vals.resize((size_t)n * 4);
         int32_t* x = (int32_t*)S.vals.data();
         enc::decode_int_page(b, len, p->chain(), n, kind_of(q.phys), kNaI, x);
+        if (nulls) check_nulls(p, x, n, kNaI);
         for (uint64_t row = r.r0; row < r.r1; ++row)
           if (!int_match(q, x[row - fr])) clear(row - from);
       } else if (r.dict >= 0) {
         const DictMatch& d = dm[(size_t)r.dict];
         if (S.lens.size() < n) S.lens.resize(n);
         enc::decode_int_page(b, len, p->chain(), n, enc::K_CODES, -1, S.lens.data());
+        if (nulls) check_nulls(p, S.lens.data(), n, -1);
         const int32_t nd = (int32_t)d.m.size();
         const bool na_ok = q.op == FSTX_OP_ISNA || (q.op == FSTX_OP_IN && q.set_na);
         for (uint64_t row = r.r0; row < r.r1; ++row) {
@@ -321,6 +328,7 @@ struct Filter {
       } else {
         const char* bytes = nullptr;
         enc::decode_str_page(b, len, p->chain(), n, enc::K_STR, S.lens, S.fbuf, &bytes);
+        if (nulls) check_nulls(p, S.lens.data(), n, -1);
         uint64_t off = 0;
         for (uint64_t i = 0; i < r.r0 - fr; ++i)
           if (S.lens[i] > 0) off += (uint64_t)S.lens[i];
@@ -416,7 +424,7 @@ extern "C" int fstx_filter(const fstx_file* f, const fstx_pred* preds, uint32_t 
   try {
     if (!f || (n_preds && !preds)) fstx::fail(FSTX_ERR_ARG, "missing file or predicates");
     if (from > to || to > f->n_rows) fstx::fail(FSTX_ERR_ARG, "row window out of range");
-    fstx::Filter X(*f, from, to, threads, verify != 0);
+    fstx::Filter X(*f, from, to, threads, verify);
     X.preds.reserve(n_preds);  // Pred::sset points into Pred::strs: no moves after it is built
     for (uint32_t i = 0; i < n_preds; ++i) {
       const fstx_pred& s = preds[i];

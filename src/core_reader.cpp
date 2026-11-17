@@ -461,10 +461,16 @@ void check_no_nul(const char* bytes, const int32_t* lens, uint32_t n) {
   if (tot && std::memchr(bytes, 0, (size_t)tot)) enc::corrupt("a string holds a NUL byte");
 }
 
+[[noreturn]] static void null_count_mismatch(uint32_t k, uint32_t nc) {
+  char m[96];
+  std::snprintf(m, sizeof(m), "%u missing values, null_count %u", (unsigned)k, (unsigned)nc);
+  enc::corrupt(m);
+}
+
 void check_nulls(const fb::Page* p, const int32_t* x, uint32_t n, int32_t na) {
   uint32_t k = 0;
   for (uint32_t i = 0; i < n; ++i) k += x[i] == na;
-  if (k != p->null_count()) enc::corrupt("the page holds a different number of missing values than its null_count");
+  if (k != p->null_count()) null_count_mismatch(k, p->null_count());
 }
 
 void check_nulls(const fb::Page* p, const double* x, uint32_t n) {
@@ -474,7 +480,7 @@ void check_nulls(const fb::Page* p, const double* x, uint32_t n) {
     std::memcpy(&b, x + i, 8);
     k += (b & 0x7FF0000000000000ull) == 0x7FF0000000000000ull && (uint32_t)b == 1954u;
   }
-  if (k != p->null_count()) enc::corrupt("the page holds a different number of missing values than its null_count");
+  if (k != p->null_count()) null_count_mismatch(k, p->null_count());
 }
 
 namespace {

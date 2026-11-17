@@ -64,7 +64,8 @@ test_that("a page whose null_count is 0 but holds NA is refused under the check 
   expect_identical(read_fstx(q), x)
   expect_false(anyNA(read_fstx(q, lazy = TRUE)$i))
   with_nulls_check({
-    expect_error(read_fstx(q), "column 'i' \\(rows 1 to 3000\\): .*null_count\\): the file is corrupt")
+    expect_error(read_fstx(q),
+                 "column 'i' \\(rows 1 to 3000\\): .*\\(1 missing values, null_count 0\\): the file is corrupt")
     expect_error(read_fstx(q, verify = FALSE), "null_count")
     expect_error(read_fstx(q, from = 2000, to = 2010), "corrupt")
     expect_error(read_fstx(q, rows = c(3000, 1000)), "corrupt")   # rows away from the NA: the whole page is counted
@@ -79,7 +80,7 @@ test_that("a page whose null_count is above its NA count is refused under the ch
   q <- crafted(x, nulls0 = 3000L)
   on.exit(unlink(q))
   expect_identical(read_fstx(q), x)
-  with_nulls_check(expect_error(read_fstx(q), "null_count\\): the file is corrupt"))
+  with_nulls_check(expect_error(read_fstx(q), "\\(0 missing values, null_count 3000\\): the file is corrupt"))
 })
 
 test_that("doubles: the quiet NA counts as the writer counts it; a hidden NA is refused", {
@@ -93,7 +94,7 @@ test_that("doubles: the quiet NA counts as the writer counts it; a hidden NA is 
   on.exit(unlink(q), add = TRUE)
   expect_true(is.na(read_fstx(q)$d[2]))
   with_nulls_check({
-    expect_error(read_fstx(q), "null_count\\): the file is corrupt")
+    expect_error(read_fstx(q), "\\(1 missing values, null_count 0\\): the file is corrupt")
     expect_error(read_fstx(q, lazy = TRUE)$d[2], "corrupt")
   })
 })
@@ -101,18 +102,52 @@ test_that("doubles: the quiet NA counts as the writer counts it; a hidden NA is 
 test_that("string pages, plain and dictionary codes, are checked", {
   plain <- data.frame(s = c(NA, sprintf("value %d", 2:3000)), stringsAsFactors = FALSE)
   dict <- data.frame(s = rep(c("a", NA, "b"), 1000), stringsAsFactors = FALSE)
-  for (x in list(plain, dict)) {
+  for (k in c("plain", "dict")) {
+    x <- if (k == "plain") plain else dict
     q <- crafted(x, nulls0 = 0L)
+    expect_identical(any(fstx_pages(q)$dictionary), k == "dict")   # the dictionary case really is coded
     expect_identical(read_fstx(q), x)
     with_nulls_check({
       for (s in c("eager", "auto", "deferred"))
-        expect_error(as.data.frame(read_fstx(q, strings = s)), "null_count\\): the file is corrupt", info = s)
+        expect_error(as.data.frame(read_fstx(q, strings = s)), "null_count 0\\): the file is corrupt",
+                     info = paste(k, s))
       expect_error(read_fstx(q, rows = c(3000, 1500)), "corrupt")
       expect_error(anyNA(read_fstx(q, lazy = TRUE)$s), "corrupt")   # lazy strings decode on first use
       expect_error(read_fstx(q, as_factor = TRUE), "corrupt")
     })
     unlink(q)
   }
+})
+
+test_that("logical and factor pages are checked", {
+  lgl <- data.frame(l = rep(c(TRUE, NA, FALSE), 1000), i = 1:3000)
+  fct <- data.frame(f = factor(rep(c("x", NA, "y"), 1000)), i = 1:3000)
+  for (x in list(lgl, fct)) {
+    q <- crafted(x, nulls0 = 0L)
+    expect_identical(page0_nulls(q), 0)
+    expect_identical(read_fstx(q), x)
+    with_nulls_check({
+      expect_error(read_fstx(q), "\\(1000 missing values, null_count 0\\): the file is corrupt", info = names(x)[1])
+      expect_error(read_fstx(q, rows = c(3000, 1)), "corrupt", info = names(x)[1])
+      expect_identical(read_fstx(q, columns = "i")$i, x$i)
+    })
+    unlink(q)
+  }
+})
+
+test_that("under the check a filter decides nothing from null_count", {
+  x <- data.frame(i = c(1L, NA, 3:3000), s = rep(c("a", NA, "b"), 1000), stringsAsFactors = FALSE)
+  q <- crafted(x, nulls0 = 0L)
+  on.exit(unlink(q))
+  # by default the count is trusted: is.na() skips the page, !is.na() keeps it whole
+  expect_identical(nrow(read_fstx(q, where = is.na(i))), 0L)
+  expect_identical(nrow(read_fstx(q, where = !is.na(i))), 3000L)
+  with_nulls_check({
+    expect_error(read_fstx(q, where = is.na(i)), "\\(1 missing values, null_count 0\\): the file is corrupt")
+    expect_error(read_fstx(q, where = !is.na(i)), "corrupt")
+    expect_error(read_fstx(q, where = i %in% c(5L, NA)), "corrupt")
+    expect_identical(read_fstx(q, columns = "s", where = is.na(s))$s, x$s[is.na(x$s)])   # column s is fine
+  })
 })
 
 test_that("the Arrow stream passes the pattern on by default and refuses the page under the check", {
@@ -126,9 +161,11 @@ test_that("the Arrow stream passes the pattern on by default and refuses the pag
   rm(s, b)
   with_nulls_check({
     s <- fstx_arrow_stream(q, threads = 1)
-    expect_error(nanoarrow::convert_array_stream(s), "null_count\\): the file is corrupt")
+    expect_error(nanoarrow::convert_array_stream(s), "null_count 0\\): the file is corrupt")
     rm(s)
-    s <- fstx_arrow_stream(q, where = i > 10, threads = 1)
+    # the filter decodes the pages it tests, so the stream is refused when it is made
+    expect_error(fstx_arrow_stream(q, where = i > 10, threads = 1), "corrupt")
+    s <- fstx_arrow_stream(q, where = s == "b", threads = 1)   # filter on the sound column: refused on read
     expect_error(nanoarrow::convert_array_stream(s), "corrupt")
     rm(s)
     p <- tempfile(fileext = ".fstx")

@@ -696,7 +696,7 @@ SEXP fstx_pages_impl(SEXP path) {
 // preds: list of list(col = name, op = int, value = double, set = double, set_na, set_nan, strs = character).
 // Returns list(rows = 1-based matching rows (double), stats = named doubles).
 [[cpp11::register]]
-SEXP fstx_filter_impl(SEXP path, SEXP preds, double from, double to, int threads, bool verify, bool plan_only) {
+SEXP fstx_filter_impl(SEXP path, SEXP preds, double from, double to, int threads, int verify, bool plan_only) {
   FilePtr f = open_or_stop(path_of(path));
   fstx_file_info info;
   fstx_file_info_get(f.get(), &info);
@@ -755,7 +755,7 @@ SEXP fstx_filter_impl(SEXP path, SEXP preds, double from, double to, int threads
   fstx_selection* sel = nullptr;
   fstx_filter_stats stt;
   fstx_error err;
-  if (fstx_filter(f.get(), ps.data(), (uint32_t)np, (uint64_t)(from - 1), (uint64_t)t, threads, verify ? 1 : 0,
+  if (fstx_filter(f.get(), ps.data(), (uint32_t)np, (uint64_t)(from - 1), (uint64_t)t, threads, verify,
                   plan_only ? 1 : 0, &sel, &stt, &err) != FSTX_OK)
     stop_err(err);
   uint64_t n = 0;

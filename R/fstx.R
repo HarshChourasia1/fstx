@@ -207,7 +207,8 @@ read_fstx <- function(path, columns = NULL, from = 1, to = NULL, threads = fstx_
     if (!is.null(rows)) .err(fn, "use either 'rows' or 'where', not both")
     w <- .window(from, to, fn)
     preds <- .where_preds(path, wq, parent.frame(), fn)
-    rows <- fstx_filter_impl(path, preds, w[1L], w[2L], .whole(threads, "threads", 1, fn), verify, FALSE)$rows
+    rows <- fstx_filter_impl(path, preds, w[1L], w[2L], .whole(threads, "threads", 1, fn), .verify_bits(verify),
+                             FALSE)$rows
     from <- 1
     to <- NULL
   }

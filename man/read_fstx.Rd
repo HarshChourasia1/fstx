@@ -62,7 +62,9 @@ crash. With \code{options(fstx.verify_nulls = TRUE)} every page that is decoded 
 and a count that differs from the page's own refuses the file as corrupt. It is off by default because it costs
 one more pass over each decoded page (expected: a few percent on numeric columns, close to nothing on string
 columns) and, for \code{rows} and \code{where} reads, decodes whole pages instead of the parts that hold the
-rows. Pages a \code{where} filter skips by their statistics are not decoded, so they are not counted.
+rows. With the option on, a \code{where} filter decides nothing from the stored count; pages it skips by their
+min / max are not decoded, so they are not counted. Lazy and deferred columns take the option's value when
+\code{read_fstx()} runs: turning it on later does not check them, turning it off later does not stop it.
 
 Column and table attributes are stored with R's \code{serialize()} and restored with \code{unserialize()},
 as \code{readRDS()} does. Like an .rds file, only read .fstx files from sources you trust: a crafted file

@@ -176,21 +176,27 @@ Page i's first_row must equal the row group's first_row plus the rows of pages 0
 
 Statistics (min, max, flags bit 0): int and logical pages: over the non-NA values, flag set when there is at
 least one. Double pages: over values that are not NaN (NA_real_ and every other NaN are left out), flag set
-when there is at least one; null_count counts only NA_real_ (section 6.2), so other NaNs are values. String,
+when there is at least one; null_count counts only R's NA (see below), so other NaNs are values. String,
 codes and dictionary pages: no statistics (min = max = 0, flag clear). A reader may skip a page whose
 min/max cannot match a filter only when the flag is set. fstx does not check min, max or flags against the
 data; a writer must not set the flag with a range that leaves out a value.
 
-null_count must equal the number of rows the page's missing-value block marks, and 0 when the mode is 0. A
-writer must write mode 0 when no row is missing; a reader must still accept mode 1 or 2 with no row marked.
+null_count must equal the number of rows the page's missing-value block marks (0 when the mode is 0), plus, on
+a double page, the unmarked values that are a NaN whose low 32 bits are 1954. Those are R's NA_real_ with the
+quiet bit set (`0x7FF80000000007A2`, what arithmetic on NA_real_ gives): R reads them as NA, but the writer
+marks only the exact pattern `0x7FF00000000007A2` (section 6.2) and stores them as values, so such a page can
+have mode 0 and a null_count above 0. A writer must write mode 0 when the block would mark no row; a reader must
+still accept mode 1 or 2 with no row marked.
+
 By default fstx does not compare null_count with the body. It trusts it the way it trusts min and max: to skip
 pages in filters and to tell R and Arrow that a column has no missing values. A wrong count gives wrong answers
 (missing values that are not reported as missing), not a crash. With the R option `fstx.verify_nulls` set to
 TRUE, fstx counts the missing values of every page it decodes in full (read_fstx, lazy columns, the Arrow
-stream; not the pages a filter skips or tests) and refuses the file as corrupt when the count differs from
-null_count. It counts what decoding gives: the rows the missing-value block marks plus any unmarked value that
-is the missing-value pattern (for double pages, as the writer counts: a NaN whose low 32 bits are 1954, so an
-NA_real_ with the quiet bit set, which the writer stores as a value, counts too).
+stream, and the pages a filter tests), refuses the file as corrupt when the count differs from null_count, and
+no filter decision rests on null_count alone. It counts what decoding gives: the rows the missing-value block
+marks plus any unmarked value that is the missing-value pattern (on double pages every NaN whose low 32 bits
+are 1954, as above). Pages a filter skips by min / max, or that hold no candidate row, are not decoded and so
+not counted.
 
 Pages must lie wholly before the footer; fstx does not check that pages do not overlap one another.
 

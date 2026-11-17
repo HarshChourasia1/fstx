@@ -138,7 +138,7 @@ typedef struct fstx_read_host {
 /* verify (fstx_read, fstx_colsrc_open, fstx_arrow_args): bit flags. FSTX_VERIFY_HASH checks every page's xxh3
  * (header and footer are always checked); FSTX_VERIFY_NULLS counts the missing values of every page decoded in
  * full and refuses the file as corrupt when the count differs from the page's null_count (rows plans then decode
- * whole pages). fstx_filter takes only the hash bit. */
+ * whole pages; fstx_filter then decides no page from its null_count alone). */
 enum { FSTX_VERIFY_HASH = 1, FSTX_VERIFY_NULLS = 2 };
 
 /* threads <= 0 means all cores. */

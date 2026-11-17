@@ -52,10 +52,10 @@ extern "C" SEXP _fstx_fstx_pages_impl(SEXP path) {
     return cpp11::as_sexp(fstx_pages_impl(cpp11::as_cpp<cpp11::decay_t<SEXP>>(path)));
   END_CPP11
 }
-SEXP fstx_filter_impl(SEXP path, SEXP preds, double from, double to, int threads, bool verify, bool plan_only);
+SEXP fstx_filter_impl(SEXP path, SEXP preds, double from, double to, int threads, int verify, bool plan_only);
 extern "C" SEXP _fstx_fstx_filter_impl(SEXP path, SEXP preds, SEXP from, SEXP to, SEXP threads, SEXP verify, SEXP plan_only) {
   BEGIN_CPP11
-    return cpp11::as_sexp(fstx_filter_impl(cpp11::as_cpp<cpp11::decay_t<SEXP>>(path), cpp11::as_cpp<cpp11::decay_t<SEXP>>(preds), cpp11::as_cpp<cpp11::decay_t<double>>(from), cpp11::as_cpp<cpp11::decay_t<double>>(to), cpp11::as_cpp<cpp11::decay_t<int>>(threads), cpp11::as_cpp<cpp11::decay_t<bool>>(verify), cpp11::as_cpp<cpp11::decay_t<bool>>(plan_only)));
+    return cpp11::as_sexp(fstx_filter_impl(cpp11::as_cpp<cpp11::decay_t<SEXP>>(path), cpp11::as_cpp<cpp11::decay_t<SEXP>>(preds), cpp11::as_cpp<cpp11::decay_t<double>>(from), cpp11::as_cpp<cpp11::decay_t<double>>(to), cpp11::as_cpp<cpp11::decay_t<int>>(threads), cpp11::as_cpp<cpp11::decay_t<int>>(verify), cpp11::as_cpp<cpp11::decay_t<bool>>(plan_only)));
   END_CPP11
 }
 void fstx_compact_impl(SEXP path, SEXP tmp);

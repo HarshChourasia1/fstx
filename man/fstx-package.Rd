@@ -56,7 +56,9 @@ names it and ends "Update fstx".
     loads; see \code{\link{fstx_simd}}.}
   \item{\code{fstx.verify_nulls}}{\code{TRUE} counts the missing values of every page that
     \code{\link{read_fstx}} or \code{\link{fstx_arrow_stream}} decodes and refuses a page whose count differs
-    from the one it records, as corrupt. Default \code{FALSE}; see \code{\link{read_fstx}}.}
+    from the one it records, as corrupt. Default \code{FALSE}; see \code{\link{read_fstx}}. Read when
+    \code{read_fstx()} runs or the stream is made: lazy and deferred columns keep the value they were read
+    with.}
   \item{Threads}{Functions with a \code{threads} argument use all cores by default. The default is at
     most 2 when the environment variable \code{_R_CHECK_LIMIT_CORES_} is set (and not \code{"false"}), as
     during \command{R CMD check --as-cran}, and at most \code{OMP_THREAD_LIMIT} when that is set.}
