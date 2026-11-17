@@ -1,9 +1,11 @@
 """write_fstx: the FXA1 encoder, the type mapping, refusals, options, append, pandas and polars.
 
-There is no Python reader in these tests. What a written file holds is checked two ways:
-  * here, through fstx.metadata(): column definitions, levels, time zones, attribute blobs, row counts;
+What a written file holds is checked two ways:
+  * here, through fstx.metadata(): column definitions, levels, time zones, attribute blobs, row counts
+    (test_roundtrip.py reads the files back with read_fstx as well);
   * in R, which reads the values: every file these tests write stays in golden/from_python/ for
-    golden/check_roundtrip.R (the golden cases) and golden/check_native.R (golden/from_python/native/).
+    golden/check_roundtrip.R (the golden cases: read_fstx -> write_fstx, also through fstx.to_pandas and
+    fstx.to_polars) and golden/check_native.R (golden/from_python/native/).
 """
 import datetime as dt
 import json
@@ -14,14 +16,24 @@ import pyarrow as pa
 import pytest
 
 import fstx
-from conftest import CASES, GOLDEN, ids
-from fstx import _fxa1_write as fxa
-from golden_tables import golden_table, to_pandas
+from conftest import CASES, GOLDEN, ids, quiet
+from fstx import _fxa1 as fxa
+
+to_pandas = fstx.to_pandas
 
 OUT = GOLDEN / "from_python"
 NATIVE = OUT / "native"
 NATIVE.mkdir(parents=True, exist_ok=True)
 HINDI = "हिन्दी"
+
+
+def golden_table(path, want=None, invalid_utf8="replace", metadata=True) -> pa.Table:
+    """A golden file as read_fstx returns it. ``metadata=False`` leaves the fstx metadata out (a table that was
+    rebuilt in Python and lost it)."""
+    t = quiet(path, invalid_utf8=invalid_utf8)
+    if not metadata:
+        t = pa.Table.from_arrays(t.columns, schema=pa.schema([pa.field(f.name, f.type) for f in t.schema]))
+    return t
 
 
 def write(data, path, **kw):
@@ -89,7 +101,9 @@ def test_fxa1_values():
     back = fxa.parse(blob)
     assert list(back) == list(v) and back == v
     assert fxa.encode(back) == blob
-    assert back["d"].values[1] != back["d"].values[1]  # NA_real_ is a NaN in Python
+    assert back["d"].values[1] is None  # NA_real_
+    nan = fxa.parse(fxa.encode({"d": fxa.double([float("nan")])}))["d"].values[0]
+    assert nan != nan  # any other NaN stays a NaN
     assert fxa.NA_REAL_BITS.to_bytes(8, "little") in blob
 
 
@@ -146,8 +160,11 @@ def test_golden_through_pandas(path, want):
     was = fstx.metadata(path)
     t = golden_table(path, want)
     if path.stem == "factor_na_level":
-        with pytest.raises(ValueError):  # pandas categories cannot hold a missing value (manifest: fails)
-            to_pandas(t)
+        # pandas categories cannot hold a missing value: to_pandas hands the column over as strings
+        with pytest.warns(fstx.FstxWarning, match="NA as a level"):
+            df = to_pandas(t)
+        m = write(df, OUT / (path.stem + ".pandas.fstx"))
+        assert kinds(m)["f"] == ("character", "none")
         return
     m = write(to_pandas(t), OUT / (path.stem + ".pandas.fstx"))
     assert (m.nrow, m.ncol) == (was.nrow, was.ncol)
@@ -158,6 +175,25 @@ def test_golden_through_pandas(path, want):
         assert a == fxa.parse(m.table_attrs)
     else:
         assert m.table_attrs == was.table_attrs
+
+
+@pytest.mark.parametrize("path,want", CASES, ids=ids(CASES))
+def test_golden_through_polars(path, want):
+    pytest.importorskip("polars")
+    was = fstx.metadata(path)
+    t = golden_table(path, want)
+    if len(set(t.column_names)) != len(t.column_names):
+        with pytest.raises(ValueError, match="unique column names"):
+            fstx.to_polars(t)
+        return
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", fstx.FstxWarning)  # the factor with an NA level becomes strings
+        df = fstx.to_polars(t)
+    m = write(df, OUT / (path.stem + ".polars.fstx"))
+    # polars carries no metadata: names and the column count survive, R's classes and attributes may not
+    assert m.names == was.names
+    if was.ncol:
+        assert m.nrow == was.nrow
 
 
 def test_golden_invalid_utf8_as_binary():

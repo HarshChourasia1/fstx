@@ -6,15 +6,17 @@ cannot know R's meaning: integer64 (the bits of a double column), factors, Dates
 plain numbers with their class in the attribute blob, dictionary-coded strings (always returned as plain
 strings), the UTF-8 check, and the metadata that lets a writer store the table again the way R wrote it.
 
-Arrow metadata (DESIGN.md section 4):
+Arrow metadata (DESIGN.md section 4; keys and helpers in ``_meta.py``):
 
-- field ``fstx.r``: JSON ``{"phys", "logical", "class"?, "tzone"?}``, on every column that is not a plain
-  logical / integer / double / character vector without attributes. ``tzone`` is there only for a POSIXct
-  column stored natively with a time zone (``""`` = stored empty; key absent = no tzone attribute).
-- field ``fstx.attrs``: the column's attribute blob, raw (FXA1 or R serialization).
-- schema ``fstx.table_attrs``: the table's attribute blob, raw.
-- schema ``fstx.row_names``: JSON list, only when the read is not the whole file in file order and the file
-  stores row names: the row names of the rows read, in the order read. It replaces ``row.names`` of the blob.
+- field ``fstx.r``: JSON ``{"phys", "logical", "class"?, "tzone"?}``, on every column. ``class`` is R's class
+  vector (absent when there is none or it is unknown); ``tzone`` is there only for a POSIXct column stored
+  natively with a time zone (``""`` = stored empty; key absent = no tzone attribute).
+- field ``fstx.attrs``: the column's attribute blob (FXA1 or R serialization), base64.
+- schema ``fstx.table_attrs``: the table's attribute blob, base64. On a read that is not the whole file in
+  file order, an FXA1 blob is rewritten so that its ``row.names`` are those of the rows read, in the order
+  read (repeats made unique as R does).
+- schema ``fstx.nrow``: the row count, only on a read of the whole file whose table blob is R serialization
+  (the writer keeps such a blob only for a table that still has this many rows).
 """
 from __future__ import annotations
 
@@ -25,7 +27,8 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from . import _core, _filters
+from . import _core, _filters, _fxa1, _meta
+from ._engine import LOCK as _ENGINE_LOCK
 from ._file import ColumnMeta, File, FileMeta, PathLike
 
 _INT64_MIN = -(2**63)
@@ -78,18 +81,15 @@ def _column(c: ColumnMeta, datetimes: str, binary: bool, attributes: bool) -> _C
         r["class"] = rc
     if c.logical == "POSIXct" and c.tzone is not None:
         r["tzone"] = c.tzone
-    md: Dict[str, bytes] = {}
-    if c.logical != "none" or c.attrs is not None:
-        md["fstx.r"] = json.dumps(r, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    md: Dict[str, bytes] = {"fstx.r": json.dumps(r, separators=(",", ":")).encode("ascii")}
     if c.attrs is not None and (attributes or a is not None):  # attributes=False drops R serialization only
-        md["fstx.attrs"] = c.attrs
+        md["fstx.attrs"] = _meta.b64(c.attrs)
     arrow = datetimes == "arrow"
     stored = pa.float64() if c.phys == "double" else pa.int32()
     rc = rc or []
     if c.phys == "character":
         big = c.raw_bytes > _MAX_STRING
         if binary:
-            md.setdefault("fstx.r", json.dumps(r, separators=(",", ":")).encode("utf-8"))
             return _Col(c, "string", pa.large_binary() if big else pa.binary(), md)
         return _Col(c, "string", pa.large_string() if big else pa.string(), md)
     if c.phys == "logical":
@@ -150,7 +150,9 @@ class _Plan:
         ta = meta.attributes  # checks the table blob (raises FstxError when corrupt)
         md = {}
         if meta.table_attrs is not None and (attributes or ta is not None):
-            md["fstx.table_attrs"] = meta.table_attrs
+            md["fstx.table_attrs"] = _meta.b64(meta.table_attrs)
+            if ta is None:  # R serialization: the writer keeps it only for a table of this many rows
+                md["fstx.nrow"] = str(meta.nrow).encode("ascii")
         self.schema = pa.schema([c.field for c in self.cols], metadata=md or None)
 
 
@@ -238,7 +240,8 @@ def _select(f: File, rows, filters, threads: int, verify: int) -> _Rows:
     if w.sel is not None:
         raise ValueError("with 'filters', 'rows' must be a slice or range with step 1")
     preds = _filters.to_preds(meta, filters)
-    sel, _ = _core.filter(f._f, preds, w.start, w.stop, threads, verify, False)
+    with _ENGINE_LOCK:
+        sel, _ = _core.filter(f._f, preds, w.start, w.stop, threads, verify, False)
     return _Rows(sel=sel)
 
 
@@ -262,34 +265,39 @@ def _make_unique(names: list) -> List[str]:
 
 
 def _with_row_names(plan: _Plan, sel: _Rows) -> pa.Schema:
-    """The schema for this read: a partial or reordered read carries its own row names (module docstring)."""
+    """The schema for this read: on a partial or reordered read the table blob's row names follow the rows."""
     meta = plan.meta
     if sel.sel is None and sel.start == 0 and sel.stop == meta.nrow:
         return plan.schema
-    rn = meta.row_names
-    if rn is None:
-        return plan.schema
-    rn = [rn[i] for i in sel.indices()]
-    if len(set(rn)) != len(rn):
-        rn = _make_unique(rn)  # as x[rows, ] does in R
     md = dict(plan.schema.metadata or {})
-    md[b"fstx.row_names"] = json.dumps(rn, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    return plan.schema.with_metadata(md)
+    md.pop(b"fstx.nrow", None)  # an R-serialization blob no longer belongs to these rows
+    ta = meta.attributes
+    rn = ta.get("row.names") if ta and b"fstx.table_attrs" in md else None
+    if rn is not None:
+        ta = dict(ta)
+        if rn.type == "integer" and len(rn.values) == 2 and rn.values[0] is None:  # automatic: c(NA, -n)
+            new = _fxa1.integer([None, sel.n if rn.values[1] > 0 else -sel.n], rn.attrs)
+        else:
+            vals = [rn.values[i] for i in sel.indices()]
+            if len(set(vals)) != len(vals):
+                new = _fxa1.character(_make_unique(vals), rn.attrs)  # as x[rows, ] does in R
+            else:
+                new = _fxa1.RVector(rn.type, vals, rn.attrs)
+        ta["row.names"] = new
+        md[b"fstx.table_attrs"] = _meta.b64(_fxa1.encode(ta))
+    return plan.schema.with_metadata(md or None)
 
 
 def row_names(schema: pa.Schema) -> Optional[list]:
     """The row names a table read by fstx carries (str or int, one per row as read), or None."""
     md = schema.metadata or {}
-    if b"fstx.row_names" in md:
-        return json.loads(md[b"fstx.row_names"].decode("utf-8"))
-    blob = md.get(b"fstx.table_attrs")
-    if blob is None:
+    try:
+        blob = _meta.blob(md.get(b"fstx.table_attrs"))
+        if not _fxa1.is_fxa1(blob):
+            return None
+        rn = _fxa1.decode(blob).get("row.names")
+    except ValueError:
         return None
-    from . import _fxa1
-
-    if _fxa1.kind(blob) != "FXA1":
-        return None
-    rn = _fxa1.decode(blob).get("row.names")
     if rn is None or (rn.type == "integer" and len(rn.values) == 2 and rn.values[0] is None):
         return None
     return list(rn.values)
@@ -432,20 +440,24 @@ class _Stream:
 def _batches(plan: _Plan, schema: pa.Schema, sel: _Rows, threads: int, batch_rows: int, verify: int,
              st: _State) -> Iterator[pa.RecordBatch]:
     """The finished batches of a read (not called for an empty selection or for no columns)."""
-    capsule = _core.stream(plan.meta.path, plan.index, [c.meta.name for c in plan.cols], sel.start, sel.stop,
-                           sel.sel, threads, batch_rows, verify, plan.raw)
-    reader = pa.RecordBatchReader.from_stream(_Stream(capsule))
+    # every engine call takes the engine lock (_engine.py); between batches other threads get their turn
+    with _ENGINE_LOCK:
+        capsule = _core.stream(plan.meta.path, plan.index, [c.meta.name for c in plan.cols], sel.start, sel.stop,
+                               sel.sel, threads, batch_rows, verify, plan.raw)
+        reader = pa.RecordBatchReader.from_stream(_Stream(capsule))
     try:
         while True:
             try:
-                batch = reader.read_next_batch()  # decodes with the GIL released
+                with _ENGINE_LOCK:
+                    batch = reader.read_next_batch()  # decodes with the GIL released
             except StopIteration:
                 return
             except (pa.ArrowException, OSError) as e:  # the engine's message; the stream carries no error code
                 raise _error(str(e)) from None
             yield _finish(batch, plan, schema, st)
     finally:
-        reader.close()  # releases the stream and with it the file
+        with _ENGINE_LOCK:
+            reader.close()  # releases the stream and with it the file
 
 
 def _empty(plan: _Plan, schema: pa.Schema) -> pa.RecordBatch:
@@ -505,7 +517,6 @@ def read(f: File, columns=None, rows=None, filters=None, *, threads=None, verify
             # a column with bad bytes comes back as binary, marked as a character column for the writer
             typ = pa.large_binary() if pa.types.is_large_string(typ) else pa.binary()
             md = dict(col.field.metadata or {})
-            md.setdefault(b"fstx.r", b'{"phys":"character","logical":"none"}')
             table = table.set_column(j, pa.field(col.meta.name, typ, metadata=md),
                                      pa.chunked_array([c.view(typ) for c in chunks], typ))
             continue
@@ -570,7 +581,7 @@ def read_fstx(path: PathLike, columns=None, rows=None, filters=None, *, threads=
     invalid_utf8: strings that are not valid UTF-8: "replace" the bad bytes with U+FFFD and warn (default),
              "error", or "binary" (such a column comes back as ``binary`` with its bytes).
 
-    The metadata the table carries (``fstx.r``, ``fstx.attrs``, ``fstx.table_attrs``, ``fstx.row_names``) lets
+    The metadata the table carries (``fstx.r``, ``fstx.attrs``, ``fstx.table_attrs``, ``fstx.nrow``) lets
     ``write_fstx`` store it again the way R wrote it.
     """
     with File(path) as f:
@@ -580,6 +591,8 @@ def read_fstx(path: PathLike, columns=None, rows=None, filters=None, *, threads=
 
 # ---------------------------------------------------------------- pandas and polars
 def _without_na_levels(table: pa.Table, lib: str) -> pa.Table:
+    """Factors with NA as a level become plain strings (with a warning); their fstx metadata goes, as it
+    describes a factor."""
     for j, fld in enumerate(table.schema):
         if not pa.types.is_dictionary(fld.type):
             continue
@@ -588,7 +601,7 @@ def _without_na_levels(table: pa.Table, lib: str) -> pa.Table:
             warnings.warn("fstx: column '%s' is a factor with NA as a level, which %s cannot hold; it is "
                           "returned as strings" % (fld.name, lib), FstxWarning, stacklevel=3)
             vt = fld.type.value_type
-            table = table.set_column(j, pa.field(fld.name, vt, metadata=fld.metadata), col.cast(vt))
+            table = table.set_column(j, pa.field(fld.name, vt), col.cast(vt))
     return table
 
 
@@ -596,19 +609,39 @@ def to_pandas(table: pa.Table):
     """A pandas DataFrame from a table read by fstx, keeping what R means: logical, integer, integer64 and
     double columns get pandas' nullable dtypes (missing values stay missing, integers stay integers; NaN stays
     apart from NA only where pandas keeps them apart: pandas 3 makes NaN missing too unless its option
-    ``future.distinguish_nan_and_na`` is on), stored row names become the index, and the table's Arrow schema with its fstx metadata is
-    kept in ``df.attrs["fstx_schema"]`` (serialized; ``pyarrow.ipc.read_schema`` reads it) for the writer.
+    ``future.distinguish_nan_and_na`` is on), and stored row names become the index.
+
+    The fstx metadata travels in ``df.attrs["fstx"]``, where ``write_fstx`` looks for it:
+    ``{"table_attrs": base64 or None, "nrow": int or None, "columns": [{"name", "r", "attrs"}, ...]}``
+    (``r`` = the column's ``fstx.r`` as a dict, ``attrs`` = its blob as base64 text). It is plain JSON data.
     A factor with NA as a level is returned as strings, with a warning."""
     import pandas as pd
 
     t = _without_na_levels(table, "pandas")
     nullable = {pa.bool_(): pd.BooleanDtype(), pa.int32(): pd.Int32Dtype(), pa.int64(): pd.Int64Dtype(),
                 pa.float64(): pd.Float64Dtype()}
-    df = t.to_pandas(types_mapper=nullable.get)
-    rn = row_names(table.schema)
-    if rn is not None and len(rn) == table.num_rows:
+    df = t.to_pandas(types_mapper=nullable.get, ignore_metadata=True)
+    if t.num_columns == 0:  # no columns: the index keeps the row count
+        df = pd.DataFrame(index=pd.RangeIndex(t.num_rows))
+    rn = row_names(t.schema)
+    if rn is not None and len(rn) == t.num_rows:
         df.index = pd.Index(rn)
-    df.attrs["fstx_schema"] = table.schema.serialize().to_pybytes()
+
+    def text(v) -> Optional[str]:
+        return None if v is None else bytes(v).decode("ascii")
+
+    smd = t.schema.metadata or {}
+    cols = []
+    for f in t.schema:
+        md = f.metadata or {}
+        try:
+            r = json.loads(md[_meta.KEY_R]) if _meta.KEY_R in md else None
+        except ValueError:
+            r = None
+        cols.append({"name": f.name, "r": r, "attrs": text(_meta.b64(_meta.blob(md.get(_meta.KEY_ATTRS))))})
+    nrow = smd.get(_meta.KEY_NROW)
+    df.attrs["fstx"] = {"table_attrs": text(_meta.b64(_meta.blob(smd.get(_meta.KEY_TABLE)))),
+                        "nrow": int(nrow) if nrow is not None and nrow.isdigit() else None, "columns": cols}
     return df
 
 
@@ -624,7 +657,4 @@ def to_polars(table: pa.Table):
         dup = sorted(set(n for n in names if names.count(n) > 1))
         raise ValueError("polars needs unique column names; repeated: %s (rename them with "
                          "table.rename_columns() first)" % ", ".join(repr(n) for n in dup))
-    t = _without_na_levels(table, "polars")
-    # the attribute blobs are raw bytes, which polars cannot take as metadata: all metadata is dropped
-    t = t.cast(pa.schema([pa.field(f.name, f.type) for f in t.schema]))
-    return pl.from_arrow(t)
+    return pl.from_arrow(_without_na_levels(table, "polars"))

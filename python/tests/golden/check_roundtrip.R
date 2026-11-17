@@ -4,7 +4,8 @@
 #
 # The Python tests read every <case>.fstx of the golden dir and write it back into <golden dir>/from_python/:
 #   from_python/<case>.fstx          read and written with pyarrow (read_fstx -> pyarrow.Table -> write_fstx)
-#   from_python/<case>.pandas.fstx   the same through pandas (to_pandas() -> from a pandas DataFrame), optional
+#   from_python/<case>.pandas.fstx   the same through fstx.to_pandas() and the pandas DataFrame, optional
+#   from_python/<case>.polars.fstx   the same through fstx.to_polars() and the polars DataFrame, optional
 # This script reads each pair in R and compares the tables with identical(). manifest.json says, per case and path,
 # whether identical() is expected ("identical ...") or not (anything else). Result per file:
 #   PASS      identical, as expected
@@ -71,8 +72,8 @@ notes <- function(a, b) {
 res <- list()
 for (cs in mf$cases) {
   orig <- file.path(gdir, cs$file)
-  for (path in c("pyarrow", "pandas")) {
-    pf <- file.path(pdir, if (path == "pyarrow") cs$file else sub("\\.fstx$", ".pandas.fstx", cs$file))
+  for (path in c("pyarrow", "pandas", "polars")) {
+    pf <- file.path(pdir, if (path == "pyarrow") cs$file else sub("\\.fstx$", paste0(".", path, ".fstx"), cs$file))
     if (!file.exists(pf)) next
     expect <- cs[[paste0("roundtrip_", path)]]
     want_same <- startsWith(expect, "identical")

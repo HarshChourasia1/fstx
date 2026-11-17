@@ -4,26 +4,25 @@ Everything about types is decided here with pyarrow (DESIGN.md sections 3 to 5);
 column, the stored definition (spec 4.2) and Arrow arrays that are already what the engine takes: one int32 or
 float64 array with R's missing values filled in, or the string chunks as they are.
 
-Metadata the reader left on a table says how R held a column and is used when it still fits the data:
+Metadata the reader left on a table says how R held a column and is used when it still fits the data
+(keys and helpers in ``_meta.py``; a column without any of it is written as the plain data it is):
 
     field  b"fstx.r"            JSON: {"phys": "double", "logical": "Date", "class": ["Date"], "tzone": ""}
                                 (phys integer / double / logical / character; logical none / factor / Date /
                                 POSIXct; class = R's class vector, absent for none; tzone absent = no attribute)
-    field  b"fstx.attrs"        the column's attribute blob (spec 9.4), raw
-    schema b"fstx.table_attrs"  the table's attribute blob, raw
+    field  b"fstx.attrs"        the column's attribute blob (spec 9.4), base64 (raw bytes are taken too)
+    schema b"fstx.table_attrs"  the table's attribute blob, base64 (raw bytes are taken too)
     schema b"fstx.nrow"         rows of the table when it was read (decimal text); only looked at for a table
                                 blob in R serialization, which may hold row names nobody here can see
 
-A pandas DataFrame carries the same in ``df.attrs["fstx"]``:
+A pandas DataFrame carries the same in ``df.attrs["fstx"]`` (``fstx.to_pandas`` puts it there):
 ``{"table_attrs": blob, "nrow": n, "columns": [{"name": str, "r": dict or None, "attrs": blob}, ...]}``
-with blobs as bytes or base64 text.
+with blobs as base64 text (bytes are taken too).
 """
 from __future__ import annotations
 
-import base64
 import json
 import os
-import threading
 import warnings
 from typing import Any, Dict, List, Optional
 
@@ -32,13 +31,11 @@ import pyarrow.compute as pc
 import pyarrow.types as pt
 
 from . import _core
-from . import _fxa1_write as fxa
+from . import _fxa1 as fxa
+from ._engine import LOCK as _ENGINE_LOCK  # one job at a time on the engine's worker pool
 from ._file import metadata as _metadata
-
-KEY_R = b"fstx.r"
-KEY_ATTRS = b"fstx.attrs"
-KEY_TABLE = b"fstx.table_attrs"
-KEY_NROW = b"fstx.nrow"
+from ._meta import KEY_ATTRS, KEY_NROW, KEY_R, KEY_TABLE
+from ._meta import blob as _b
 
 _INT32, _FLOAT64, _LOGICAL, _STRING = 0, 1, 2, 3
 _NONE, _FACTOR, _DATE, _POSIXCT = 0, 1, 2, 3
@@ -53,9 +50,6 @@ _NA_INT = -(2**31)
 _NA_INT64 = -(2**63)  # bit64's NA
 _UNITS = {"s": 1.0, "ms": 1e3, "us": 1e6, "ns": 1e9}
 _DATA_FRAME = {"class": fxa.character(["data.frame"])}
-# The engine has one worker pool and runs one job on it at a time ("worker pool is already running a job"):
-# calls into it from several Python threads take turns. Anything else that drives the pool must share this lock.
-_ENGINE_LOCK = threading.Lock()
 
 
 class _Col:
@@ -403,7 +397,10 @@ def _has_row_names(v: Optional[fxa.Vec]) -> bool:
 def _table_blob(table: pa.Table, row_names) -> Optional[bytes]:
     """The table's attribute blob: the one in the metadata when it still fits, re-encoded when something had to go."""
     meta = table.schema.metadata or {}
-    blob = meta.get(KEY_TABLE)
+    try:
+        blob = _b(meta.get(KEY_TABLE))
+    except ValueError:
+        raise ValueError("write_fstx: the table's fstx.table_attrs metadata is damaged (not base64)") from None
     n = table.num_rows
     if blob is not None and not fxa.is_fxa1(blob):
         # R serialization is never decoded: it goes back as it is unless it could hold row names for another
@@ -456,12 +453,6 @@ def _table_blob(table: pa.Table, row_names) -> Optional[bytes]:
 
 
 # ---------------------------------------------------------------- what write_fstx accepts
-def _b(x) -> Optional[bytes]:
-    if x is None:
-        return None
-    return bytes(x) if isinstance(x, (bytes, bytearray, memoryview)) else base64.b64decode(x)
-
-
 def _no_columns(n: int, smeta: Optional[dict]) -> pa.Table:
     """A table of n rows and no columns (an empty struct array keeps the row count)."""
     batch = pa.RecordBatch.from_struct_array(pa.array([{}] * n, pa.struct([])))
@@ -547,7 +538,7 @@ def _to_table(data):
 
 def _field_meta(field: pa.Field):
     md = field.metadata or {}
-    blob = md.get(KEY_ATTRS)
+    blob = _b(md.get(KEY_ATTRS))
     r = None
     if KEY_R in md:
         try:
@@ -586,8 +577,8 @@ def _append_plan(path: str, table: pa.Table, row_names) -> dict:
                          "serialization and may hold row names, a key or an index that the new rows would break")
     new_rn = row_names
     if new_rn is _NO_INDEX:
-        nb = (table.schema.metadata or {}).get(KEY_TABLE)
         try:
+            nb = _b((table.schema.metadata or {}).get(KEY_TABLE))
             new_rn = fxa.parse(nb).get("row.names") if fxa.is_fxa1(nb) else None
         except ValueError:
             new_rn = None

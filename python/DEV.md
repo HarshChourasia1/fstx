@@ -47,17 +47,8 @@ and pulls batches with the GIL released; `_read.py` finishes each batch (strings
 the attribute blob). Filters go through `_core.filter()` (`fstx_filter`), which returns the matching row
 numbers; those are then read through the stream's row-list path.
 
-Metadata on what is returned (the writer reads this back):
-
-- field `fstx.r`: JSON `{"phys","logical","class"?,"tzone"?}`, on every column that is not a plain vector
-  without attributes. `class` is the R class vector (absent when plain or unknown); `tzone` only for a native
-  POSIXct with a stored zone (`""` = stored empty, key absent = none stored).
-- field `fstx.attrs`: the column's attribute blob, raw bytes. schema `fstx.table_attrs`: the table blob, raw.
-- schema `fstx.row_names`: a JSON list, only on a partial or reordered read of a file with stored row names
-  (it replaces the blob's `row.names`; repeats are made unique as R's `make.unique`). `row_names(schema)` in
-  `_read.py` gives the row names either way.
-- `to_pandas`: the schema, serialized, in `df.attrs["fstx_schema"]` (`pyarrow.ipc.read_schema`); row names in
-  the index. `to_polars`: no metadata at all.
+Metadata on what is returned: see "One contract for reading and writing" at the end (the merge replaced
+what this step first did: raw blobs, `fstx.r` only on some columns, `fstx.row_names`, `df.attrs["fstx_schema"]`).
 
 What does not come back as R holds it:
 
@@ -141,10 +132,14 @@ python/
   src/read.cpp          _core.stream (Arrow C stream capsule), _core.filter, OP_* and VERIFY_* constants
   fstx/__init__.py      public names; registers _core.shutdown with atexit
   fstx/_file.py         FileMeta, ColumnMeta, File, open(), metadata()
-  fstx/_fxa1.py         FXA1 attribute blobs: decode(), kind(), RVector (the encoder is the write step's)
+  fstx/_engine.py       LOCK: the one lock around the engine's worker pool (reads, filters, writes)
+  fstx/_meta.py         the Arrow metadata keys; b64() / blob() for attribute blobs
+  fstx/_fxa1.py         FXA1 attribute blobs: decode() and encode(), kind(), RVector
   fstx/_filters.py      filters -> engine predicates, as R's .term_pred()
   fstx/_read.py         read, to_batches, read_fstx, schema_of, row_names, to_pandas, to_polars, set_options
-  tests/                conftest.py (golden sets), test_metadata.py, test_build.py, test_read.py, golden/
+  fstx/_write.py        write_fstx
+  tests/                conftest.py (golden sets, same()), test_metadata.py, test_build.py, test_read.py,
+                        test_write.py, test_roundtrip.py, golden_tables.py, golden/
   DESIGN.md, DEV.md
 ```
 
@@ -245,48 +240,93 @@ Layout:
 
 - `fstx/_write.py`: `write_fstx(data, path, *, profile=None, compress=None, level=None, threads=None,
   append=False, int64="auto")`. Every type decision is here, with pyarrow (DESIGN.md sections 3 to 5).
-- `fstx/_fxa1_write.py`: the FXA1 encoder (`encode`, `Vec`, `logical` / `integer` / `double` / `character`)
-  and a private `parse`, which the writer needs to change blobs (row names, data.table key and index, NA
-  levels). The reader's decoder is its own file (`_fxa1.py`); the two can be joined when the branches meet.
+- The FXA1 encoder (`encode`, `Vec`, `logical` / `integer` / `double` / `character`) was `fstx/_fxa1_write.py`
+  on this branch, with a private `parse`; since the merge both live in `fstx/_fxa1.py`.
 - `src/write.cpp`: `_core.write(path, columns, table_attrs, nrow, codec, level, threads, profile, keep_pct,
   append)`. A column is `(name, phys, logical, ordered, levels, tzone, attrs, [Array.__arrow_c_array__()...])`.
   Number columns arrive as one int32 / float64 array with R's NA already filled in; string columns as their
   chunks (string, large_string, binary, large_binary). With the GIL released it first checks every string
   (UTF-8 for text, no NUL, at most 2^31-1 bytes, sound offsets; `ValueError` with column and 0-based row),
   then runs the engine's open / append / close. The string callback reads Arrow buffers only.
-- `tests/golden_tables.py`: builds the table `read_fstx()` is to return from a golden sidecar, and a stand-in
-  `to_pandas()`. The write tests use it because this branch has no reader. `tests/golden/full/*.json` hold the
-  values the sidecars cut short (`make_full_values.R`, checked against the sidecar md5).
+- `tests/golden_tables.py`: builds the values `read_fstx()` is to return from a golden sidecar, without the
+  reader. On this branch it stood in for the reader (with a stand-in `to_pandas()`); since the merge the write
+  tests use `fstx.read_fstx` and `fstx.to_pandas`, and it is a second opinion on the reader's values
+  (`test_roundtrip.py`). `tests/golden/full/*.json` hold the values the sidecars cut short
+  (`make_full_values.R`, checked against the sidecar md5).
 - `tests/golden/check_native.R`: R reads the files made from plain Python data
   (`tests/golden/from_python/native/`) and compares them with the same tables built in R.
 - `tests/golden/from_python/` is made by the tests and not committed.
 
-Metadata contract (the reader has to produce exactly this for a round trip):
+Metadata contract: see "One contract for reading and writing" below. Still as written here:
 
-- field `b"fstx.r"`: JSON `{"phys", "logical", "class", "tzone"}`: phys integer / double / logical /
-  character; logical none / factor / Date / POSIXct; class = R's full class vector (absent for none); tzone
-  only for a POSIXct column that has the attribute. Wanted on every column, and always next to `fstx.attrs`.
-- field `b"fstx.attrs"`: the column's attribute blob, raw. Schema `b"fstx.table_attrs"`: the table's blob, raw.
-  Schema `b"fstx.nrow"`: rows when read (decimal text); used only for a table blob in R serialization.
 - A `binary` column is written as text only when its `fstx.r` says phys character (`invalid_utf8="binary"`).
-- pandas: `df.attrs["fstx"] = {"table_attrs", "nrow", "columns": [{"name", "r", "attrs"}]}`, blobs as bytes or
-  base64 text. The index is the row names: RangeIndex 0..n-1 = none, distinct strings = character, distinct
-  int32 whole numbers = integer; anything else is refused (reset_index).
+- The pandas index is the row names: RangeIndex 0..n-1 = none, distinct strings = character, distinct int32
+  whole numbers = integer; anything else is refused (reset_index).
 - Metadata that does not fit the Arrow type any more is ignored with a `UserWarning`.
 - A zero-column table keeps its row count only as a table built from an empty struct array, with the schema
   metadata put on the record batch (`Table.replace_schema_metadata` loses the rows).
 
 Engine use: the engine has one worker pool that runs one job at a time (two writes from two Python threads
-gave `FstxError: worker pool is already running a job`). `_write._ENGINE_LOCK` makes writes take turns; the
-reader has to take the same lock around its engine calls.
+gave `FstxError: worker pool is already running a job`). A lock makes writes take turns; since the merge it is
+`fstx/_engine.py` `LOCK`, and the reader takes it too.
 
-Open after this step:
+Open after this step (the first two were closed by the merge):
 
-- `check_roundtrip.R` FAIL: `difftime.pandas.fstx`, column `weeks`, row 3: NaN comes back NA. A pandas float
-  column cannot tell NaN from NA (the same reason `basic.pandas.fstx` is KNOWN); the manifest expects
-  "identical if kept as float" although the column holds a NaN. Either the manifest line changes or
-  `to_pandas()` hands doubles over as the nullable `Float64` dtype.
-- `pyarrow` is imported by `fstx/_write.py` but is not in `pyproject.toml` dependencies yet.
 - Error rows are counted from 0. An append reads the file's metadata before taking the engine lock, so two
   threads appending to the same file at once are not protected from each other.
 - Not tested: a string column past 2 GB, string_view input, float16, Linux / macOS, Python other than 3.12.
+
+## One contract for reading and writing (merge of `py-wheels`, `py-write`, `py-read`, 17 Nov 2026)
+
+The three branches are merged into `python`, and the reader and the writer now use the same metadata, the same
+FXA1 module and the same engine lock. DESIGN.md section 4 is the contract; in short:
+
+| where | key | value |
+|---|---|---|
+| field | `fstx.r` | JSON `{"phys","logical","class"?,"tzone"?}`; the reader puts it on every column, the writer takes a column without it as plain data |
+| field | `fstx.attrs` | the column's attribute blob, base64 (the writer also takes raw bytes) |
+| schema | `fstx.table_attrs` | the table's attribute blob, base64 (the writer also takes raw bytes) |
+| schema | `fstx.nrow` | row count, decimal text; only on a whole-file read whose table blob is R serialization |
+| pandas | `df.attrs["fstx"]` | `{"table_attrs", "nrow", "columns": [{"name", "r", "attrs"}]}`, blobs as base64 text; row names in the index |
+| polars | - | nothing travels |
+
+- Row names: only in the table blob. A partial or reordered read rewrites an FXA1 blob so that `row.names` are
+  those of the rows read (`_read._with_row_names`); `fstx.row_names` is gone. `_read.row_names(schema)` decodes
+  them from the blob.
+- `fstx/_fxa1.py` is the one FXA1 module: `decode` (alias `parse`), `encode`, `RVector` (alias `Vec`), the four
+  constructors, `kind`, `is_fxa1`. A double `None` is NA_real_ both ways, every other NaN keeps its payload;
+  strings that are not UTF-8 decode with `surrogateescape` and encode back to the stored bytes; two RVectors
+  are equal when they are stored as the same bytes.
+- `fstx/_meta.py`: the four keys, `b64(blob)` and `blob(value)` (base64 as bytes or str, or the raw blob).
+- `fstx/_engine.py`: `LOCK`, taken by a write, by `_core.filter`, by opening a read stream, by each batch pulled
+  from it and by closing it. Between batches the lock is free, so a batch reader that is left open does not
+  block a write. It is re-entrant: a batch reader collected by the garbage collector in a thread that holds the
+  lock must be able to close its stream.
+- `to_pandas`: nullable dtypes for logical, integer, integer64 and double columns; a factor with NA as a level
+  becomes strings (warning) and loses its `fstx.r`.
+- Tests: `test_write.py` reads the golden files with `fstx.read_fstx` and goes through the real
+  `fstx.to_pandas` / `fstx.to_polars` (files `from_python/<case>.fstx`, `.pandas.fstx`, `.polars.fstx`);
+  `test_roundtrip.py` is new: reader against the sidecars, golden file -> read -> write -> read (pyarrow,
+  pandas, polars; also `datetimes="float"` with `invalid_utf8="binary"`, which gives back the stored column
+  definitions), ASCII-only metadata, polars on R-serialized and non-ASCII blobs, raw and base64 blobs alike,
+  partial reads written back (`from_python/native/rownames_*.fstx`, `classes_blob.part.fstx`, checked by
+  `check_native.R`), reads, filters, batches, writes and appends from 8 threads at once, a batch reader left
+  open during a write.
+- `manifest.json`: `difftime` through pandas is now "not identical" (a pandas `Float64` column cannot tell NaN
+  from NA, as `basic`); `roundtrip_polars` is new for every case; the `basic` and `factor_na_level` pandas notes
+  say what `to_pandas` does now. `make_golden.R` writes the same manifest (not rerun: the golden files did not
+  change).
+
+Tested (17 Nov 2026):
+
+- Desktop, Windows x64, Python 3.12, pyarrow 26.0.1, pandas 3.1.1, polars 2.1.0, wheel built with cl from the
+  merged tree: 795 tests passed (`test_build.py`, `test_metadata.py`, `test_read.py`, `test_write.py`,
+  `test_roundtrip.py`). The wheel was built before the last Python-only edits; for this run the final `.py`
+  files were copied over the installed package (the compiled module was the merged one).
+- Laptop, R 4.5.1 with fstx 1.0.0, on the files that run wrote: `check_roundtrip.R` 104 files = 73 PASS,
+  31 KNOWN, 0 FAIL (pyarrow 30 PASS / 5 KNOWN, pandas 27 / 8, polars 16 / 18; `names` is not written through
+  polars); `check_native.R` 31 files, 31 PASS.
+- Not run after the merge: the clang-cl wheel and its pytest, a fresh cl wheel with the final files inside,
+  coretest, and the R suite (`test-arrow.R`). The desktop was handed to another job before they could start.
+  The merge brought no change to `src/` beyond what `py-read` already had (`arrow_abi.h`, `r_arrow.cpp`).
+- Still open: two threads appending to the same file (above); Linux, macOS, Python other than 3.12.

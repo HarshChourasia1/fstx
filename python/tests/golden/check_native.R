@@ -1,4 +1,5 @@
-# Python -> R check of the files test_write.py makes from data that never came from R (python/DESIGN.md).
+# Python -> R check of the files test_write.py makes from data that never came from R, and of the partial
+# reads of golden files that test_roundtrip.py writes back (python/DESIGN.md).
 #
 #   Rscript check_native.R [golden dir]       (default: the folder this script is in)
 #
@@ -27,6 +28,8 @@ big <- function() df(i = 0:(n - 1L), f = (0:(n - 1L)) * 0.5, s = paste0("row", 0
 small <- df(x = 1:3, s = c("a", NA, "c"))
 stamp <- c(1704103200, NA, 1719791999.5)  # 2024-01-01 10:00:00 and 2024-06-30 23:59:59.5 UTC
 ist <- stamp - 19800
+gold <- function(name) read_fstx(file.path(gdir, paste0(name, ".fstx")), threads = 1L)
+rn <- function(i) function() gold("rownames_char")[i, , drop = FALSE]
 
 want <- list(
   native_types = function() df(
@@ -70,7 +73,13 @@ want <- list(
     d = as.Date(c("2024-01-01", NA, "2020-02-29")), t = utc(stamp), c = factor(c("x", "y", "x")),
     i8 = c(1L, -1L, NA), u64 = as.integer64(c("1", "1099511627776", NA))),
   strings_invalid_utf8.binary = function() read_fstx(file.path(gdir, "strings_invalid_utf8.fstx")),
-  classes_blob.nometa = NULL  # R's own classes are gone on purpose: only has to read
+  classes_blob.nometa = NULL,  # R's own classes are gone on purpose: only has to read
+  # read_fstx(rows = / filters = / columns =) -> write_fstx: what the same subset gives in R
+  rownames_char.rows20 = rn(c(3, 1)), rownames_char.slice = rn(2:3), rownames_char.repeat = rn(c(2, 2, 2)),
+  rownames_char.filter = function() { x <- gold("rownames_char"); x[x$v > 10L, , drop = FALSE] },
+  rownames_char.rows20.pandas = rn(c(3, 1)), rownames_char.iloc1.pandas = rn(2),
+  rownames_int.rows10 = function() gold("rownames_int")[c(2, 1), , drop = FALSE],
+  classes_blob.part = function() { x <- gold("classes_blob"); x[rev(names(x))[1:3]] }
 )
 
 differ <- function(a, b) {

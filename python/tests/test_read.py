@@ -14,41 +14,14 @@ import pyarrow.compute as pc
 import pytest
 
 import fstx
-from conftest import CASES, FORMAT_DIR, FORMAT_READ, FORMAT_REFUSE, GOLDEN, ids
-from fstx import _fxa1
+from conftest import CASES, FORMAT_DIR, FORMAT_READ, FORMAT_REFUSE, GOLDEN, ids, one, quiet, same
+from fstx import _fxa1, _meta
+from fstx._read import row_names
 
 ALL_READ = CASES + FORMAT_READ
 INT_NA = -(2**31)
 I64_NA = -(2**63)
 NA_REAL = struct.pack("<Q", 0x7FF00000000007A2)
-
-
-def quiet(path, **kw):
-    """read_fstx without the invalid-UTF-8 warning (one file has such strings on purpose)."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", fstx.FstxWarning)
-        return fstx.read_fstx(path, **kw)
-
-
-def one(col):
-    return col.combine_chunks() if isinstance(col, pa.ChunkedArray) else col
-
-
-def same(a, b):
-    """Table equality that also holds for NaN (Table.equals says NaN != NaN): doubles are compared by bits.
-    Schema-level metadata is left out (a partial read adds fstx.row_names); field metadata must match."""
-    a, b = a.replace_schema_metadata(None), b.replace_schema_metadata(None)
-    if not a.schema.equals(b.schema, check_metadata=True) or a.num_rows != b.num_rows:
-        return False
-    for x, y in zip(a.columns, b.columns):
-        if pa.types.is_floating(x.type):
-            x, y = one(x), one(y)
-            if x.is_null().to_pylist() != y.is_null().to_pylist():
-                return False
-            x, y = pc.fill_null(x, 0.0).view(pa.int64()), pc.fill_null(y, 0.0).view(pa.int64())
-        if not x.equals(y):
-            return False
-    return True
 
 
 def str_raw(vals):
@@ -164,7 +137,10 @@ def test_read_golden_metadata(path, want):
     if tw["blob"] == "none":
         assert b"fstx.table_attrs" not in smd
     else:
-        assert smd[b"fstx.table_attrs"] == m.table_attrs
+        assert _meta.blob(smd[b"fstx.table_attrs"]) == m.table_attrs  # base64 in the metadata
+        smd[b"fstx.table_attrs"].decode("ascii")
+    # the row count travels only with a table blob in R serialization
+    assert smd.get(b"fstx.nrow") == (str(m.nrow).encode() if tw["blob"] == "R-serialization" else None)
     if tw["blob"] == "R-serialization":
         assert m.table_class is None and m.attributes is None
     else:
@@ -187,16 +163,13 @@ def test_read_golden_metadata(path, want):
                     assert got.type == v["type"] and len(got.values) == len(v["values"])
                     if v["type"] in ("character", "integer", "logical"):
                         assert got.values == v["values"]
-        assert md.get(b"fstx.attrs") == col.attrs
-        if s["logical"] == "none" and s["blob"] == "none":
-            assert b"fstx.r" not in md
-        else:
-            r = json.loads(md[b"fstx.r"])
-            assert (r["phys"], r["logical"]) == (s["phys"], s["logical"])
-            assert r.get("class", []) == (col.r_class or [])
-            if s["logical"] == "POSIXct":
-                assert ("tzone" in r) == s["tzone_present"]
-                assert r.get("tzone") == (s.get("tzone", "") if s["tzone_present"] else None)
+        assert _meta.blob(md.get(b"fstx.attrs")) == col.attrs
+        r = json.loads(md[b"fstx.r"])  # on every column
+        assert (r["phys"], r["logical"]) == (s["phys"], s["logical"])
+        assert r.get("class", []) == (col.r_class or [])
+        assert ("tzone" in r) == (s["logical"] == "POSIXct" and s["tzone_present"])
+        if s["logical"] == "POSIXct":
+            assert r.get("tzone") == (s.get("tzone", "") if s["tzone_present"] else None)
 
 
 @pytest.mark.parametrize("path,want", FORMAT_REFUSE, ids=ids(FORMAT_REFUSE))
@@ -314,7 +287,8 @@ def test_invalid_utf8_modes():
     assert json.loads(b.schema.field("s").metadata[b"fstx.r"]) == {"phys": "character", "logical": "none"}
     # a file without bad strings keeps its string columns in binary mode, and "error" reads it
     ok = fstx.read_fstx(GOLDEN / "basic.fstx", invalid_utf8="binary")
-    assert ok.column("chr").type == pa.string() and ok.schema.field("chr").metadata is None
+    assert ok.column("chr").type == pa.string()
+    assert json.loads(ok.schema.field("chr").metadata[b"fstx.r"]) == {"phys": "character", "logical": "none"}
     assert same(fstx.read_fstx(GOLDEN / "basic.fstx", invalid_utf8="error"), ok)
     with fstx.open(p) as f:
         with pytest.warns(fstx.FstxWarning):
@@ -351,8 +325,8 @@ def test_strings_are_plain_and_as_factor():
 def test_attributes_false_drops_r_serialization_only():
     p = GOLDEN / "attrs_serialized.fstx"
     t = fstx.read_fstx(p)
-    assert t.schema.metadata[b"fstx.table_attrs"][:2] == b"B\n"
-    assert t.schema.field("v").metadata[b"fstx.attrs"][:2] == b"B\n"
+    assert _meta.blob(t.schema.metadata[b"fstx.table_attrs"])[:2] == b"B\n"
+    assert _meta.blob(t.schema.field("v").metadata[b"fstx.attrs"])[:2] == b"B\n"
     t = fstx.read_fstx(p, attributes=False)
     assert not t.schema.metadata and b"fstx.attrs" not in t.schema.field("v").metadata
     a = fstx.read_fstx(GOLDEN / "attrs_fxa1.fstx", attributes=False)
@@ -446,15 +420,28 @@ def test_rows_on_every_type():
 def test_row_names_follow_the_rows():
     p = GOLDEN / "rownames_char.fstx"
     full = fstx.read_fstx(p)
-    assert b"fstx.row_names" not in full.schema.metadata  # the whole file: the blob has them
-    part = fstx.read_fstx(p, rows=[2, 0])
-    assert json.loads(part.schema.metadata[b"fstx.row_names"]) == ["rन", "r1"]
-    assert json.loads(fstx.read_fstx(p, rows=slice(1, 3)).schema.metadata[b"fstx.row_names"]) == ["r2", "rन"]
-    assert json.loads(fstx.read_fstx(p, rows=[1, 1, 1]).schema.metadata[b"fstx.row_names"]) == ["r2", "r2.1", "r2.2"]
-    assert json.loads(fstx.read_fstx(p, filters=[("v", ">", 10)]).schema.metadata[b"fstx.row_names"]) == ["r2", "rन"]
+    assert _meta.blob(full.schema.metadata[b"fstx.table_attrs"]) == fstx.metadata(p).table_attrs
+    assert row_names(full.schema) == ["r1", "r2", "rन"]
+    # a partial or reordered read: the table blob is rewritten with the row names of the rows read
+    assert row_names(fstx.read_fstx(p, rows=[2, 0]).schema) == ["rन", "r1"]
+    assert row_names(fstx.read_fstx(p, rows=slice(1, 3)).schema) == ["r2", "rन"]
+    assert row_names(fstx.read_fstx(p, rows=[1, 1, 1]).schema) == ["r2", "r2.1", "r2.2"]  # as R's make.unique
+    assert row_names(fstx.read_fstx(p, filters=[("v", ">", 10)]).schema) == ["r2", "rन"]
+    assert row_names(fstx.read_fstx(p, rows=[]).schema) == []
+    part = _fxa1.decode(_meta.blob(fstx.read_fstx(p, rows=[2, 0]).schema.metadata[b"fstx.table_attrs"]))
+    assert part["class"].values == ["data.frame"] and part["row.names"] == _fxa1.character(["rन", "r1"])
     ints = fstx.read_fstx(GOLDEN / "rownames_int.fstx", rows=[1])
-    assert json.loads(ints.schema.metadata[b"fstx.row_names"]) == [2]
-    assert b"fstx.row_names" not in (fstx.read_fstx(BIG, rows=[1]).schema.metadata or {})
+    assert row_names(ints.schema) == [2]
+    # automatic row names stay automatic, for the new row count
+    big = fstx.read_fstx(BIG, rows=[5, 1])
+    assert row_names(big.schema) is None
+    auto = _fxa1.decode(fstx.metadata(BIG).table_attrs).get("row.names")
+    if auto is not None:
+        got = _fxa1.decode(_meta.blob(big.schema.metadata[b"fstx.table_attrs"]))["row.names"]
+        assert got.values == [None, 2 if auto.values[1] > 0 else -2]
+    # R serialization cannot be looked into: the blob stays and the row count that went with it goes
+    ser = fstx.read_fstx(GOLDEN / "attrs_serialized.fstx", rows=[0])
+    assert b"fstx.table_attrs" in ser.schema.metadata and b"fstx.nrow" not in ser.schema.metadata
 
 
 # ---------------------------------------------------------------- filters
@@ -732,7 +719,9 @@ def test_fxa1_decoder():
         name(b"c") + i32(2, 1, 1) + i32(1) + leaf + i32(0)
     with pytest.raises(_fxa1.Fxa1Error, match="nested too deep"):
         _fxa1.decode(deep)
-    assert not hasattr(_fxa1, "encode")  # the encoder is the writer's
+    # the encoder is the decoder's inverse, also for string bytes that are not UTF-8
+    odd = b"FXA\x01" + i32(1) + name(b"s") + i32(4, 1, 2) + b"\xff\xfe" + i32(0)
+    assert _fxa1.encode(_fxa1.decode(odd)) == odd
 
 
 def test_corrupt_attribute_blob_is_an_fstx_error(tmp_path):
@@ -763,8 +752,16 @@ def test_to_pandas():
     assert df["lgl"][2] is pd.NA and df["lgl"][0] is True or bool(df["lgl"][0]) is True
     assert df["dbl"].isna().tolist()[1] and df["dbl"][5] == float("inf")
     assert df["chr"][1] == "" and pd.isna(df["chr"][2])
-    schema = pa.ipc.read_schema(pa.py_buffer(df.attrs["fstx_schema"]))
-    assert schema.equals(t.schema, check_metadata=True)
+    meta = df.attrs["fstx"]
+    json.dumps(meta)  # plain JSON data
+    assert list(meta) == ["table_attrs", "nrow", "columns"] and meta["nrow"] is None
+    assert _meta.blob(meta["table_attrs"]) == fstx.metadata(GOLDEN / "basic.fstx").table_attrs
+    assert [c["name"] for c in meta["columns"]] == t.column_names
+    assert [c["r"] for c in meta["columns"]] == [json.loads(f.metadata[b"fstx.r"]) for f in t.schema]
+    assert all(c["attrs"] is None for c in meta["columns"])
+    ser = fstx.to_pandas(fstx.read_fstx(GOLDEN / "attrs_serialized.fstx")).attrs["fstx"]
+    assert ser["nrow"] == fstx.metadata(GOLDEN / "attrs_serialized.fstx").nrow
+    assert _meta.blob(ser["columns"][0]["attrs"]) == fstx.metadata(GOLDEN / "attrs_serialized.fstx").columns[0].attrs
     i64 = fstx.to_pandas(fstx.read_fstx(GOLDEN / "integer64.fstx"))["i64"]
     assert str(i64.dtype) == "Int64" and i64[5] == 2**63 - 1 and i64[3] == 2**53 + 1 and i64[7] is pd.NA
     rn = fstx.to_pandas(fstx.read_fstx(GOLDEN / "rownames_char.fstx"))

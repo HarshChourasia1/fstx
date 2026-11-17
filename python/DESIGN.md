@@ -184,15 +184,15 @@ time", which Python has no equivalent for.
 
 | R | file | Python | Python write back | RT / lost |
 |---|---|---|---|---|
-| data.frame / data.table / tibble class | table blob (FXA1) `class` | schema meta `fstx.table_attrs` (raw blob); class shown in `FileMeta` | blob from meta; no meta -> `class = "data.frame"` | yes [basic, tibble] |
+| data.frame / data.table / tibble class | table blob (FXA1) `class` | schema meta `fstx.table_attrs` (the blob, base64); class shown in `FileMeta` | blob from meta; no meta -> `class = "data.frame"` | yes [basic, tibble] |
 | automatic row names | not stored | none | none | yes |
-| character row names | table blob `row.names` | kept in the blob; `fstx.to_pandas` makes them the index | from the blob when the row count still matches, else dropped; from pandas: a string index becomes row names, a RangeIndex 0..n-1 none | yes [rownames_char]. Risk: sorting a pyarrow.Table keeps its metadata, so row names would pair with the wrong rows; use pandas when rows move |
+| character row names | table blob `row.names` | kept in the blob; a read of some rows (`rows=`, `filters=`) rewrites the blob so the names follow the rows read; `fstx.to_pandas` makes them the index | from the blob when the row count still matches, else dropped; from pandas: a string index becomes row names, a RangeIndex 0..n-1 none | yes [rownames_char]. Risk: moving rows of a pyarrow.Table after the read (`take`, `sort_by`, `filter`) keeps its metadata, so row names would pair with the wrong rows; select rows in `read_fstx`, or use pandas when rows move |
 | integer row names that are not automatic (`x[c(4, 2), ]`) | table blob, integer | as above; integer index | as above | yes [rownames_int] |
 | data.table key (`sorted`) | table blob | kept | kept only if the key columns are still sorted (checked by the writer) and rows were not dropped | yes when still sorted [datatable] |
 | data.table index (`index`) | table blob (order vectors) | kept | **always dropped**: the writer cannot tell whether rows moved; data.table rebuilds indices when needed | **no** [datatable] |
 | other table attributes (plain vectors) | FXA1 | decoded into `FileMeta`, blob kept | blob kept | yes [attrs_fxa1] |
-| column attributes (labels, units, comment, named vectors) | column FXA1 blob | field meta `fstx.attrs` (raw) + decoded in `ColumnMeta` | blob kept when the column type is unchanged | yes [attrs_fxa1] |
-| list-valued attributes (any attribute FXA1 cannot hold) | R serialization blob | opaque bytes in meta, never decoded; `attributes=False` drops them | written back unchanged (table blob: only if the row count is unchanged, since it may hold row names) | yes when unchanged [attrs_serialized] |
+| column attributes (labels, units, comment, named vectors) | column FXA1 blob | field meta `fstx.attrs` (base64) + decoded in `ColumnMeta` | blob kept when the column type is unchanged | yes [attrs_fxa1] |
+| list-valued attributes (any attribute FXA1 cannot hold) | R serialization blob | opaque bytes (base64) in meta, never decoded; `attributes=False` drops them | written back unchanged (table blob: only if the row count is unchanged, since it may hold row names) | yes when unchanged [attrs_serialized] |
 | duplicate names, `""` | as written | kept (pyarrow allows both) | kept | yes [names] |
 | name `NA` | R writes it as `"NA"` | `"NA"` | `"NA"` | already not identical inside R (checked: NA name reads back as "NA") |
 | 0 x 0, 0 rows, 0 columns with rows | as written | 0 columns with rows: `RecordBatch.from_struct_array` of an empty struct gives a table of n rows (checked) | row count kept | yes [empty_0x0, zero_rows, zero_cols_5rows] |
@@ -200,14 +200,38 @@ time", which Python has no equivalent for.
 
 ## 4. Arrow metadata
 
-Field metadata (only what is needed to write the column back the way R wrote it):
+One contract for the reader and the writer (keys and helpers: `fstx/_meta.py`). Every value is ASCII text, so
+other libraries can carry a table read by fstx: polars reads Arrow metadata as UTF-8 and refuses anything else
+(`pl.from_arrow(read_fstx(...))` works on every file, checked on R-serialized and non-ASCII blobs).
 
-- `fstx.r`: JSON, e.g. `{"phys": "double", "logical": "Date", "class": ["Date"]}`,
-  `{"phys": "double", "logical": "POSIXct", "class": ["POSIXct", "POSIXt"], "tzone": ""}` (key `tzone` absent =
-  no tzone attribute), `{"phys": "double", "logical": "none", "class": ["integer64"]}`.
-- `fstx.attrs`: the column's attribute blob, raw bytes, exactly as stored (FXA1 or R serialization).
+Field metadata:
 
-Schema metadata: `fstx.table_attrs`, the table blob, raw bytes.
+- `fstx.r`: JSON `{"phys", "logical", "class"?, "tzone"?}`: how R holds the column. `phys` is integer / double /
+  logical / character; `logical` is none / factor / Date / POSIXct; `class` is R's class vector (absent when
+  there is none, or when an R-serialization blob hides it); `tzone` is there only for a POSIXct column stored
+  natively with a tzone attribute (`""` = stored empty, key absent = no attribute). Examples:
+  `{"phys":"integer","logical":"none"}`, `{"phys":"double","logical":"Date","class":["Date"]}`,
+  `{"phys":"double","logical":"POSIXct","class":["POSIXct","POSIXt"],"tzone":""}`,
+  `{"phys":"double","logical":"none","class":["integer64"]}`.
+  The reader puts it on every column. The writer accepts a column without it and writes it as the plain data it
+  is (section 3.6).
+- `fstx.attrs`: the column's attribute blob (FXA1 or R serialization, spec 9.4), base64.
+
+Schema metadata:
+
+- `fstx.table_attrs`: the table's attribute blob, base64.
+- `fstx.nrow`: the file's row count, decimal text. Only on a read of the whole file whose table blob is R
+  serialization: nobody here can look into such a blob, so the writer keeps it only for a table that still has
+  this many rows (or when the bytes `row.names` do not occur in it) and otherwise drops it with a warning.
+
+The writer also takes both blobs as raw bytes: a raw blob is never valid base64 (FXA1 has the byte 0x01 at offset
+3, R serialization a line feed at offset 1), so the two cannot be confused.
+
+Row names live in the table blob and nowhere else. A read of every row in file order hands the blob out as
+stored. Any other read (`rows=`, `filters=`, a slice) rewrites an FXA1 blob: `row.names` become those of the rows
+read, in the order read; repeats are made unique as R's `x[rows, ]` does (`r2`, `r2.1`, ...); automatic row names
+get the new count. So a partial read followed by a write gives R the row names of exactly those rows (checked
+in R). An R-serialization blob cannot be rewritten: it is handed out without `fstx.nrow`.
 
 The writer uses `fstx.r` only when it agrees with the Arrow type (a `date32` field with `phys: integer` writes an
 int Date; a `string` field that still carries Date meta ignores it and warns). Blobs: column blobs are kept when the
@@ -216,7 +240,22 @@ section 3.7 says, and kept byte for byte when nothing was dropped.
 
 pyarrow keeps both kinds of metadata through `select`, `slice`, `filter`, `take`, `sort_by` and `concat_tables`
 (checked); a column replaced with `set_column` loses its field metadata while the schema metadata stays (checked).
-`from_pandas` builds its own metadata, so `fstx.to_pandas` stores ours in `df.attrs` and the writer looks there.
+
+pandas: `from_pandas` builds its own metadata, so `fstx.to_pandas` stores ours under one key, and the writer
+looks there:
+
+    df.attrs["fstx"] = {"table_attrs": base64 text or None, "nrow": int or None,
+                        "columns": [{"name": str, "r": dict or None, "attrs": base64 text or None}, ...]}
+
+It is plain JSON data. Stored row names become the index, and on a write the index decides the row names
+(distinct strings, or distinct whole numbers other than 0..n-1; a RangeIndex 0..n-1 means none). Column entries
+are matched by position and name, else by a name that occurs once, so dropping or reordering columns keeps
+them. `write_fstx(fstx.to_pandas(read_fstx(p)), q)` loses nothing of how R held the table; what pandas itself
+cannot hold is in section 8.
+
+polars has no metadata and no index: `fstx.to_polars` (or `pl.from_arrow`) gives the values, and a write from
+the polars DataFrame stores plain data (section 8). Write from the pyarrow.Table to keep R's classes,
+attributes and row names.
 
 ## 5. NA semantics, per type
 
@@ -257,18 +296,21 @@ pyarrow keeps both kinds of metadata through `select`, `slice`, `filter`, `take`
   type, null count, every value (doubles also as exact bit patterns), a canonical md5 over all values, and the page
   list (kind, encoding, missing-value mode, codec). Columns over 100 rows list their first 12 values; the md5 covers
   the rest. A Python test needs no R. The encoding of the sidecar is described at the top of `make_golden.R`.
-- `manifest.json`: per case what it covers and the expected R -> Python -> R result through pyarrow and through
-  pandas ("identical ..." or the reason it is not).
+- `manifest.json`: per case what it covers and the expected R -> Python -> R result through pyarrow, through
+  pandas and through polars ("identical ..." or the reason it is not).
 - `format-1.0.json`: the same expectations for the package's own format golden files
   (`tests/testthat/fixtures/golden-1.0`: all 294 mixes of page kind x encoding x missing-value mode x codec,
   appends, compaction, and every reserved number that must be refused, with the message). Python reads those files
   from there.
 - Codecs: none, LZ4, Zstandard 1 and 19 (on every page), profiles fast / balanced / small. pcodec cannot be tested
   as written data: fstx 1.0 never writes codec 4; its refusal is in `format-1.0.json`.
-- `check_roundtrip.R`: after the Python tests write `from_python/<case>.fstx` (pyarrow path) and optionally
-  `from_python/<case>.pandas.fstx`, it compares each with the original in R with identical() and reports PASS /
-  KNOWN (expected difference) / BETTER / FAIL / ERROR, plus bit-level differences identical() does not see. Exit
-  status 1 on FAIL or ERROR. (Checked against simulated outputs; no real Python output exists yet.)
+- `check_roundtrip.R`: after the Python tests write `from_python/<case>.fstx` (read_fstx -> write_fstx),
+  `from_python/<case>.pandas.fstx` (through `fstx.to_pandas`) and `from_python/<case>.polars.fstx` (through
+  `fstx.to_polars`), it compares each with the original in R with identical() and reports PASS / KNOWN (expected
+  difference) / BETTER / FAIL / ERROR, plus bit-level differences identical() does not see. Exit status 1 on
+  FAIL or ERROR.
+- `check_native.R`: R reads the files made from data that never came from R, and the partial reads of golden
+  files written back (`from_python/native/`), and compares them with the same tables built in R.
 
 ## 8. Round trips that will not be identical
 
@@ -286,7 +328,14 @@ labels, classes, row names and the table class are gone; Python-made factors los
 
 Through pandas, additionally: R's NaN becomes NA in double columns; integer columns with NA turn double unless
 nullable dtypes are used (`fstx.to_pandas` uses them; plain `Table.to_pandas()` turns int64 with nulls into float64
-and loses precision past 2^53, checked); a factor with an NA level cannot be a Categorical.
+and loses precision past 2^53, checked); a factor with an NA level cannot be a Categorical (`fstx.to_pandas`
+returns it as strings, with a warning). [basic, difftime, factor_na_level]
+
+Through polars (no metadata, no index): everything listed under "metadata lost" above, and also: a Categorical
+keeps only the levels in use, in order of first appearance, and no order; an empty or all-null Categorical has
+no levels; an empty or all-null Int64 comes back integer; repeated column names are refused. Plain logical,
+integer, double, character and integer64 columns, and Dates stored as double, come back identical. Per case:
+`roundtrip_polars` in `manifest.json`.
 
 ## 9. Decisions (Harsh, 17 Nov 2026: "Yes, all four")
 
@@ -294,3 +343,9 @@ and loses precision past 2^53, checked); a factor with an NA level cannot be a C
 2. **Bad UTF-8 by default**: replace with U+FFFD and warn; the binary mode keeps the bytes.
 3. **Row numbers**: 0-based in Python.
 4. **Dates and times by default**: Arrow types (date32, timestamp[us]); `datetimes="float"` returns the exact stored values.
+
+Later, with the merge of the read, write and wheels branches (Harsh, 17 Nov 2026: "Yes, merge all", as passed on
+by the coordinating session):
+
+5. **Attribute blobs in Arrow metadata**: base64 text (`fstx.attrs`, `fstx.table_attrs`), not raw bytes, so that
+   polars and other libraries that read metadata as UTF-8 accept the tables. The writer takes raw bytes as well.

@@ -1,9 +1,7 @@
-"""The table read_fstx() is to return for a golden file (DESIGN.md sections 3 and 4), built from the JSON sidecar.
-
-The write tests run without the Python reader: this stands in for it. Values come from the sidecar (and from
-golden/full/ for the columns a sidecar cuts short, checked against the sidecar's md5), the attribute blobs from
-``fstx.metadata``. Field metadata b"fstx.r" / b"fstx.attrs" and schema metadata b"fstx.table_attrs" /
-b"fstx.nrow" are what fstx/_write.py documents.
+"""The values read_fstx() is to return for a golden file (DESIGN.md section 3), built from the JSON sidecar
+without the reader: a second opinion on the reader's types and values (test_roundtrip.py compares the two).
+Values come from the sidecar, and from golden/full/ for the columns a sidecar cuts short (checked against the
+sidecar's md5). No metadata: that is the reader's, checked in test_read.py.
 """
 import hashlib
 import json
@@ -11,7 +9,6 @@ import struct
 
 import pyarrow as pa
 
-import fstx
 from conftest import GOLDEN
 
 NA_REAL = 0x7FF00000000007A2
@@ -100,66 +97,17 @@ def _column(c, full, invalid_utf8):
     raise AssertionError(f"no builder for {t}")
 
 
-def field_r(c):
-    s = c["stored"]
-    r = {"phys": s["phys"], "logical": s["logical"]}
-    if c["r_class"]:
-        r["class"] = c["r_class"]
-    if s["logical"] == "POSIXct" and s["tzone_present"]:
-        r["tzone"] = s.get("tzone", "")
-    return r
-
-
-def golden_table(path, want, invalid_utf8="replace", metadata=True) -> pa.Table:
-    """The pyarrow.Table for a golden file. ``metadata=False`` leaves the fstx metadata out (a table that was
-    rebuilt in Python and lost it)."""
-    m = fstx.metadata(path)
+def golden_table(path, want, invalid_utf8="replace") -> pa.Table:
+    """The pyarrow.Table of a golden file's values (no metadata)."""
     full = None
     if path.stem in _FULL:
         full = {c["name"]: c for c in _json(GOLDEN / "full" / (_FULL[path.stem] + ".json"))["columns"]}
-    arrays, fields = [], []
-    for c, cm in zip(want["columns"], m.columns):
+    arrays, names = [], []
+    for c in want["columns"]:
         a = _column(c, full and full[c["name"]], invalid_utf8)
         assert len(a) == c["n"]
-        md = {b"fstx.r": json.dumps(field_r(c)).encode()}
-        if cm.attrs is not None:
-            md[b"fstx.attrs"] = cm.attrs
         arrays.append(a)
-        fields.append(pa.field(c["name"], a.type, metadata=md if metadata else None))
-    smeta = {b"fstx.nrow": str(m.nrow).encode()}
-    if m.table_attrs is not None:
-        smeta[b"fstx.table_attrs"] = m.table_attrs
+        names.append(c["name"])
     if not arrays:  # no columns: an empty struct array keeps the row count
-        b = pa.RecordBatch.from_struct_array(pa.array([{}] * m.nrow, pa.struct([])))
-        return pa.Table.from_batches([b.replace_schema_metadata(smeta) if metadata else b])
-    return pa.Table.from_arrays(arrays, schema=pa.schema(fields, metadata=smeta if metadata else None))
-
-
-def to_pandas(table: pa.Table):
-    """What fstx.to_pandas() is to do (DESIGN.md section 2), as far as the writer cares: nullable integer and
-    boolean dtypes, R row names as the index, and the fstx metadata in ``df.attrs["fstx"]``."""
-    import base64
-
-    import pandas as pd
-
-    from fstx import _fxa1_write as fxa
-
-    nullable = {pa.int32(): pd.Int32Dtype(), pa.int64(): pd.Int64Dtype(), pa.bool_(): pd.BooleanDtype()}
-    df = table.to_pandas(types_mapper=nullable.get)
-    smeta = table.schema.metadata or {}
-    blob = smeta.get(b"fstx.table_attrs")
-    if blob is not None and fxa.is_fxa1(blob):
-        rn = fxa.parse(blob).get("row.names")
-        if rn is not None and len(rn.values) == len(df):
-            df.index = pd.Index(rn.values)
-
-    def b64(b):
-        return None if b is None else base64.b64encode(b).decode()
-
-    cols = []
-    for f in table.schema:
-        md = f.metadata or {}
-        cols.append({"name": f.name, "r": json.loads(md[b"fstx.r"]) if b"fstx.r" in md else None,
-                     "attrs": b64(md.get(b"fstx.attrs"))})
-    df.attrs["fstx"] = {"table_attrs": b64(blob), "nrow": table.num_rows, "columns": cols}
-    return df
+        return pa.Table.from_batches([pa.RecordBatch.from_struct_array(pa.array([{}] * want["nrow"], pa.struct([])))])
+    return pa.Table.from_arrays(arrays, names=names)

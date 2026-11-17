@@ -38,3 +38,44 @@ FORMAT_REFUSE = [(FORMAT_DIR / f["file"], f) for f in _fmt if f["expect"] != "re
 
 def ids(pairs):
     return [p.name for p, _ in pairs]
+
+
+def quiet(path, **kw):
+    """read_fstx without the invalid-UTF-8 warning (one golden file has such strings on purpose)."""
+    import warnings
+
+    import fstx
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", fstx.FstxWarning)
+        return fstx.read_fstx(path, **kw)
+
+
+def one(col):
+    import pyarrow as pa
+
+    return col.combine_chunks() if isinstance(col, pa.ChunkedArray) else col
+
+
+def same(a, b, schema_metadata=False):
+    """Table equality that also holds for NaN (Table.equals says NaN != NaN): doubles are compared by bits.
+    Field metadata must match; schema-level metadata only when asked (a partial read changes the table blob)."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if a.num_columns == 0 or b.num_columns == 0:  # nothing but the row count (and the schema metadata)
+        return a.num_columns == b.num_columns and a.num_rows == b.num_rows and \
+            (not schema_metadata or a.schema.metadata == b.schema.metadata)
+    if not schema_metadata:
+        a, b = a.replace_schema_metadata(None), b.replace_schema_metadata(None)
+    if not a.schema.equals(b.schema, check_metadata=True) or a.num_rows != b.num_rows:
+        return False
+    for x, y in zip(a.columns, b.columns):
+        if pa.types.is_floating(x.type):
+            x, y = one(x), one(y)
+            if x.is_null().to_pylist() != y.is_null().to_pylist():
+                return False
+            x, y = pc.fill_null(x, 0.0).view(pa.int64()), pc.fill_null(y, 0.0).view(pa.int64())
+        if not x.equals(y):
+            return False
+    return True

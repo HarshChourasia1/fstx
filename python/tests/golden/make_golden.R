@@ -191,8 +191,31 @@ table_desc <- function(y, path) {
 }
 
 manifest <- list()
+# R -> Python -> R through fstx.to_polars() and a polars DataFrame, which carries no fstx metadata: the cases
+# that do not come back identical(), and why. Every other case is expected identical.
+polars_notes <- c(
+  zero_rows = "not identical: an empty polars Categorical has no levels and no order, and an empty Int64 comes back integer (int64 = 'auto')",
+  all_na = "not identical: an all-null polars Categorical has no levels, and an all-null Int64 comes back integer (int64 = 'auto')",
+  strings_invalid_utf8 = "not identical (as pyarrow)",
+  datetimes = "not identical: polars carries no metadata, so tzone \"\" and no tzone both come back as UTC",
+  datetimes_subus = "not identical (as pyarrow)",
+  datetimes_odd = "not identical (as pyarrow); the integer POSIXct comes back double",
+  dates = "not identical: the integer Date comes back double (polars carries no metadata)",
+  dates_odd = "not identical (as pyarrow)",
+  factors = "not identical: a polars Categorical keeps only the levels in use, in order of first appearance, and no order",
+  factor_na_level = "not identical: to_polars turns the column into strings",
+  classes_blob = "not identical: classes kept in the attribute blob are lost (polars carries no metadata)",
+  difftime = "not identical: class and units are lost, the values come back as plain doubles",
+  attrs_fxa1 = "not identical: attributes are lost (polars carries no metadata)",
+  attrs_serialized = "not identical: attributes are lost (polars carries no metadata)",
+  rownames_char = "not identical: row names are lost (polars has no index)",
+  rownames_int = "not identical: row names are lost (polars has no index)",
+  datatable = "not identical: comes back a plain data.frame (class, key and index are lost)",
+  tibble = "not identical: comes back a plain data.frame",
+  names = "not written: polars refuses repeated column names (to_polars raises ValueError)")
 # Writes x (with write_fstx, or `writer` for the codec cases), checks it reads back identical() in R, writes the
-# sidecar and records the case. pyarrow / pandas: the expected R -> Python -> R result ("identical" or why not).
+# sidecar and records the case. pyarrow / pandas: the expected R -> Python -> R result ("identical" or why not);
+# the polars one comes from polars_notes.
 case <- function(name, x, about, pyarrow = "identical", pandas = "identical", writer = NULL, args = list()) {
   f <- paste0(name, ".fstx")
   p <- gp(f)
@@ -203,7 +226,9 @@ case <- function(name, x, about, pyarrow = "identical", pandas = "identical", wr
   write_json(d, gp(paste0(name, ".json")), auto_unbox = TRUE, null = "null", na = "null", pretty = TRUE,
              digits = NA, json_verbatim = TRUE)
   manifest[[length(manifest) + 1L]] <<- list(file = f, about = about, bytes = file.size(p),
-                                             roundtrip_pyarrow = pyarrow, roundtrip_pandas = pandas)
+                                             roundtrip_pyarrow = pyarrow, roundtrip_pandas = pandas,
+                                             roundtrip_polars = if (name %in% names(polars_notes))
+                                               polars_notes[[name]] else "identical")
   cat(sprintf("%-28s %6.0f bytes\n", f, file.size(p)))
 }
 
@@ -237,7 +262,7 @@ case("basic", data.frame(
   stringsAsFactors = FALSE),
   "logical, integer (INT_MAX, -INT_MAX, NA), double (NA, NaN, quiet NA = NA_real_ + 1, -0, Inf, -Inf, subnormal, max), character (\"\", NA, control characters)",
   pyarrow = "identical (the quiet NA 0x7FF80000000007A2 comes back as NA_real_ 0x7FF00000000007A2; identical() does not see payloads)",
-  pandas = "not identical: integer NA makes int a double unless nullable dtypes are used; NA_real_ and NaN both become NaN, so R's NaN comes back as NA")
+  pandas = "not identical: to_pandas uses pandas' nullable dtypes, and a Float64 column cannot tell NaN from NA (pandas 3), so R's NaN comes back as NA")
 
 case("empty_0x0", data.frame(), "no columns, no rows")
 
@@ -343,7 +368,7 @@ case("factors", data.frame(
 case("factor_na_level", data.frame(f = factor(c("a", NA, "b", "a"), exclude = NULL)),
      "factor with NA as a level (exclude = NULL): not stored natively (levels in the FXA1 blob); the NA-level code is a value, not a missing value",
      pyarrow = "identical if the writer turns a null dictionary entry back into an NA level",
-     pandas = "fails: pandas categories cannot hold NA (to_pandas must raise or turn the column into strings)")
+     pandas = "not identical: pandas categories cannot hold NA, so to_pandas turns the column into strings (with a warning)")
 
 fs <- factor(c("a", "b", "a"))
 class(fs) <- c("myfac", "factor")
@@ -362,7 +387,7 @@ case("difftime", data.frame(
   weeks = as.difftime(c(52, 1, NaN), units = "weeks"), hms = hms::hms(c(0, 3661, NA))),
   "difftime in every unit and hms (double + class + units in the attribute blob)",
   pyarrow = "identical (double with class and units in the metadata)",
-  pandas = "identical if kept as float; not identical if turned into timedelta64 (units become seconds)")
+  pandas = "not identical: the pandas Float64 column cannot tell NaN from NA (as basic), so the NaN in 'weeks' comes back NA; classes and units are kept")
 
 x <- data.frame(v = c(1.5, 2.5, NA), code = c(1L, 2L, 3L), txt = c("p", "q", "r"), stringsAsFactors = FALSE)
 attr(x$v, "label") <- "Weight in kg"
@@ -460,7 +485,9 @@ write_json(list(fstx = "1.0.0", r = R.version.string, made = format(Sys.Date()),
                 note = paste("pcodec (codec 4) is reserved and not written by fstx 1.0: no file can hold it; the",
                              "refusal is covered by reserved_codec4.fstx and reserved_pcodec.fstx in format-1.0.json.",
                              "roundtrip_pyarrow: read_fstx() -> pyarrow.Table -> write_fstx(); roundtrip_pandas: the",
-                             "same through fstx.to_pandas() and a pandas DataFrame (DESIGN.md section 2)."),
+                             "same through fstx.to_pandas() and a pandas DataFrame; roundtrip_polars: the same",
+                             "through fstx.to_polars() and a polars DataFrame, which carries no fstx metadata",
+                             "(DESIGN.md sections 2 and 4)."),
                 cases = manifest),
            gp("manifest.json"), auto_unbox = TRUE, null = "null", na = "null", pretty = TRUE)
 tot <- sum(file.size(list.files(out, "\\.(fstx|json)$", full.names = TRUE)))
