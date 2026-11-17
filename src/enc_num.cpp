@@ -1252,6 +1252,20 @@ uint32_t encode_top_dbl(const double* x, uint32_t n, const EncCtx& cx0, Buf& out
 
 // Is there any NA (int) / NaN (double) at all? 16-byte vectors (GCC / Clang vector extensions), 64 values between
 // tests. Pages without one skip na_write's scans, which would write nothing for them.
+#if defined(_MSC_VER) && !defined(__clang__)
+// Microsoft cl.exe has no vector extensions: plain loops (Python build only; R builds with GCC or Clang).
+bool any_int_na(const int32_t* x, uint32_t n, int32_t na_value) {
+  for (uint32_t i = 0; i < n; ++i)
+    if (x[i] == na_value) return true;
+  return false;
+}
+
+bool any_nan(const double* x, uint32_t n) {
+  for (uint32_t i = 0; i < n; ++i)
+    if (x[i] != x[i]) return true;
+  return false;
+}
+#else
 typedef double vd2 __attribute__((vector_size(16)));
 typedef int64_t vl2 __attribute__((vector_size(16)));
 typedef int32_t vi4 __attribute__((vector_size(16)));
@@ -1288,6 +1302,8 @@ bool any_nan(const double* x, uint32_t n) {
     if (x[i] != x[i]) return true;
   return false;
 }
+
+#endif  // vector extensions
 
 void write_header(Buf& out, int kind, uint32_t n) {
   uint8_t* h = out.grow(8);

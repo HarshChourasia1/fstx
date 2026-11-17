@@ -67,6 +67,52 @@ constexpr size_t kProbeMin = 65536, kProbeSlice = 8192, kProbeSlices = 4;
 // compares). NaNs fail every compare, so they never become min or max; a min or max of zero gets the sign of the
 // first zero, as the sequential loop gave. NA count: NaNs whose low word is 1954 (R's NA_real_), counted in a second
 // pass only when the page has a NaN.
+#if defined(_MSC_VER) && !defined(__clang__)
+// Microsoft cl.exe has no vector extensions: the same statistics with plain loops (same results, bit for bit;
+// used by the Python build only, R builds with GCC or Clang).
+void dbl_stats(const double* x, uint32_t n, double& mn, double& mx, uint32_t& na) {
+  const double inf = std::numeric_limits<double>::infinity();
+  double sa = inf, sb = -inf;
+  uint32_t t = 0;
+  for (uint32_t i = 0; i < n; ++i) {
+    const double v = x[i];
+    sa = v < sa ? v : sa;
+    sb = v > sb ? v : sb;
+    if (v != v) {
+      uint64_t bits;
+      std::memcpy(&bits, &v, 8);
+      t += (uint32_t)bits == 1954u;
+    }
+  }
+  mn = sa;
+  mx = sb;
+  na = t;
+  if (mn == 0 || mx == 0)
+    for (uint32_t j = 0; j < n; ++j)
+      if (x[j] == 0) {
+        if (mn == 0) mn = x[j];
+        if (mx == 0) mx = x[j];
+        break;
+      }
+}
+
+void int_stats(const int32_t* x, uint32_t n, int32_t& mn, int32_t& mx, uint32_t& na) {
+  const int32_t hi = std::numeric_limits<int32_t>::max(), lo = std::numeric_limits<int32_t>::min();
+  int32_t sa = hi, sb = lo;
+  uint32_t t = 0;
+  for (uint32_t i = 0; i < n; ++i) {
+    const int32_t v = x[i];
+    const bool isna = v == kNaInt;
+    const int32_t w = isna ? hi : v;
+    t += isna;
+    sa = w < sa ? w : sa;
+    sb = v > sb ? v : sb;
+  }
+  mn = sa;
+  mx = sb;
+  na = t;
+}
+#else
 typedef double vd2 __attribute__((vector_size(16)));
 typedef int64_t vl2 __attribute__((vector_size(16)));
 typedef int32_t vi4 __attribute__((vector_size(16)));
@@ -162,6 +208,8 @@ void int_stats(const int32_t* x, uint32_t n, int32_t& mn, int32_t& mx, uint32_t&
     }
   na = t;
 }
+
+#endif  // vector extensions
 
 }  // namespace
 
