@@ -1,0 +1,30 @@
+{
+  "file": "rmatch_microseconds.fstx",
+  "about": "POSIXct with whole microseconds, either side of the epoch",
+  "made_with": "fstx 1.0.0, R version 4.5.1 (2025-06-13 ucrt)",
+  "names": [
+    "us"
+  ],
+  "nrow": 7,
+  "columns": [
+    {
+      "name": "us",
+      "typeof": "double",
+      "class": [
+        "POSIXct",
+        "POSIXt"
+      ],
+      "tzone": "Asia/Kolkata",
+      "levels": null,
+      "values": [
+        "1970-01-01 05:30:00.000001 +05:30",
+        "1970-01-01 05:29:59.999999 +05:30",
+        "1970-01-01 05:30:01.999999 +05:30",
+        "2023-11-15 03:43:20.123456 +05:30",
+        "2001-09-09 07:16:40.500000 +05:30",
+        "1969-12-31 05:29:59.750000 +05:30",
+        null
+      ]
+    }
+  ]
+}

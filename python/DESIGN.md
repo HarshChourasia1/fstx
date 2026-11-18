@@ -333,9 +333,10 @@ returns it as strings, with a warning). [basic, difftime, factor_na_level]
 
 Through polars (no metadata, no index): everything listed under "metadata lost" above, and also: a Categorical
 keeps only the levels in use, in order of first appearance, and no order; an empty or all-null Categorical has
-no levels; an empty or all-null Int64 comes back integer; repeated column names are refused. Plain logical,
-integer, double, character and integer64 columns, and Dates stored as double, come back identical. Per case:
-`roundtrip_polars` in `manifest.json`.
+no levels; an Int64 that is empty, all null, or whose values all fit int32 comes back integer (`int64="auto"`;
+the last found by `test_rmatch.py`, 18 Nov 2026); repeated column names are refused. Plain logical, integer,
+double and character columns, integer64 columns with a value past int32, and Dates stored as double, come back
+identical. Per case: `roundtrip_polars` in `manifest.json`.
 
 ## 9. Decisions (Harsh, 17 Nov 2026: "Yes, all four")
 

@@ -326,7 +326,42 @@ Tested (17 Nov 2026):
 - Laptop, R 4.5.1 with fstx 1.0.0, on the files that run wrote: `check_roundtrip.R` 104 files = 73 PASS,
   31 KNOWN, 0 FAIL (pyarrow 30 PASS / 5 KNOWN, pandas 27 / 8, polars 16 / 18; `names` is not written through
   polars); `check_native.R` 31 files, 31 PASS.
-- Not run after the merge: the clang-cl wheel and its pytest, a fresh cl wheel with the final files inside,
-  coretest, and the R suite (`test-arrow.R`). The desktop was handed to another job before they could start.
+- 18 Nov 2026, desktop, tree at b040c70 synced in full, every wheel built from an empty build folder:
+  - cl (MSVC 19.44) wheel: 795 tests passed.
+  - clang-cl (Clang 19.1.5) wheel: 795 tests passed.
+  - coretest with cl and with clang-cl, 200,000 rows: 470 checks passed, 0 failed each; kernels scalar / AVX2 /
+    SSE4 / SSE2 0 mismatches, same hashes for every target and both compilers.
+  - R package built from the same tree (R 4.6.1), `test-arrow.R` through `run_tests.R`: 10 tests,
+    356 expectations, 0 failed, 0 errors, 1 skipped.
   The merge brought no change to `src/` beyond what `py-read` already had (`arrow_abi.h`, `r_arrow.cpp`).
+- 18 Nov 2026, R-match part A (dates, times, integer64; section below), desktop, clang-cl wheel: `test_rmatch.py`
+  34 passed. Laptop, R 4.5.1 with fstx 1.0.0: `check_rmatch.R` 21 files = 20 PASS, 1 OPEN
+  (`native_fixed_offset.pyarrow`), 0 FAIL.
 - Still open: two threads appending to the same file (above); Linux, macOS, Python other than 3.12.
+
+## R-match tests (`test_rmatch.py`, 18 Nov 2026)
+
+What Python shows is what R shows, both ways, value by value. `golden/rmatch/make_rmatch.R` (laptop: needs bit64
+and jsonlite, which the desktop R lacks) writes each case as `<case>.fstx` plus `<case>.view.json`: R's view
+from `rview.R` (per column typeof, class, tzone, levels, and every value as text R would show, POSIXct as wall
+time and offset in its own zone). `tests/rview.py` builds the same view in Python from a pyarrow table, a
+pandas or a polars DataFrame. `test_rmatch.py`:
+
+- R -> Python: each case read with pyarrow, `fstx.to_pandas`, `fstx.to_polars`; views must equal R's apart from
+  `KNOWN` (DESIGN.md section 8).
+- R -> Python -> R and Python data -> R: written to `from_python/rmatch/<name>.fstx` with the view R is to show;
+  read back here, then `check_rmatch.R` (laptop) reads each file in R and compares (PASS / OPEN / FAIL).
+
+Part A cases: `rmatch_dates` (double and integer Dates, years 1 and 9999, NA), `rmatch_times` (UTC, +05:30,
+New York across both DST changes, +05:45, St John's, tzone `""` and none, NA, fractions, year 9999),
+`rmatch_microseconds`, `rmatch_int64` (past int32 and 2^53, the extremes, all NA, small values); native
+pyarrow / pandas / polars times (s, ms, us, ns, naive, date32, date64) and int64 (`auto`, `integer64`,
+`double`, uint32 / uint64, the refusals).
+
+Found:
+
+- polars: an Int64 whose values all fit int32 comes back integer (`int64="auto"`), added to DESIGN.md section 8.
+- OPEN (not changed): a fixed-offset time zone such as pyarrow's `"+05:30"` is stored as R's tzone; R reads it as
+  a POSIX TZ string (UTC-05:30, warning "unknown timezone") and shows the time 11 hours off. Writing the zone
+  as `Etc/GMT-5`-style names is not possible for :30 offsets; the choice (refuse, convert to UTC with a
+  warning, or keep) is Harsh's.
