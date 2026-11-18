@@ -388,6 +388,18 @@ Tested (17 Nov 2026):
   26.0.1, pandas 3.1.1, polars 2.1.0, pytest 9.2.0: the wheel's `.dist-info/licenses/` holds the same 8 files;
   pytest on the sdist's own tests, run outside the tree on the installed package: 866 passed. `python/LICENSES`
   matches `inst/COPYRIGHTS` and `src/vendor/*/LICENSE`.
+- 18 Nov 2026, end of tasks 1-4, desktop, tree at 986479e synced in full, every wheel built from an empty build
+  folder (engine from `python/core`, made by make_core from the same `src/`):
+  - cl (MSVC 19.44) wheel: 866 passed. clang-cl (Clang 19.1.5) wheel: 866 passed (installed last).
+  - coretest with cl and with clang-cl, 200,000 rows: 470 checks passed, 0 failed each; scalar / AVX2 / SSE4 /
+    SSE2 0 mismatches, same hashes for every target and both compilers.
+  - R package from the same tree (R 4.6.1), `test-arrow.R`: 10 tests, 356 expectations, 0 failed, 1 skipped (the
+    same skip as above).
+  - Laptop, R 4.5.1 with fstx 1.0.0, on the files the clang-cl run wrote: `check_rmatch.R` 44 files = 44 PASS,
+    0 OPEN, 0 FAIL (repeating strings now dictionary-coded); `check_roundtrip.R` 104 files = 73 PASS, 31 KNOWN,
+    0 FAIL; `check_native.R` 31 PASS. A stale `from_python/rmatch/native_fixed_offset.again.fstx` (18 Nov 18:35,
+    from an earlier draft of a test; no view file) stops `check_rmatch.R` with a JSON error; the run above left it
+    out. It is in the git-ignored output folder only.
 - Still open: Linux, macOS, Python other than 3.12.
 
 ## R-match tests (`test_rmatch.py`, 18 Nov 2026)
