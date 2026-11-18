@@ -272,13 +272,14 @@ gave `FstxError: worker pool is already running a job`). A lock makes writes tak
 
 Open after this step (the first two were closed by the merge):
 
-- Error rows are counted from 0. An append reads the file's metadata before taking the engine lock, so two
-  threads appending to the same file at once are not protected from each other. Tested 18 Nov 2026
-  (`test_two_threads_appending_to_one_file`, desktop, Windows): no rows are lost, mixed or given the wrong
-  level, but appends fail at random with "file is in use by another process" (Windows error 32), with the
-  engine's "memory-mapped by a lazy read_fstx() result" check (worded for R), or, when both threads add factor
-  levels, "the new levels must start with the file's levels". The failed append writes nothing. A fix in
-  Python (plan the append inside `LOCK`, which is re-entrant) is not made: for Harsh to decide.
+- Error rows are counted from 0.
+- Two threads appending to the same file (fixed 18 Nov 2026 on Harsh's "do 1-5"): an append used to read the
+  file's metadata before taking the engine lock, and appends failed at random with "file is in use by another
+  process" (Windows error 32), the engine's "memory-mapped by a lazy read_fstx() result" check (worded for R), or
+  "the new levels must start with the file's levels" (no data harm). Now `write_fstx(append=True)` plans
+  (`_append_plan`: metadata, levels, profile), converts the columns and writes in one step under `LOCK`
+  (re-entrant). A plain write still converts its columns outside the lock and takes it for `_core.write` only.
+  Other processes appending to the same file are not covered (the lock is per process).
 - Not tested: a string column past 2 GB, string_view input, float16, Linux / macOS, Python other than 3.12.
 
 ## One contract for reading and writing (merge of `py-wheels`, `py-write`, `py-read`, 17 Nov 2026)
@@ -361,8 +362,11 @@ Tested (17 Nov 2026):
   (`scripts/pyinst.cmd`): whole suite 862 passed (`test_rmatch.py`: the old fixed-offset test replaced by
   5 tests: 8 offsets both signs, half and three-quarter hours, zero; append; filter; mapping; old-style file;
   pandas and polars). Laptop R 4.5.1: `check_rmatch.R` 44 files = 44 PASS, 0 OPEN, 0 FAIL.
-- Still open: two threads appending to the same file spuriously fail (above, no data harm); Linux, macOS,
-  Python other than 3.12.
+- 18 Nov 2026, task 2 (two-thread append), desktop, same wheel with the new `.py` files: `scripts/append5.cmd`
+  ran `test_two_threads_appending_to_one_file` (plain and factor levels, 2 threads x 20 appends) 10 times in a
+  row: 2 passed each time, every append succeeded; `scripts/append2.py`: 0 errors, 41,000 rows, 0 rows with the
+  other thread's level, 42 levels. Whole suite: 862 passed (one run stopped by the speech-test guard, rerun).
+- Still open: Linux, macOS, Python other than 3.12.
 
 ## R-match tests (`test_rmatch.py`, 18 Nov 2026)
 

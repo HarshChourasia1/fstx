@@ -4,7 +4,6 @@ R checks the files these tests leave in golden/from_python/ (check_roundtrip.R: 
 test_write.py; check_native.R: the partial reads written here). Here the same files are read back in Python.
 """
 import json
-import re
 import threading
 import warnings
 
@@ -334,17 +333,11 @@ def test_reads_and_writes_from_threads_at_once(tmp_path):
     assert errs == []
 
 
-# Two threads appending to the SAME file (open point in DEV.md). An append reads the file's metadata before it
-# takes the engine lock, so the two appends are not one transaction. What happens (18 Nov 2026, Windows):
-# - an append can fail because the other thread's metadata read has the file open while this one writes:
-#   "file is in use by another process (Windows error 32)", or the engine's own check "... memory-mapped by a lazy
-#   read_fstx() result that is still alive" (its text speaks of R's rm());
-# - factor levels growing in both threads: an append can fail with "the new levels must start with the file's
-#   levels" (its levels were planned on the file before the other thread's append).
-# Either way the failing append writes nothing; every append that returned is in the file, whole, with the
-# right levels. This test holds that line: no lost or mixed rows, only those errors.
-APPEND_ERRORS = ("in use by another process|memory-mapped by a lazy read_fstx"
-                 "|the new levels must start with the file's levels")
+# Two threads appending to the SAME file. Until 18 Nov 2026 an append read the file's metadata before it took the
+# engine lock, and appends failed at random ("file is in use by another process", the engine's "memory-mapped by a
+# lazy read_fstx()" check, or "the new levels must start with the file's levels" when both threads added factor
+# levels). Now planning and writing are one step under the lock: every append must succeed, whole, with the
+# right levels.
 
 
 @pytest.mark.parametrize("kind", ["plain", "factor_levels"])
@@ -369,8 +362,8 @@ def test_two_threads_appending_to_one_file(tmp_path, kind):
             try:
                 fstx.write_fstx(make(k, i), p, append=True)
                 done[k].append(i)
-            except fstx.FstxError as e:
-                errs.append(str(e))
+            except Exception as e:  # noqa: BLE001
+                errs.append(f"thread {k} round {i}: {type(e).__name__}: {e}")
 
     th = [threading.Thread(target=go, args=(k,)) for k in (0, 1)]
     for x in th:
@@ -378,8 +371,8 @@ def test_two_threads_appending_to_one_file(tmp_path, kind):
     for x in th:
         x.join(timeout=300)
     assert not any(x.is_alive() for x in th)
-    bad = sorted({re.sub(r"'[^']*a\.fstx'", "'a.fstx'", e) for e in errs if not re.search(APPEND_ERRORS, e)})
-    assert bad == [], " | ".join(bad)
+    assert errs == [], " | ".join(errs)
+    assert done == {0: list(range(rounds)), 1: list(range(rounds))}
     t = fstx.read_fstx(p)
     assert t.num_rows == n * (1 + len(done[0]) + len(done[1]))
     ids = t.column("id").to_pylist()

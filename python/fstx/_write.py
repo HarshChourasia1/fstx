@@ -669,8 +669,18 @@ def write_fstx(data, path, *, profile: Optional[str] = None, compress: Optional[
     p = os.path.abspath(os.path.expanduser(p))
 
     table, row_names = _to_table(data)
+    if not append:
+        _write(p, table, row_names, profile, compress, level, threads, int64, False)
+        return
+    # an append plans on what the file holds now (columns, factor levels, profile) and must write before anyone
+    # else changes the file: planning and writing are one step under the engine lock (re-entrant)
+    with _ENGINE_LOCK:
+        _write(p, table, row_names, profile, compress, level, threads, int64, os.path.exists(p))
+
+
+def _write(p: str, table: pa.Table, row_names, profile, compress, level, threads, int64: str, append: bool) -> None:
     plan = None
-    if append and os.path.exists(p):
+    if append:
         plan = _append_plan(p, table, row_names)
         if profile is None:  # a profile from a newer fstx: encode as balanced; the file keeps its stored value
             profile = plan["meta"].profile if plan["meta"].profile in _PROFILES else "balanced"
