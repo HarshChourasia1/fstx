@@ -352,6 +352,11 @@ Tested (17 Nov 2026):
   runs in a row (two new tests; behaviour under "Open after this step" above). `scripts/append2.py` (20 rounds
   of 1,000 rows per thread): plain columns, thread 0 failed on its 2nd append (Windows error 32), 22,000 rows
   all present; factor levels, thread 1 failed on its 1st append (levels), 21,000 rows, 0 rows with a wrong level.
+- 18 Nov 2026, end of the R-match / append / speed work: cl (MSVC 19.44) wheel rebuilt from the tree and
+  installed, whole suite 858 passed. Speed check on that wheel: `README.md` "Speed" (scripts `tools/bench_py.py`,
+  `tools/bench_r.R`, run through `scripts/bench.cmd`). Seen there, not looked into: Python's write of the
+  10-million-row table takes 0.44 s where R's takes 0.15 s (1 thread: 1.36 s against 0.86 s), and reading 2 of
+  10 columns (one a 20-value string column) takes 0.19 s of the full read's 0.24 s.
 - Still open: two threads appending to the same file spuriously fail (above, no data harm); Linux, macOS,
   Python other than 3.12.
 
