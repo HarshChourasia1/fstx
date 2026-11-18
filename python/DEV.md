@@ -273,7 +273,12 @@ gave `FstxError: worker pool is already running a job`). A lock makes writes tak
 Open after this step (the first two were closed by the merge):
 
 - Error rows are counted from 0. An append reads the file's metadata before taking the engine lock, so two
-  threads appending to the same file at once are not protected from each other.
+  threads appending to the same file at once are not protected from each other. Tested 18 Nov 2026
+  (`test_two_threads_appending_to_one_file`, desktop, Windows): no rows are lost, mixed or given the wrong
+  level, but appends fail at random with "file is in use by another process" (Windows error 32), with the
+  engine's "memory-mapped by a lazy read_fstx() result" check (worded for R), or, when both threads add factor
+  levels, "the new levels must start with the file's levels". The failed append writes nothing. A fix in
+  Python (plan the append inside `LOCK`, which is re-entrant) is not made: for Harsh to decide.
 - Not tested: a string column past 2 GB, string_view input, float16, Linux / macOS, Python other than 3.12.
 
 ## One contract for reading and writing (merge of `py-wheels`, `py-write`, `py-read`, 17 Nov 2026)
@@ -339,7 +344,12 @@ Tested (17 Nov 2026):
   (`native_fixed_offset.pyarrow`), 0 FAIL.
 - 18 Nov 2026, R-match part B (factors, NA, strings), desktop, clang-cl wheel: `test_rmatch.py` 61 passed
   (part A included). Laptop R 4.5.1: `check_rmatch.R` 39 files = 38 PASS, 1 OPEN (the same fixed offset), 0 FAIL.
-- Still open: two threads appending to the same file (above); Linux, macOS, Python other than 3.12.
+- 18 Nov 2026, two threads appending to one file, desktop, clang-cl wheel: `test_roundtrip.py` 221 passed, three
+  runs in a row (two new tests; behaviour under "Open after this step" above). `scripts/append2.py` (20 rounds
+  of 1,000 rows per thread): plain columns, thread 0 failed on its 2nd append (Windows error 32), 22,000 rows
+  all present; factor levels, thread 1 failed on its 1st append (levels), 21,000 rows, 0 rows with a wrong level.
+- Still open: two threads appending to the same file spuriously fail (above, no data harm); Linux, macOS,
+  Python other than 3.12.
 
 ## R-match tests (`test_rmatch.py`, 18 Nov 2026)
 

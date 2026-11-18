@@ -4,6 +4,7 @@ R checks the files these tests leave in golden/from_python/ (check_roundtrip.R: 
 test_write.py; check_native.R: the partial reads written here). Here the same files are read back in Python.
 """
 import json
+import re
 import threading
 import warnings
 
@@ -331,6 +332,65 @@ def test_reads_and_writes_from_threads_at_once(tmp_path):
         x.join(timeout=300)
     assert not any(x.is_alive() for x in th)
     assert errs == []
+
+
+# Two threads appending to the SAME file (open point in DEV.md). An append reads the file's metadata before it
+# takes the engine lock, so the two appends are not one transaction. What happens (18 Nov 2026, Windows):
+# - an append can fail because the other thread's metadata read has the file open while this one writes:
+#   "file is in use by another process (Windows error 32)", or the engine's own check "... memory-mapped by a lazy
+#   read_fstx() result that is still alive" (its text speaks of R's rm());
+# - factor levels growing in both threads: an append can fail with "the new levels must start with the file's
+#   levels" (its levels were planned on the file before the other thread's append).
+# Either way the failing append writes nothing; every append that returned is in the file, whole, with the
+# right levels. This test holds that line: no lost or mixed rows, only those errors.
+APPEND_ERRORS = ("in use by another process|memory-mapped by a lazy read_fstx"
+                 "|the new levels must start with the file's levels")
+
+
+@pytest.mark.parametrize("kind", ["plain", "factor_levels"])
+def test_two_threads_appending_to_one_file(tmp_path, kind):
+    n, rounds = 1000, 20
+    p = tmp_path / "a.fstx"
+
+    def make(k, i):
+        ids = pa.array([(k + 1) * 100000 + i] * n, pa.int32())
+        if kind == "plain":
+            return pa.table({"id": ids, "s": [f"t{k}r{i}"] * n})
+        lv = ["a", "b"] if k < 0 else ["a", "b", f"t{k}_{i}"]
+        return pa.table({"id": ids, "f": pa.array([lv[j % len(lv)] for j in range(n)]).dictionary_encode()})
+
+    fstx.write_fstx(make(-1, 0), p)
+    done, errs = {0: [], 1: []}, []
+    start = threading.Barrier(2)
+
+    def go(k):
+        start.wait(timeout=60)
+        for i in range(rounds):
+            try:
+                fstx.write_fstx(make(k, i), p, append=True)
+                done[k].append(i)
+            except fstx.FstxError as e:
+                errs.append(str(e))
+
+    th = [threading.Thread(target=go, args=(k,)) for k in (0, 1)]
+    for x in th:
+        x.start()
+    for x in th:
+        x.join(timeout=300)
+    assert not any(x.is_alive() for x in th)
+    bad = sorted({re.sub(r"'[^']*a\.fstx'", "'a.fstx'", e) for e in errs if not re.search(APPEND_ERRORS, e)})
+    assert bad == [], " | ".join(bad)
+    t = fstx.read_fstx(p)
+    assert t.num_rows == n * (1 + len(done[0]) + len(done[1]))
+    ids = t.column("id").to_pylist()
+    for k in (0, 1):  # every append that returned is there, whole; nothing else
+        got = sorted({v - (k + 1) * 100000 for v in ids if v // 100000 == k + 1})
+        assert got == sorted(done[k])
+        assert all(ids.count((k + 1) * 100000 + i) == n for i in done[k])
+    if kind == "factor_levels":  # each row shows its own thread's level, never the other one's
+        for v, i in zip(t.column("f").to_pylist(), ids):
+            k, r = divmod(i, 100000)
+            assert v in ("a", "b") or (k > 0 and v == f"t{k - 1}_{r}")
 
 
 def test_abandoned_batch_reader_does_not_block_a_write(tmp_path):
