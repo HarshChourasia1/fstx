@@ -33,6 +33,15 @@ KNOWN = {
     # found by this file (18 Nov 2026), added to DESIGN.md section 8: the same rule for values that all fit int32
     ("polars", "rmatch_int64", "small"): "polars carries no metadata: an Int64 whose values all fit int32 comes back "
                                          "integer (int64='auto')",
+    # part B (factors, NA, strings)
+    ("pandas", "rmatch_factors", "na_level"): "a factor with an NA level cannot be a Categorical: strings (warning)",
+    ("pandas", "rmatch_na", "dbl"): "pandas: R's NaN becomes NA in a double column",
+    ("pandas", "rmatch_na", "dbl_nan_only"): "pandas: R's NaN becomes NA in a double column",
+    **{("polars", "rmatch_factors", c): "polars: a Categorical keeps only the levels in use, in order of first "
+                                         "appearance, and no order; an all-null one has no levels"
+       for c in ("plain", "unused", "ordered", "odd_levels", "all_na", "ordered_unused")},
+    # found by this file (18 Nov 2026), added to DESIGN.md section 8
+    ("polars", "rmatch_factors", "na_level"): "a factor with an NA level comes back as strings through polars too",
 }
 
 
@@ -92,7 +101,8 @@ def test_r_to_pandas(case):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", fstx.FstxWarning)
         df = fstx.to_pandas(read(case))
-    assert diff(rview.view_pandas(df), r_view(case)).keys() == known("pandas", case).keys()
+    got = diff(rview.view_pandas(df), r_view(case))
+    assert got.keys() == known("pandas", case).keys(), got
 
 
 @pytest.mark.parametrize("case", CASES)
@@ -101,7 +111,8 @@ def test_r_to_polars(case):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", fstx.FstxWarning)
         df = fstx.to_polars(read(case))
-    assert diff(rview.view_polars(df), r_view(case)).keys() == known("polars", case).keys()
+    got = diff(rview.view_polars(df), r_view(case))
+    assert got.keys() == known("polars", case).keys(), got
 
 
 # ---------------------------------------------------------------- R -> Python -> R
@@ -270,3 +281,148 @@ def test_native_int64_polars():
         "u64": pl.Series([2**63 - 1, None, 0], dtype=pl.UInt64),
     })
     save(df, "native_int64.polars", rview.view_polars(df))
+
+
+# ---------------------------------------------------------------- Python data -> R: factors, NA, strings
+LONG = "abcdefghij" * 10000                                          # 100,000 bytes
+TEXTS = ["plain", "", None, "NA", "हिन्दी", "தமிழ்", "😀 4-byte", "é combining", "日本語", "tab\tline\nbreak", LONG]
+
+
+def native_factors_arrow():
+    two = pa.chunked_array([pa.array(["b", "a", None]).dictionary_encode(), pa.array(["c", "a", "b"]).dictionary_encode()])
+    return pa.table({
+        "encoded": pa.array(["b", "a", None, "c", "a", "b"]).dictionary_encode(),
+        "unused": pa.DictionaryArray.from_arrays(pa.array([1, 1, 3, None, 1, 3], pa.int32()), ["w", "x", "y", "z", "v"]),
+        "ordered": pa.DictionaryArray.from_arrays(pa.array([0, 2, 1, None, 2, 0], pa.int8()), ["lo", "mid", "hi"],
+                                                  ordered=True),
+        "large": pa.DictionaryArray.from_arrays(pa.array([0, 1, 2, 2, None, 0], pa.int16()),
+                                                pa.array(["हिन्दी", "", "NA"], pa.large_string())),
+        "two_chunks": two,  # two dictionaries: one set of levels, in order of first appearance
+        "all_null": pa.DictionaryArray.from_arrays(pa.array([None] * 6, pa.int32()), ["p", "q"]),
+    })
+
+
+def test_native_factors_pyarrow():
+    t = native_factors_arrow()
+    v = rview.view_arrow(t)
+    by = {c["name"]: c for c in v["columns"]}
+    assert by["two_chunks"]["levels"] == ["b", "a", "c"] and by["two_chunks"]["values"] == [1, 2, None, 3, 2, 1]
+    assert by["ordered"]["class"] == ["ordered", "factor"] and by["unused"]["levels"] == ["w", "x", "y", "z", "v"]
+    save(t, "native_factors.pyarrow", v)
+
+
+def test_native_factors_pandas():
+    pd = pytest.importorskip("pandas")
+    df = pd.DataFrame({
+        "plain": pd.Categorical(["b", "a", None, "c", "a", "b"]),
+        "unused": pd.Categorical(["x", "x", "z", None, "x", "z"], categories=["w", "x", "y", "z", "v"]),
+        "ordered": pd.Categorical(["lo", "hi", "mid", None, "hi", "lo"], categories=["lo", "mid", "hi"], ordered=True),
+        "indic": pd.Categorical(["हिन्दी", "", "NA", "NA", None, "தமிழ்"]),
+        "all_na": pd.Categorical([None] * 6, categories=["p", "q"]),
+    })
+    v = rview.view_pandas(df)
+    by = {c["name"]: c for c in v["columns"]}
+    assert by["plain"]["levels"] == ["a", "b", "c"] and by["ordered"]["class"] == ["ordered", "factor"]
+    assert diff(rview.view_arrow(pa.Table.from_pandas(df, preserve_index=False)), v) == {}
+    save(df, "native_factors.pandas", v)
+
+
+def test_native_factors_polars():
+    pl = pytest.importorskip("polars")
+    df = pl.DataFrame({
+        "categorical": pl.Series(["b", "a", None, "c", "a", "b"], dtype=pl.Categorical),
+        # an Enum keeps its categories, unused ones too, in their order
+        "enum": pl.Series(["x", "x", "z", None, "x", "z"], dtype=pl.Enum(["w", "x", "y", "z", "v"])),
+    })
+    v = rview.view_polars(df)
+    by = {c["name"]: c for c in v["columns"]}
+    assert by["enum"]["levels"] == ["w", "x", "y", "z", "v"] and by["enum"]["values"][:3] == [2, 2, 4]
+    save(df, "native_factors.polars", v)
+
+
+def native_na_arrow():
+    return pa.table({
+        "lgl": pa.array([None, True, False, None, True, None]),
+        "int": pa.array([None, 1, -(2**31) + 1, 2**31 - 1, None, 0], pa.int32()),
+        "dbl": pa.array([None, float("nan"), -0.0, float("inf"), float("-inf"), 0.1]),
+        "chr": pa.array([None, "", "NA", " ", "a", None]),
+        "date": pa.array([None, 19723, None, 0, None, None], pa.date32()),
+        "time": pa.array([None, 0, None, 1000000, None, 2000000], pa.timestamp("us", "Asia/Kolkata")),
+        "i64": pa.array([None, 5000000000, None, -1, None, 0], pa.int64()),
+        "null_type": pa.nulls(6),
+        "int_all": pa.nulls(6, pa.int32()),
+        "dbl_all": pa.nulls(6, pa.float64()),
+        "chr_all": pa.nulls(6, pa.string()),
+        "date_all": pa.nulls(6, pa.date32()),
+        "time_all": pa.nulls(6, pa.timestamp("us", "UTC")),
+    })
+
+
+def test_native_na_pyarrow():
+    t = native_na_arrow()
+    v = rview.view_arrow(t)
+    by = {c["name"]: c for c in v["columns"]}
+    assert by["dbl"]["values"][:3] == [None, "NaN", "-0"] and by["chr"]["values"][:3] == [None, "", "NA"]
+    assert by["null_type"]["typeof"] == "logical" and by["i64"]["class"] == ["integer64"]
+    save(t, "native_na.pyarrow", v)
+
+
+def test_native_na_pandas():
+    pd = pytest.importorskip("pandas")
+    import numpy as np
+
+    df = pd.DataFrame({
+        "boolean": pd.array([None, True, False, None, True, None], dtype="boolean"),
+        "Int32": pd.array([None, 1, -(2**31) + 1, 2**31 - 1, None, 0], dtype="Int32"),
+        "Float64": pd.array([None, 1.5, -0.0, float("inf"), None, 0.1], dtype="Float64"),
+        "float64_nan": np.array([np.nan, 1.5, np.nan, -np.inf, 0.0, 2.0]),  # NaN is pandas' missing value: R's NA
+        "object": pd.Series([None, "", "NA", " ", "a", np.nan], dtype=object),
+        "str": pd.Series([None, "", "NA", " ", "a", None], dtype="str"),
+        "all_none": pd.Series([None] * 6, dtype=object),
+    })
+    v = rview.view_pandas(df)
+    by = {c["name"]: c for c in v["columns"]}
+    assert by["float64_nan"]["values"][:3] == [None, "1.5", None] and by["object"]["values"][:3] == [None, "", "NA"]
+    assert diff(rview.view_arrow(pa.Table.from_pandas(df, preserve_index=False)), v) == {}
+    save(df, "native_na.pandas", v)
+
+
+def test_native_na_polars():
+    pl = pytest.importorskip("polars")
+    df = pl.DataFrame({
+        "lgl": pl.Series([None, True, False, None, True, None], dtype=pl.Boolean),
+        "int": pl.Series([None, 1, -(2**31) + 1, 2**31 - 1, None, 0], dtype=pl.Int32),
+        "dbl": pl.Series([None, float("nan"), -0.0, float("inf"), float("-inf"), 0.1], dtype=pl.Float64),  # NaN stays NaN
+        "chr": pl.Series([None, "", "NA", " ", "a", None], dtype=pl.String),
+        "null": pl.Series([None] * 6, dtype=pl.Null),
+        "date_all": pl.Series([None] * 6, dtype=pl.Date),
+    })
+    v = rview.view_polars(df)
+    by = {c["name"]: c for c in v["columns"]}
+    assert by["dbl"]["values"][:2] == [None, "NaN"] and by["null"]["typeof"] == "logical"
+    save(df, "native_na.polars", v)
+
+
+def test_native_strings_pyarrow():
+    t = pa.table({
+        "string": pa.array(TEXTS, pa.string()),
+        "large_string": pa.array(TEXTS, pa.large_string()),
+        **({"string_view": pa.array(TEXTS, pa.string_view())} if hasattr(pa, "string_view") else {}),
+    })
+    v = rview.view_arrow(t)
+    assert v["columns"][0]["values"][-1].startswith("100000:")
+    save(t, "native_strings.pyarrow", v)
+
+
+def test_native_strings_pandas():
+    pd = pytest.importorskip("pandas")
+    df = pd.DataFrame({"str": pd.Series(TEXTS, dtype="str"), "object": pd.Series(TEXTS, dtype=object)})
+    v = rview.view_pandas(df)
+    assert diff(rview.view_arrow(pa.Table.from_pandas(df, preserve_index=False)), v) == {}
+    save(df, "native_strings.pandas", v)
+
+
+def test_native_strings_polars():
+    pl = pytest.importorskip("polars")
+    df = pl.DataFrame({"s": pl.Series(TEXTS, dtype=pl.String)})
+    save(df, "native_strings.polars", rview.view_polars(df))

@@ -226,7 +226,10 @@ def view_pandas(df, int64: str = "auto") -> dict:
             cols.append(col(name, "double", cls or [], [None if m else dbl(float(v)) for v, m in zip(s.tolist(), na)]))
         else:  # strings (str / object), or datetime.date objects
             vals = s.tolist()
-            if any(isinstance(v, dt.date) for v in vals):
+            rlog = (r or {}).get("logical")
+            if all(na) and d == object and r is None:  # pyarrow sees no type: the writer's all-null column, logical NA
+                cols.append(col(name, "logical", [], [None] * len(vals)))
+            elif any(isinstance(v, dt.date) for v in vals) or (all(na) and rlog == "Date"):
                 typeof = "integer" if (r or {}).get("phys") == "integer" else "double"
                 cols.append(col(name, typeof, cls or ["Date"],
                                 [None if m else "%04d-%02d-%02d" % (v.year, v.month, v.day) for v, m in zip(vals, na)]))

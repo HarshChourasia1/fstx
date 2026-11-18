@@ -1,0 +1,246 @@
+{
+  "file": "rmatch_na.fstx",
+  "about": "NA in every type, first and last rows; NaN apart from NA; \"\" and \"NA\" apart from NA; columns that are all NA",
+  "made_with": "fstx 1.0.0, R version 4.5.1 (2025-06-13 ucrt)",
+  "names": [
+    "lgl",
+    "int",
+    "dbl",
+    "dbl_nan_only",
+    "chr",
+    "date",
+    "time",
+    "i64",
+    "lgl_all",
+    "int_all",
+    "dbl_all",
+    "chr_all",
+    "date_all",
+    "time_all"
+  ],
+  "nrow": 6,
+  "columns": [
+    {
+      "name": "lgl",
+      "typeof": "logical",
+      "class": [],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        null,
+        "TRUE",
+        "FALSE",
+        null,
+        "TRUE",
+        null
+      ]
+    },
+    {
+      "name": "int",
+      "typeof": "integer",
+      "class": [],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        null,
+        "1",
+        "-2147483647",
+        "2147483647",
+        null,
+        "0"
+      ]
+    },
+    {
+      "name": "dbl",
+      "typeof": "double",
+      "class": [],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        null,
+        "NaN",
+        "-0",
+        "Inf",
+        "-Inf",
+        "0.10000000000000001"
+      ]
+    },
+    {
+      "name": "dbl_nan_only",
+      "typeof": "double",
+      "class": [],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        "NaN",
+        "1",
+        "NaN",
+        "2",
+        "NaN",
+        "3"
+      ]
+    },
+    {
+      "name": "chr",
+      "typeof": "character",
+      "class": [],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        null,
+        "",
+        "NA",
+        " ",
+        "a",
+        null
+      ]
+    },
+    {
+      "name": "date",
+      "typeof": "double",
+      "class": [
+        "Date"
+      ],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        null,
+        "2024-01-01",
+        null,
+        "1970-01-01",
+        null,
+        null
+      ]
+    },
+    {
+      "name": "time",
+      "typeof": "double",
+      "class": [
+        "POSIXct",
+        "POSIXt"
+      ],
+      "tzone": "Asia/Kolkata",
+      "levels": null,
+      "values": [
+        null,
+        "1970-01-01 05:30:00.000000 +05:30",
+        null,
+        "1970-01-01 05:30:01.000000 +05:30",
+        null,
+        "1970-01-01 05:30:02.000000 +05:30"
+      ]
+    },
+    {
+      "name": "i64",
+      "typeof": "double",
+      "class": [
+        "integer64"
+      ],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        null,
+        "5000000000",
+        null,
+        "-1",
+        null,
+        "0"
+      ]
+    },
+    {
+      "name": "lgl_all",
+      "typeof": "logical",
+      "class": [],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "name": "int_all",
+      "typeof": "integer",
+      "class": [],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "name": "dbl_all",
+      "typeof": "double",
+      "class": [],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "name": "chr_all",
+      "typeof": "character",
+      "class": [],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "name": "date_all",
+      "typeof": "double",
+      "class": [
+        "Date"
+      ],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "name": "time_all",
+      "typeof": "double",
+      "class": [
+        "POSIXct",
+        "POSIXt"
+      ],
+      "tzone": "UTC",
+      "levels": null,
+      "values": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    }
+  ]
+}

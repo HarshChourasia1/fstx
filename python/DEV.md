@@ -337,6 +337,8 @@ Tested (17 Nov 2026):
 - 18 Nov 2026, R-match part A (dates, times, integer64; section below), desktop, clang-cl wheel: `test_rmatch.py`
   34 passed. Laptop, R 4.5.1 with fstx 1.0.0: `check_rmatch.R` 21 files = 20 PASS, 1 OPEN
   (`native_fixed_offset.pyarrow`), 0 FAIL.
+- 18 Nov 2026, R-match part B (factors, NA, strings), desktop, clang-cl wheel: `test_rmatch.py` 61 passed
+  (part A included). Laptop R 4.5.1: `check_rmatch.R` 39 files = 38 PASS, 1 OPEN (the same fixed offset), 0 FAIL.
 - Still open: two threads appending to the same file (above); Linux, macOS, Python other than 3.12.
 
 ## R-match tests (`test_rmatch.py`, 18 Nov 2026)
@@ -358,9 +360,20 @@ New York across both DST changes, +05:45, St John's, tzone `""` and none, NA, fr
 pyarrow / pandas / polars times (s, ms, us, ns, naive, date32, date64) and int64 (`auto`, `integer64`,
 `double`, uint32 / uint64, the refusals).
 
+Part B cases: `rmatch_factors` (NA codes, unused levels, ordered, an NA level next to NA codes, the levels
+`"NA"` and `""`, Indian-script levels, all NA, no levels), `rmatch_na` (NA in every type, NaN apart from NA,
+`""` and `"NA"` apart from NA, all-NA columns of every type), `rmatch_strings` (Indian scripts, a 4-byte emoji,
+combining marks, CJK, right-to-left, control characters, 100 KB and 380 KB strings); native pyarrow / pandas /
+polars factors (dictionary index widths, large_string dictionaries, two chunks with different dictionaries,
+pandas Categorical, polars Categorical and Enum), NA (null type, NaN, `""`, pandas object / str / nullable
+dtypes) and strings (string, large_string, string_view, pandas str and object).
+
 Found:
 
 - polars: an Int64 whose values all fit int32 comes back integer (`int64="auto"`), added to DESIGN.md section 8.
+- polars: a factor with an NA level comes back as strings (as pandas already did), added to DESIGN.md section 8.
+- `rview.py` (test side only): an all-None object column in pandas is the writer's all-null logical column, and
+  an all-NA Date column from `to_pandas` keeps its Date class through the metadata.
 - OPEN (not changed): a fixed-offset time zone such as pyarrow's `"+05:30"` is stored as R's tzone; R reads it as
   a POSIX TZ string (UTC-05:30, warning "unknown timezone") and shows the time 11 hours off. Writing the zone
   as `Etc/GMT-5`-style names is not possible for :30 offsets; the choice (refuse, convert to UTC with a

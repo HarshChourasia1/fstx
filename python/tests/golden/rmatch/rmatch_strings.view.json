@@ -1,0 +1,36 @@
+{
+  "file": "rmatch_strings.fstx",
+  "about": "strings: ASCII, empty and NA and \"NA\", Indian scripts, a 4-byte emoji, combining marks, CJK, right-to-left, control characters, 100 KB and 380 KB strings",
+  "made_with": "fstx 1.0.0, R version 4.5.1 (2025-06-13 ucrt)",
+  "names": [
+    "s"
+  ],
+  "nrow": 16,
+  "columns": [
+    {
+      "name": "s",
+      "typeof": "character",
+      "class": [],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        "plain",
+        "",
+        null,
+        "NA",
+        "हिन्दी",
+        "தமிழ்",
+        "😀 4-byte",
+        "é combining",
+        "日本語",
+        "العربية",
+        "tab\tline\nbreak",
+        " lead and trail ",
+        "quote\" back\\",
+        "₹ 1,23,456.78",
+        "100000:e985dee22ce8f31bb144bd86155483c6",
+        "380000:861e041f07003de5f26c65b76d0bbf91"
+      ]
+    }
+  ]
+}
