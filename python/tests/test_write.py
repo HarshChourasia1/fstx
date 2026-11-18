@@ -403,6 +403,38 @@ def test_refused_invalid_utf8(tmp_path):
     assert not p.exists()
 
 
+@pytest.mark.parametrize("chunks,row,match", [
+    ([["a", "b", "a"], ["b", "a\x00b", "a", "a\x00b"]], 4, "NUL"),
+    ([["a", None, "a"], [None, "b"] * 40 + ["c\x00"]], 83, "NUL"),
+    ([["a"] * 5 + [b"\xff"], ["a\x00"]], 5, "UTF-8"),
+], ids=["second_chunk", "after_nulls", "first_bad_wins"])
+def test_refused_string_in_a_repeated_column(chunks, row, match, tmp_path):
+    # a column that repeats its values goes to the engine dictionary-coded and only the dictionary is checked:
+    # the error still names the first row that holds the bad value
+    arrs = [pa.array([v.encode() if isinstance(v, str) else v for v in c], pa.binary()).view(pa.string())
+            for c in chunks]
+    p = tmp_path / "refused.fstx"
+    with pytest.raises(ValueError, match=match) as e:
+        fstx.write_fstx(pa.table({"txt": pa.chunked_array(arrs)}), p)
+    assert "(row %d)" % row in str(e.value)
+    assert not p.exists()
+
+
+def test_repeated_strings_are_dictionary_coded(tmp_path):
+    # equal strings reach the engine as one pointer, as R's string cache gives them, so a column of 20 values
+    # is stored as a dictionary (as R stores it), across chunks and with missing values
+    vals = [f"city-{i % 20:02d}" for i in range(200_000)]
+    vals[5] = vals[150_000] = None
+    rep = pa.chunked_array([pa.array(vals[:70_000]), pa.array(vals[70_000:])])
+    uniq = pa.array([f"city-{i:06d}" for i in range(200_000)])  # same lengths, all distinct
+    p, q = tmp_path / "rep.fstx", tmp_path / "uniq.fstx"
+    fstx.write_fstx(pa.table({"s": rep}), p, profile="fast")
+    fstx.write_fstx(pa.table({"s": uniq}), q, profile="fast")
+    assert p.stat().st_size * 5 < q.stat().st_size
+    assert fstx.read_fstx(p).column("s").to_pylist() == vals
+    assert fstx.read_fstx(q).column("s").to_pylist() == uniq.to_pylist()
+
+
 def test_refused_keeps_the_old_file(tmp_path):
     p = tmp_path / "kept.fstx"
     fstx.write_fstx(pa.table({"x": pa.array([1, 2], pa.int32())}), p)

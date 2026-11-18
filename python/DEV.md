@@ -366,6 +366,16 @@ Tested (17 Nov 2026):
   ran `test_two_threads_appending_to_one_file` (plain and factor levels, 2 threads x 20 appends) 10 times in a
   row: 2 passed each time, every append succeeded; `scripts/append2.py`: 0 errors, 41,000 rows, 0 rows with the
   other thread's level, 42 levels. Whole suite: 862 passed (one run stopped by the speech-test guard, rerun).
+- 18 Nov 2026, task 3 (write speed), desktop, cl (MSVC 19.44) wheel rebuilt with the new `write.cpp`, final `.py`
+  files copied over it: whole suite 866 passed (4 new in `test_write.py`: a bad string in a dictionary-coded
+  column names its first row, three ways; a 20-value column across chunks with nulls is dictionary-coded and
+  reads back). Cause found with a per-column profile (`scripts/prof_py.py`, `prof_r.R`): the engine's string
+  dictionary keys on pointers, Arrow gives each row its own, so repeating strings from Python were never
+  dictionary-coded (DESIGN.md section 6). Engine time of the bench write 0.37 -> 0.18 s (R 0.15). Bench, median
+  of 5: write 0.44 -> 0.29 s, 1 thread 1.36 -> 1.20 s, 2-column read 0.19 -> 0.09 s, full read 0.24 s
+  unchanged, file 224 -> 222.8 MiB (R's: 222.8). Left: about 0.1 s of serial Python preparation (casts, bool to
+  int32, `pc.min`), and the dictionary decode on read (0.045 s for the 20-value column), both Python-side.
+  clang-cl wheel not rebuilt for this step.
 - Still open: Linux, macOS, Python other than 3.12.
 
 ## R-match tests (`test_rmatch.py`, 18 Nov 2026)

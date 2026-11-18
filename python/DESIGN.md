@@ -296,6 +296,14 @@ attributes and row names.
   `fstx_column_data` pointing at the Arrow buffers. Strings go through the `get_strings` callback straight from
   the Arrow offsets and data buffers (it runs on worker threads, so it must not touch Python objects). Arrays with
   nulls are copied once into R's layout (NA sentinels), since the engine takes plain value arrays.
+- Strings that repeat (18 Nov 2026): the engine's string dictionary keys on the host's string pointers, since R's
+  string cache gives equal strings one pointer. Arrow gives every row its own pointer, so a 20-value column
+  written from Python was never dictionary-coded (FSST / plain instead: slower to write and read, other bytes
+  than R's). `_text_chunks()` therefore hands a column that repeats its values (n <= 65,536, or at most
+  half distinct in its first 65,536 rows, where the engine itself gives up) as int32 codes into one dictionary
+  shared by every chunk, coded in slices on the write threads and then unified. `write.cpp` takes such chunks
+  and checks the dictionary once (UTF-8, NUL, length) plus every code's range; an error still names the first row
+  holding the bad value. File format, metadata and `src/` unchanged.
 - FXA1 encode / decode in Python per spec 9.4 (count / length checks, three levels, UTF-8 checks). The R
   serialization path is never decoded.
 - Appends follow R's rules (`.append_prepare()` in `R/m5.R`): same names, types and classes; factor levels may

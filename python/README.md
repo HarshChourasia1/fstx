@@ -67,17 +67,25 @@ logical, a 20-value string, a string unique per row, a date, a time with a time 
 
 | seconds | fstx (balanced) | Parquet (snappy) | Feather (lz4) | Feather (none) | R fstx |
 |---|---|---|---|---|---|
-| write | 0.44 | 2.37 | 0.45 | 0.20 | 0.15 |
-| write, 1 thread | 1.36 | 2.29 | - | - | 0.86 |
-| read | 0.24 | 0.18 | 0.22 | 0.10 | 2.64 (0.08 deferred) |
-| read, 1 thread | 0.69 | 0.40 | 0.18 | - | 3.08 |
-| read 2 columns (a double, the 20-value string) | 0.19 | 0.10 | 0.21 | - | 0.23 |
-| read into pandas | 0.49 | 0.36 | - | - | - |
-| file size, MiB | 224 | 372 | 490 | 693 | 223 |
+| write | 0.29 (was 0.44) | 2.18 | 0.47 | 0.23 | 0.15 |
+| write, 1 thread | 1.20 (was 1.36) | 2.17 | - | - | 0.86 |
+| read | 0.24 (was 0.24) | 0.20 | 0.20 | 0.10 | 2.48 (0.09 deferred) |
+| read, 1 thread | 0.60 (was 0.69) | 0.42 | 0.18 | - | 2.83 |
+| read 2 columns (a double, the 20-value string) | 0.09 (was 0.19) | 0.10 | 0.27 | - | 0.04 |
+| read into pandas | 0.57 (was 0.49) | 0.41 | - | - | - |
+| file size, MiB | 222.8 (was 224) | 372 | 490 | 693 | 222.8 |
 
-From Python, fstx writes as fast as Feather (lz4) and about 5 times faster than Parquet, and its file is the
-smallest. Reading is slower than Parquet (0.24 s against 0.18 s; on one thread 0.69 s against 0.40 s). The R
-package writes the same table in a third of the time Python takes. R's read here makes 10 million R strings
-(`strings = "eager"`, 2.64 s); its default makes them on first use (0.08 s for the read itself).
-`profile="fast"` (no codec) gave the same times at 244 MiB. A second run of the whole check gave numbers within
-10% of these, apart from Feather's two-column read (0.13 s).
+"was": the first measurement (same machine and table, earlier the same day), before the Python writer handed
+strings that repeat as a dictionary (equal strings must reach the engine as one pointer, as R gives them, to be
+dictionary-coded; DESIGN.md section 6). Since then the 20-value string column is stored as R stores it, the
+file is the size of R's, and reading that column is about twice as fast. The string column unique per row
+also writes faster (a quicker UTF-8 check); the other columns did not change.
+
+From Python, fstx writes about 1.6 times faster than Feather (lz4) and about 7 times faster than Parquet, and
+its file is the smallest. Reading is slower than Parquet (0.24 s against 0.20 s; on one thread 0.60 s against
+0.42 s). The R package still writes the same table in about half the time Python takes: what is left is the
+Python side's own preparation (about 0.1 s of casts and checks, run one column after another), not the engine.
+R's read here makes 10 million R strings (`strings = "eager"`, 2.48 s); its default makes them on first use
+(0.09 s for the read itself). `profile="fast"` (no codec) gave the same times at 231 MiB. Feather's two-column
+read is noisy (fastest of the 5 runs 0.06 s, median 0.27 s). The pandas read's median rose to 0.57 s (fastest
+0.51 s; 0.49 s before); not looked into.

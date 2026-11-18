@@ -2,7 +2,8 @@
 
 Everything about types is decided here with pyarrow (DESIGN.md sections 3 to 5); ``_core.write`` receives, per
 column, the stored definition (spec 4.2) and Arrow arrays that are already what the engine takes: one int32 or
-float64 array with R's missing values filled in, or the string chunks as they are.
+float64 array with R's missing values filled in, or the string chunks (dictionary-coded when the column repeats
+its values, so that equal strings share one pointer as in R: ``_text_chunks``).
 
 Metadata the reader left on a table says how R held a column and is used when it still fits the data
 (keys and helpers in ``_meta.py``; a column without any of it is written as the plain data it is):
@@ -23,7 +24,9 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 import pyarrow as pa
@@ -113,6 +116,46 @@ def _valid(arr) -> int:
     return len(arr) - arr.null_count
 
 
+_DICT_SAMPLE = 65536  # rows after which the engine gives up its string dictionary at more than rows / 2 values
+
+
+_POOL: Optional[ThreadPoolExecutor] = None
+_POOL_LOCK = threading.Lock()
+
+
+def _pool() -> ThreadPoolExecutor:
+    global _POOL
+    with _POOL_LOCK:
+        if _POOL is None:
+            _POOL = ThreadPoolExecutor(os.cpu_count() or 1, thread_name_prefix="fstx-write")
+        return _POOL
+
+
+def _text_chunks(col: pa.ChunkedArray, threads: int = 0) -> List[pa.Array]:
+    """The chunks of a string column as the engine takes them. The engine's string dictionary keys on pointers
+    (R's string cache gives equal strings one pointer), so a column that repeats its values goes as int32 codes
+    into one dictionary shared by every chunk: equal strings then reach it as one pointer and are dictionary-coded
+    as R codes them. A column of mostly distinct values (more than half of its first 65,536 rows, where the
+    engine would give up) goes as it is. Long columns are coded in `threads` slices at once (0 = all cores)."""
+    n = len(col)
+    if n < 2 or col.null_count >= n - 1:
+        return list(col.chunks)
+    head = col.slice(0, _DICT_SAMPLE)
+    if n > _DICT_SAMPLE and pc.count_distinct(head).as_py() * 2 > len(head):
+        return list(col.chunks)
+    parts = min(threads or os.cpu_count() or 1, n // _DICT_SAMPLE)
+    if parts > 1:  # pyarrow codes on one thread: code slices in parallel, then give them one dictionary
+        step = -(-n // parts)
+        coded = pa.chunked_array([c for part in _pool().map(lambda s: s.dictionary_encode(),
+                                                             [col.slice(i, step) for i in range(0, n, step)])
+                                  for c in part.chunks], pa.dictionary(pa.int32(), col.type))
+    else:
+        coded = col.dictionary_encode()
+    if len({c.dictionary.buffers()[1].address for c in coded.chunks}) > 1:
+        coded = coded.unify_dictionaries()
+    return list(coded.chunks)
+
+
 def _int32(arr: pa.Array, name: str) -> pa.Array:
     """int32 with NA_integer_ for nulls. A value that is itself R's NA cannot be stored."""
     if arr.type != pa.int32():
@@ -164,7 +207,7 @@ def _refuse(name: str, t, hint: str = "") -> TypeError:
 
 # ---------------------------------------------------------------- one column
 def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[bytes], int64: str,
-            quiet: bool = False, base_levels: Optional[List[str]] = None) -> _Col:
+            quiet: bool = False, base_levels: Optional[List[str]] = None, threads: int = 0) -> _Col:
     t = col.type
     cls = (r or {}).get("class") or []
     rphys = (r or {}).get("phys")
@@ -173,7 +216,7 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
     def natural(what: str) -> _Col:  # the metadata does not describe this data: write the data as it is
         if not quiet:
             _warn(f"column '{name}' is {t} but its fstx metadata describes {what}; the metadata is ignored")
-        return _column(name, col, None, None, int64, True, base_levels)
+        return _column(name, col, None, None, int64, True, base_levels, threads)
 
     def described() -> str:
         return "/".join(list(cls) + [str(rphys)]) if r is not None else "attributes only"
@@ -183,7 +226,7 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
 
     if pt.is_dictionary(t):
         if not (_is_text(t.value_type) or pt.is_null(t.value_type)):  # a dictionary of numbers, dates, ...: written as its values
-            return _column(name, col.cast(t.value_type), None, None, int64, True, None)
+            return _column(name, col.cast(t.value_type), None, None, int64, True, None, threads)
         native = r is None or (rphys == "integer" and rlog == "factor") or (rphys == "character" and rlog == "none")
         in_blob = r is not None and rphys == "integer" and rlog == "none" and "factor" in cls
         if r is None and blob is not None:
@@ -325,13 +368,13 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
             return natural(described())
         if _is_view(t):
             col = col.cast(pa.large_string())
-        return _Col(name, _STRING, list(col.chunks), attrs=blob)
+        return _Col(name, _STRING, _text_chunks(col, threads), attrs=blob)
 
     if pt.is_binary(t) or pt.is_large_binary(t):
         # fstx has no binary type; the one binary column it takes is text it handed out itself as bytes
         # (read_fstx(invalid_utf8="binary")), which goes back as the same bytes
         if r is not None and rphys == "character" and rlog == "none":
-            return _Col(name, _STRING, list(col.chunks), attrs=blob)
+            return _Col(name, _STRING, _text_chunks(col, threads), attrs=blob)
         raise _refuse(name, t, " (fstx 1.0 has no binary type)")
 
     if pt.is_null(t) and r is not None:
@@ -347,7 +390,7 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
             as_type = {"integer": pa.int32(), "double": pa.float64(), "logical": pa.bool_(),
                        "character": pa.string()}[rphys]
         typed = pa.chunked_array([pa.nulls(len(col), as_type)])
-        return _column(name, typed, r, blob, int64, quiet, base_levels)
+        return _column(name, typed, r, blob, int64, quiet, base_levels, threads)
     if pt.is_null(t):  # an all-null column: logical NA, R's default
         return _Col(name, _LOGICAL, [_int32(pa.nulls(len(col), pa.int32()), name)])
 
@@ -705,7 +748,7 @@ def _write(p: str, table: pa.Table, row_names, profile, compress, level, threads
                 quiet = True
             if fc.logical == "factor":
                 base = list(fc.levels)
-        col = _column(field.name, table.column(i), r, blob, int64, quiet, base)
+        col = _column(field.name, table.column(i), r, blob, int64, quiet, base, threads or 0)
         if plan is not None:
             _check_append(col, plan["meta"].columns[i])
         cols.append(col)
