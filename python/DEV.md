@@ -98,16 +98,20 @@ python -m pytest python/tests -q -rs
 - sdist: `python python/tools/make_core.py` (copies the engine into `python/core/` and refreshes `python/LICENSES/`),
   then `python -m build --sdist python --outdir dist`. It builds anywhere: CMake takes `core/` when it is there,
   `../src` otherwise. Without make_core the sdist has no engine and its build stops at "engine sources not found".
-  Delete `python/core/` after making the sdist: while it exists, builds in the tree use it and not your `src/` edits.
+  `python/core/` is a generated, git-ignored copy that the sdist needs; keep it. While it exists, builds in the
+  tree use it and not `src/`, so rerun make_core after any `src/` edit (`-DFSTX_CORE_DIR=../src` overrides it,
+  as the coretest build must: its path is `<core dir>/../tools/coretest`).
 - Wheels: `.github/workflows/python-wheels.yml` (cibuildwheel), on a `py-v*` tag or by hand, never on plain pushes.
   Windows x64 (cl), Linux x86_64 and aarch64 (manylinux_2_28; aarch64 on the native `ubuntu-24.04-arm` runner),
   macOS x86_64 (`macos-15-intel`, 10.15+) and arm64 (`macos-15`, 11+). Per platform: a cp310 and a cp311 wheel
   and one cp312-abi3 wheel, which cibuildwheel also tests on 3.13 and 3.14. pytest runs on every wheel. The sdist
   job also unpacks the sdist away from the tree, builds a wheel from it and runs pytest. Artifacts only: the
   PyPI job is in the file as comments, not enabled.
-- Licences: `python/LICENSE` (fstx, MIT) and `python/LICENSES/` go into the sdist and into the wheel's
-  `.dist-info/licenses/` (`wheel.license-files`). The metadata is version 2.1, so there are no `License-File:` lines;
-  that needs `project.license-files` (PEP 639) and scikit-build-core 0.11+ in `build-system.requires`.
+- Licences (PEP 639, 18 Nov 2026): `license = "MIT"` and `license-files` in `[project]` (scikit-build-core 0.11+
+  in `build-system.requires`); `python/LICENSE` (fstx, MIT) and `python/LICENSES/` go into the sdist and into the
+  wheel's `.dist-info/licenses/`, with `License-Expression:` and one `License-File:` line each in the metadata.
+  The licence classifier is gone (PEP 639 does not allow it next to an expression). `readme = "README.md"` is the
+  long description.
 
 Checked on 17 Nov 2026 (desktop): sdist (244 entries, engine in `core/`) unpacked outside the git tree built
 `cp312-abi3-win_amd64` and `cp311-cp311-win_amd64` wheels with cl; pytest 132 passed on 3.12, 3.11 and with the
@@ -376,6 +380,14 @@ Tested (17 Nov 2026):
   unchanged, file 224 -> 222.8 MiB (R's: 222.8). Left: about 0.1 s of serial Python preparation (casts, bool to
   int32, `pc.min`), and the dictionary decode on read (0.045 s for the 20-value column), both Python-side.
   clang-cl wheel not rebuilt for this step.
+- 18 Nov 2026, task 4 (licence and packaging), desktop, `scripts/sdist.cmd` (make_core, then scikit-build-core
+  1.1.2's `build_sdist`; the `build` package is not installed there): sdist 282 entries, 1.6 MB, with LICENSE,
+  README.md, LICENSES/ (COPYRIGHTS + 6 libraries) and the engine in `core/` (146 files, 6 vendored libraries), no
+  build output. PKG-INFO: Metadata-Version 2.4, `License-Expression: MIT`, 8 `License-File:` lines, README as
+  text/markdown. The sdist pip-installed (built with cl from the unpacked copy) into a fresh venv with pyarrow
+  26.0.1, pandas 3.1.1, polars 2.1.0, pytest 9.2.0: the wheel's `.dist-info/licenses/` holds the same 8 files;
+  pytest on the sdist's own tests, run outside the tree on the installed package: 866 passed. `python/LICENSES`
+  matches `inst/COPYRIGHTS` and `src/vendor/*/LICENSE`.
 - Still open: Linux, macOS, Python other than 3.12.
 
 ## R-match tests (`test_rmatch.py`, 18 Nov 2026)

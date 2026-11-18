@@ -1,6 +1,6 @@
 [build-system]
 requires = [
-  "scikit-build-core>=0.10",
+  "scikit-build-core>=0.11",
   "nanobind>=2.4",
 ]
 build-backend = "scikit_build_core.build"
@@ -9,7 +9,12 @@ build-backend = "scikit_build_core.build"
 name = "fstx"
 version = "1.0.0.dev0"
 description = "Fast, safe column-store files (the FST-X format): Python on the fstx C++ engine"
-license = { text = "MIT" }
+readme = "README.md"
+# PEP 639: an SPDX expression, and the licence files that go into the wheel's .dist-info/licenses and the
+# sdist: fstx's MIT licence and the vendored libraries' licences (LICENSES/ is a copy of inst/COPYRIGHTS and
+# src/vendor/*/LICENSE, refreshed by tools/make_core.py).
+license = "MIT"
+license-files = ["LICENSE", "LICENSES/COPYRIGHTS", "LICENSES/*/LICENSE"]
 requires-python = ">=3.10"
 # pyarrow 15 is the first with RecordBatchReader.from_stream (the Arrow PyCapsule stream protocol the
 # reader is built on); pandas and polars are optional (fstx.to_pandas / fstx.to_polars import them on use).
@@ -17,7 +22,6 @@ dependencies = ["pyarrow>=15"]
 authors = [{ name = "Harsh Chourasia" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: C++",
   "Programming Language :: Python :: 3",
 ]
@@ -39,9 +43,6 @@ build-dir = "build/{wheel_tag}"
 # (nanobind needs 3.12 for the stable ABI; scikit-build-core ignores this key on older Pythons).
 wheel.py-api = "cp312"
 wheel.packages = ["fstx"]
-# fstx's MIT licence and the vendored libraries' licences, in the wheel's .dist-info/licenses
-# (LICENSES/ is a copy of inst/COPYRIGHTS and src/vendor/*/LICENSE, refreshed by tools/make_core.py).
-wheel.license-files = ["LICENSE", "LICENSES/COPYRIGHTS", "LICENSES/*/LICENSE"]
 # The sdist carries the engine copy made by tools/make_core.py (core/ is git-ignored, so named here).
 sdist.include = ["core/"]
 
