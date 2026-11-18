@@ -337,7 +337,11 @@ Tested (17 Nov 2026):
   - coretest with cl and with clang-cl, 200,000 rows: 470 checks passed, 0 failed each; kernels scalar / AVX2 /
     SSE4 / SSE2 0 mismatches, same hashes for every target and both compilers.
   - R package built from the same tree (R 4.6.1), `test-arrow.R` through `run_tests.R`: 10 tests,
-    356 expectations, 0 failed, 0 errors, 1 skipped.
+    356 expectations, 0 failed, 0 errors, 1 skipped. The skip is "arrow, DuckDB and polars take the stream"
+    (`test-arrow.R:300`): it ends with `skip_if()` when none of the optional consumers arrow, duckdb, polars is
+    installed, and the desktop R has none of them (it has nanoarrow, so the earlier tests run). By design, not
+    a setup bug; nothing changed. The laptop R has arrow but neither nanoarrow nor testthat, so it was not run
+    there either.
   The merge brought no change to `src/` beyond what `py-read` already had (`arrow_abi.h`, `r_arrow.cpp`).
 - 18 Nov 2026, R-match part A (dates, times, integer64; section below), desktop, clang-cl wheel: `test_rmatch.py`
   34 passed. Laptop, R 4.5.1 with fstx 1.0.0: `check_rmatch.R` 21 files = 20 PASS, 1 OPEN
