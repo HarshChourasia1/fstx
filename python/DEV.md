@@ -357,6 +357,10 @@ Tested (17 Nov 2026):
   `tools/bench_r.R`, run through `scripts/bench.cmd`). Seen there, not looked into: Python's write of the
   10-million-row table takes 0.44 s where R's takes 0.15 s (1 thread: 1.36 s against 0.86 s), and reading 2 of
   10 columns (one a 20-value string column) takes 0.19 s of the full read's 0.24 s.
+- 18 Nov 2026, task 1 (fixed-offset time zones), desktop, cl wheel with the new `.py` files copied over it
+  (`scripts/pyinst.cmd`): whole suite 862 passed (`test_rmatch.py`: the old fixed-offset test replaced by
+  5 tests: 8 offsets both signs, half and three-quarter hours, zero; append; filter; mapping; old-style file;
+  pandas and polars). Laptop R 4.5.1: `check_rmatch.R` 44 files = 44 PASS, 0 OPEN, 0 FAIL.
 - Still open: two threads appending to the same file spuriously fail (above, no data harm); Linux, macOS,
   Python other than 3.12.
 
@@ -393,7 +397,10 @@ Found:
 - polars: a factor with an NA level comes back as strings (as pandas already did), added to DESIGN.md section 8.
 - `rview.py` (test side only): an all-None object column in pandas is the writer's all-null logical column, and
   an all-NA Date column from `to_pandas` keeps its Date class through the metadata.
-- OPEN (not changed): a fixed-offset time zone such as pyarrow's `"+05:30"` is stored as R's tzone; R reads it as
-  a POSIX TZ string (UTC-05:30, warning "unknown timezone") and shows the time 11 hours off. Writing the zone
-  as `Etc/GMT-5`-style names is not possible for :30 offsets; the choice (refuse, convert to UTC with a
-  warning, or keep) is Harsh's.
+- Fixed-offset time zones (was OPEN; closed 18 Nov 2026 on Harsh's "do 1-5"): pyarrow's `"+05:30"` was stored as
+  R's tzone and R read it as a POSIX TZ string (UTC-05:30), 11 hours off. Now stored as `"<+0530>-05:30"` and read
+  back as `"+05:30"` (DESIGN.md section 3.4, `_meta.r_tzone` / `arrow_tz`); filters take a naive value in that
+  offset; `fstx.to_polars` gives UTC with a warning (polars has no fixed offsets). Proof first, on both Rs:
+  `scripts/tzprobe.R` (8 offsets, years 1900 to 9999): `format()`, `as.POSIXlt()$hour` / `$gmtoff` and R write ->
+  read right on R 4.5.1 (laptop) and R 4.6.1 (desktop); every format warns "unknown timezone" (values right),
+  so the POSIX form is used and the UTC fallback is not.

@@ -99,7 +99,11 @@ def _column(c: ColumnMeta, datetimes: str, binary: bool, attributes: bool) -> _C
     if c.logical == "Date":
         return _Col(c, "same", pa.date32() if arrow else stored, md)
     if c.logical == "POSIXct":
-        return _Col(c, "same", pa.timestamp("us", c.tzone or None) if arrow else stored, md)
+        if not arrow:
+            return _Col(c, "same", stored, md)
+        # the stream's type carries the stored tzone; R's POSIX form of a fixed offset becomes Arrow's "+05:30"
+        tz = _meta.arrow_tz(c.tzone)
+        return _Col(c, "same" if tz == c.tzone else "retz", pa.timestamp("us", tz or None), md)
     # classes R keeps in the attribute blob
     if c.phys == "double" and "integer64" in rc:
         return _Col(c, "int64", pa.int64(), md)
@@ -109,7 +113,7 @@ def _column(c: ColumnMeta, datetimes: str, binary: bool, attributes: bool) -> _C
     if "Date" in rc and arrow:
         return _Col(c, "date", pa.date32(), md)
     if "POSIXct" in rc and arrow:
-        return _Col(c, "ts", pa.timestamp("us", _blob_tz(a)), md)
+        return _Col(c, "ts", pa.timestamp("us", _meta.arrow_tz(_blob_tz(a))), md)
     return _Col(c, "same", stored, md)
 
 
@@ -425,6 +429,8 @@ def _finish(batch: pa.RecordBatch, plan: _Plan, schema: pa.Schema, st: _State) -
             a = _to_date(a, col)
         elif k == "ts":
             a = _to_timestamp(a, col)
+        elif k == "retz":  # the same microseconds, the time zone written the Arrow way
+            a = a.view(col.field.type)
         out.append(a)
     return pa.RecordBatch.from_arrays(out, schema=schema)
 
@@ -605,6 +611,18 @@ def _without_na_levels(table: pa.Table, lib: str) -> pa.Table:
     return table
 
 
+def _fixed_offsets_as_utc(table: pa.Table) -> pa.Table:
+    """polars knows only named time zones: a fixed offset ("+05:30") becomes "UTC", the same instants (warning)."""
+    for j, fld in enumerate(table.schema):
+        tz = fld.type.tz if pa.types.is_timestamp(fld.type) else None
+        if tz and _meta.r_tzone(tz) != tz:
+            warnings.warn("fstx: column '%s' has the fixed UTC offset '%s' as its time zone, which polars cannot "
+                          "hold; it is returned in UTC (the same instants)" % (fld.name, tz), FstxWarning, stacklevel=3)
+            typ = pa.timestamp(fld.type.unit, "UTC")
+            table = table.set_column(j, pa.field(fld.name, typ), table.column(j).cast(typ))
+    return table
+
+
 def to_pandas(table: pa.Table):
     """A pandas DataFrame from a table read by fstx, keeping what R means: logical, integer, integer64 and
     double columns get pandas' nullable dtypes (missing values stay missing, integers stay integers; NaN stays
@@ -648,8 +666,9 @@ def to_pandas(table: pa.Table):
 def to_polars(table: pa.Table):
     """A polars DataFrame from a table read by fstx. polars has no index and no metadata: row names, classes
     and attribute blobs do not travel (write from the pyarrow.Table to keep them). A factor with NA as a level
-    is returned as strings, with a warning. Column names must be unique (polars' rule): a table with repeated
-    names raises ValueError."""
+    is returned as strings, with a warning; a time zone that is a fixed UTC offset ("+05:30") is returned as
+    UTC, with a warning (polars knows named zones only). Column names must be unique (polars' rule): a table
+    with repeated names raises ValueError."""
     import polars as pl
 
     names = table.column_names
@@ -657,4 +676,4 @@ def to_polars(table: pa.Table):
         dup = sorted(set(n for n in names if names.count(n) > 1))
         raise ValueError("polars needs unique column names; repeated: %s (rename them with "
                          "table.rename_columns() first)" % ", ".join(repr(n) for n in dup))
-    return pl.from_arrow(_without_na_levels(table, "polars"))
+    return pl.from_arrow(_fixed_offsets_as_utc(_without_na_levels(table, "polars")))

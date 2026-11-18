@@ -11,7 +11,7 @@ import math
 import numbers
 from typing import Any, List, Optional
 
-from . import _core
+from . import _core, _meta
 
 _OPS = {"==": _core.OP_EQ, "!=": _core.OP_NE, "<": _core.OP_LT, "<=": _core.OP_LE, ">": _core.OP_GT,
         ">=": _core.OP_GE, "in": _core.OP_IN, "is_null": _core.OP_ISNA, "not_null": _core.OP_NOTNA}
@@ -22,6 +22,10 @@ _EPOCH = _dt.date(1970, 1, 1)
 def _zone(tz: str):
     if tz in ("UTC", "GMT", "Etc/UTC"):
         return _dt.timezone.utc
+    fixed = _meta.arrow_tz(tz)  # a fixed offset: "+05:30", or R's "<+0530>-05:30"
+    if len(fixed) == 6 and fixed[0] in "+-" and fixed[3] == ":" and (fixed[1:3] + fixed[4:]).isdigit():
+        sign = -1 if fixed[0] == "-" else 1
+        return _dt.timezone(sign * _dt.timedelta(hours=int(fixed[1:3]), minutes=int(fixed[4:])))
     import zoneinfo
 
     try:

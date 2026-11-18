@@ -41,7 +41,16 @@ def civil(days: int):
     return (y + 1 if m <= 2 else y), m, d
 
 
+def r_fixed(tz: Optional[str]) -> Optional[str]:
+    """R's tzone for a fixed offset as pyarrow writes it ("+05:30" -> "<+0530>-05:30", POSIX's inverted sign)."""
+    if tz and tz[:1] in "+-" and len(tz) == 6 and tz[3] == ":":
+        return "<%s%s%s>%s%s" % (tz[0], tz[1:3], tz[4:6], "-" if tz[0] == "+" else "+", tz[1:])
+    return tz
+
+
 def zone(tz: str):
+    if tz[:1] == "<" and len(tz) == 13 and tz[6] == ">":  # R's POSIX form of a fixed offset: <+0530>-05:30
+        tz = tz[1] + tz[2:4] + ":" + tz[4:6]
     if tz[:1] in "+-" and len(tz) == 6 and tz[3] == ":":  # a fixed offset, as pyarrow writes it
         sign = -1 if tz[0] == "-" else 1
         return dt.timezone(sign * dt.timedelta(hours=int(tz[1:3]), minutes=int(tz[4:6])))
@@ -117,7 +126,7 @@ def _fits(vals) -> bool:
 def _tzone(r: Optional[dict], tz: Optional[str]):
     if r is not None and r.get("logical") == "POSIXct":
         return r.get("tzone")  # None = no attribute
-    return tz or "UTC"  # data that never came from R: naive times are shown as UTC
+    return r_fixed(tz) or "UTC"  # data that never came from R: naive times are shown as UTC
 
 
 def view_arrow_column(name: str, field: pa.Field, arr, int64: str = "auto") -> dict:
@@ -190,6 +199,9 @@ def view_pandas(df, int64: str = "auto") -> dict:
                             levels=levels))
         elif isinstance(d, pd.DatetimeTZDtype) or str(d).startswith("datetime64"):
             tz = getattr(d, "tz", None)
+            if isinstance(tz, dt.timezone) and tz is not dt.timezone.utc:  # a fixed offset: pyarrow's "+05:30"
+                o = int(tz.utcoffset(None).total_seconds())
+                tz = "%s%02d:%02d" % ("-" if o < 0 else "+", abs(o) // 3600, abs(o) % 3600 // 60)
             tz = None if tz is None else str(tz)
             tzone = _tzone(r, tz)
             vals = []

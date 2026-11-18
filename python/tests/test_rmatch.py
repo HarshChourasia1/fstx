@@ -170,15 +170,111 @@ def test_native_times_pyarrow():
     save(t, "native_times.pyarrow", v)
 
 
-def test_native_times_fixed_offset():
-    # pyarrow and pandas give a fixed UTC offset as the time zone "+05:30". The writer stores it as R's tzone,
-    # but R reads "+05:30" as a POSIX TZ string, where the sign means the opposite (UTC-05:30), and warns that
-    # the zone is unknown: R shows these times 11 hours off. Open (not in DESIGN.md); check_rmatch.R shows it.
-    t = pa.table({"fixed": pa.array([0, 1700000000 * US, None], pa.timestamp("us", "+05:30"))})
+FIXED = ["+05:30", "-03:00", "+00:00", "-00:00", "+05:45", "-09:30", "+14:00", "-12:00"]
+FIXED_R = ["<+0530>-05:30", "<-0300>+03:00", "<+0000>-00:00", "<-0000>+00:00", "<+0545>-05:45", "<-0930>+09:30",
+           "<+1400>-14:00", "<-1200>+12:00"]
+
+
+def fixed_offsets_arrow():
+    vals = [0, 1700000000 * US + 123456, None, -2208988800 * US, 253402300799 * US, -1]
+    return pa.table({tz: pa.array(vals, pa.timestamp("us", tz)) for tz in FIXED})
+
+
+def check_fixed_file(p, tzs):
+    """The file holds R's POSIX form of each offset; read back, each column is the Arrow fixed offset again."""
+    m = fstx.metadata(p)
+    assert [c.tzone for c in m.columns] == [FIXED_R[FIXED.index(tz)] for tz in tzs]
+    got = fstx.read_fstx(p)
+    assert [f.type for f in got.schema] == [pa.timestamp("us", tz) for tz in tzs]
+    return got
+
+
+def test_native_times_fixed_offset(tmp_path):
+    # pyarrow and pandas give a fixed UTC offset as the time zone "+05:30". R reads "+05:30" as a POSIX TZ string
+    # (UTC-05:30), so the writer stores R's POSIX form "<+0530>-05:30" (sign inverted) and the reader maps it
+    # back (DESIGN.md section 3). R 4.5.1 and 4.6.1 show the right wall time for it; they warn "unknown timezone".
+    t = fixed_offsets_arrow()
     v = rview.view_arrow(t)
-    assert v["columns"][0]["values"][0] == "1970-01-01 05:30:00.000000 +05:30"
-    save(t, "native_fixed_offset.pyarrow", v, open_cols={
-        "fixed": "fixed-offset time zone '+05:30': R reads it as a POSIX TZ string (UTC-05:30) and shows the time 11 h off"})
+    by = {c["name"]: c for c in v["columns"]}
+    assert [by[tz]["tzone"] for tz in FIXED] == FIXED_R
+    assert by["+05:30"]["values"][:2] == ["1970-01-01 05:30:00.000000 +05:30", "2023-11-15 03:43:20.123456 +05:30"]
+    assert by["-03:00"]["values"][0] == "1969-12-31 21:00:00.000000 -03:00"
+    assert by["-09:30"]["values"][3] == "1899-12-31 14:30:00.000000 -09:30"
+    assert by["+14:00"]["values"][4] == "10000-01-01 13:59:59.000000 +14:00"
+    assert by["+00:00"]["values"][5] == "1969-12-31 23:59:59.999999 +00:00"
+    p = save(t, "native_fixed_offset.pyarrow", v)
+    got = check_fixed_file(p, FIXED)
+    assert got.equals(t)  # the same instants, the same time zones
+    assert json.loads(got.schema.field("+05:30").metadata[b"fstx.r"])["tzone"] == "<+0530>-05:30"
+    # read -> write -> read keeps the file's tzone; an append of plain "+05:30" rows matches it
+    q = tmp_path / "again.fstx"
+    fstx.write_fstx(got, q)
+    assert check_fixed_file(q, FIXED).equals(t)
+    fstx.write_fstx(t, q, append=True)
+    assert check_fixed_file(q, FIXED).equals(pa.concat_tables([t, t]))
+    # a naive filter value is a clock time in the column's offset
+    f = fstx.read_fstx(p, columns=["+05:30"], filters=[("+05:30", "==", "1970-01-01T05:30:00")])
+    assert f.column(0).cast(pa.int64()).to_pylist() == [0]
+
+
+def test_fixed_offset_mapping():
+    from fstx import _meta
+
+    assert [_meta.r_tzone(tz) for tz in FIXED] == FIXED_R
+    assert [_meta.arrow_tz(tz) for tz in FIXED_R] == FIXED
+    for tz in ("Asia/Kolkata", "UTC", "", None, "+0530", "EST5EDT", "<+0530>+05:30", "<+0530>-05:45"):
+        assert _meta.r_tzone(tz) == tz and _meta.arrow_tz(tz) == tz  # names and other POSIX strings are kept
+
+
+def test_fixed_offset_from_r_style_tzone(tmp_path):
+    # a file whose tzone is already the POSIX form (as R would write it) reads as the Arrow offset; one that holds
+    # "+05:30" itself (an older Python write, or R) reads as it is
+    t = pa.table({"x": pa.array([0, None], pa.timestamp("us", "+05:30"))})
+    t2 = pa.table([t.column(0)], schema=pa.schema([pa.field("x", t.schema.field("x").type, metadata={
+        b"fstx.r": b'{"phys":"double","logical":"POSIXct","class":["POSIXct","POSIXt"],"tzone":"+05:30"}'})]))
+    fstx.write_fstx(t2, tmp_path / "old.fstx")
+    assert fstx.metadata(tmp_path / "old.fstx").columns[0].tzone == "+05:30"
+    assert fstx.read_fstx(tmp_path / "old.fstx").schema.field("x").type == pa.timestamp("us", "+05:30")
+    fstx.write_fstx(t, tmp_path / "new.fstx")
+    assert fstx.metadata(tmp_path / "new.fstx").columns[0].tzone == "<+0530>-05:30"
+
+
+def test_fixed_offset_pandas():
+    pd = pytest.importorskip("pandas")
+    import datetime as dt
+
+    # pandas from pyarrow: datetime.timezone offsets; through fstx.to_pandas and back, nothing changes
+    got = fstx.read_fstx(save(fixed_offsets_arrow(), "native_fixed_offset.pyarrow2", rview.view_arrow(fixed_offsets_arrow())))
+    df = fstx.to_pandas(got)
+    assert str(df["+05:30"].dtype) == "datetime64[us, UTC+05:30]"
+    assert diff(rview.view_pandas(df), rview.view_arrow(got)) == {}
+    p = save(df, "native_fixed_offset.pandas_rt", rview.view_pandas(df))
+    assert check_fixed_file(p, FIXED).equals(got)
+    # plain pandas data with fixed offsets
+    tz = [dt.timezone(dt.timedelta(hours=5, minutes=30)), dt.timezone(-dt.timedelta(hours=3))]
+    naive = pd.to_datetime(["2024-01-01 10:00:00.5", None, "1969-12-31 23:59:59"], format="ISO8601")
+    df2 = pd.DataFrame({"a": naive.tz_localize(tz[0]).as_unit("us"), "b": naive.tz_localize(tz[1]).as_unit("us")})
+    v = rview.view_pandas(df2)
+    assert [c["tzone"] for c in v["columns"]] == ["<+0530>-05:30", "<-0300>+03:00"]
+    assert v["columns"][0]["values"][0] == "2024-01-01 10:00:00.500000 +05:30"
+    p = save(df2, "native_fixed_offset.pandas", v)
+    back = fstx.to_pandas(check_fixed_file(p, ["+05:30", "-03:00"]))
+    pd.testing.assert_frame_equal(back, df2, check_dtype=True)
+
+
+def test_fixed_offset_polars():
+    pl = pytest.importorskip("polars")
+
+    # polars knows named time zones only: to_polars gives UTC (same instants) with a warning; written from polars
+    # the column is a UTC one (DESIGN.md section 8)
+    got = fstx.read_fstx(save(fixed_offsets_arrow(), "native_fixed_offset.pyarrow3", rview.view_arrow(fixed_offsets_arrow())))
+    with pytest.warns(fstx.FstxWarning, match="fixed UTC offset"):
+        df = fstx.to_polars(got)
+    assert all(df[tz].dtype == pl.Datetime("us", "UTC") for tz in FIXED)
+    assert df.to_arrow().column("+05:30").cast(pa.int64()).equals(got.column("+05:30").cast(pa.int64()))
+    p = save(df, "native_fixed_offset.polars", rview.view_polars(df))
+    m = fstx.metadata(p)
+    assert all(c.tzone == "UTC" for c in m.columns)
 
 
 def test_native_times_pandas():

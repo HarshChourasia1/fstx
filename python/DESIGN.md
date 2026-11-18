@@ -150,6 +150,20 @@ Naive timestamps written from Python with no fstx meta (data that never came fro
 shows the same clock time Python showed. R's own meaning of "no tzone" is "an instant shown in the session's local
 time", which Python has no equivalent for.
 
+Fixed UTC offsets (added 18 Nov 2026, Harsh's "do 1-5"). Arrow writes a fixed offset as the time zone `"+05:30"`;
+R reads that string as a POSIX TZ rule, where the sign counts the other way (UTC-05:30), and shows the time 11 hours
+off. The writer stores such a zone as R's tzone in POSIX form with a name in angle brackets, `"<+0530>-05:30"`
+(`"-03:00"` -> `"<-0300>+03:00"`, `"+00:00"` -> `"<+0000>-00:00"`), and the reader turns exactly that form back
+into `"+05:30"`, so Python round-trips. Checked on R 4.5.1 and R 4.6.1 (Windows): `format()`,
+`as.POSIXlt()$hour` / `$gmtoff` and an R write -> read are right for +05:30, -03:00, +00:00, +05:45, -09:30,
++14:00, -12:00 and +01:00 between the years 1900 and 9999; R warns "unknown timezone '<+0530>-05:30'" whenever it
+formats such a column (its zone database has no file of that name, so it falls back to the POSIX rule, which is
+right). Named zones (Asia/Kolkata, UTC, ...) are unchanged. The metadata contract is unchanged: `fstx.r`'s
+`tzone` is what the file holds (the POSIX form); only the Arrow type carries `"+05:30"`. A file that holds
+`"+05:30"` itself (written by R, or by this package before 18 Nov 2026) reads as `"+05:30"` and is written back as
+it was. pandas turns a zero offset into UTC; with the metadata the writer keeps the file's `"<+0000>-00:00"`.
+polars has no fixed offsets: `fstx.to_polars` returns them as UTC (same instants) with a warning (section 8).
+
 ### 3.5 integer64 (bit64)
 
 | R | file | Python read | Python write back | RT / lost |
@@ -172,7 +186,7 @@ time", which Python has no equivalent for.
 | `dictionary<*, string>` | factor | `dictionary<int32, string>` | |
 | `date32` | Date (double) | `date32` | |
 | `date64` | Date (double, fractional when not midnight) | `date32` | |
-| `timestamp[s/ms/us/ns, tz]` | POSIXct (double seconds) | `timestamp[us, tz]` | ns: precision past double's (about 0.2 us today) is lost; unit becomes us |
+| `timestamp[s/ms/us/ns, tz]` | POSIXct (double seconds) | `timestamp[us, tz]` | ns: precision past double's (about 0.2 us today) is lost; unit becomes us; a fixed offset `"+05:30"` is stored as tzone `"<+0530>-05:30"` (section 3.4) |
 | `time32`, `time64` | hms (double seconds, class `c("hms", "difftime")`, units `secs`) | `double` + meta | R prints it as hms with the hms package, as difftime without |
 | `duration[unit]` | difftime, units `secs` | `double` + meta | |
 | `null` (all-null column) | logical, all NA | `bool` | as R's default NA |
@@ -338,6 +352,11 @@ no levels; a factor with an NA level comes back as strings, as through pandas (f
 the last found by `test_rmatch.py`, 18 Nov 2026); repeated column names are refused. Plain logical, integer,
 double and character columns, integer64 columns with a value past int32, and Dates stored as double, come back
 identical. Per case: `roundtrip_polars` in `manifest.json`.
+
+Fixed UTC offsets (18 Nov 2026): through pyarrow and `fstx.to_pandas` they round-trip (the file holds R's POSIX
+form, section 3.4; in R they show the right clock time with an "unknown timezone" warning). polars knows only
+named zones (`unable to parse time zone: '+05:30'`): `fstx.to_polars` returns such a column in UTC, the same
+instants, with an `FstxWarning`, and written from polars it is a UTC column. [test_rmatch.py, `native_fixed_offset.*`]
 
 ## 9. Decisions (Harsh, 17 Nov 2026: "Yes, all four")
 

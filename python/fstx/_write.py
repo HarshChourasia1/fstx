@@ -35,7 +35,9 @@ from . import _fxa1 as fxa
 from ._engine import LOCK as _ENGINE_LOCK  # one job at a time on the engine's worker pool
 from ._file import metadata as _metadata
 from ._meta import KEY_ATTRS, KEY_NROW, KEY_R, KEY_TABLE
+from ._meta import arrow_tz as _arrow_tz
 from ._meta import blob as _b
+from ._meta import r_tzone as _r_tzone
 
 _INT32, _FLOAT64, _LOGICAL, _STRING = 0, 1, 2, 3
 _NONE, _FACTOR, _DATE, _POSIXCT = 0, 1, 2, 3
@@ -239,7 +241,9 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
         tz = t.tz or None
         if r is None and blob is not None:
             return natural("attributes only")
-        tzone: Optional[str] = tz or "UTC"  # data that never came from R: naive times are shown as UTC
+        # data that never came from R: naive times are shown as UTC; a fixed offset "+05:30" is stored in the
+        # POSIX TZ form R reads, "<+0530>-05:30" (_meta.r_tzone)
+        tzone: Optional[str] = _r_tzone(tz) or "UTC"
         logical, phys = _POSIXCT, _FLOAT64
         if r is not None:
             if rlog == "POSIXct" and rphys == "double":
@@ -250,7 +254,9 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
                 logical = _NONE
             else:
                 return natural(described())
-            if not ((tz and rtz == tz) or (not tz and rtz in (None, ""))):
+            # (pandas turns a zero offset "+00:00" into UTC: the same clock, so the stored zone is kept)
+            zero = tz == "UTC" and _arrow_tz(rtz) in ("+00:00", "-00:00")
+            if not ((tz and (rtz in (tz, _r_tzone(tz)) or zero)) or (not tz and rtz in (None, ""))):
                 return natural(f"time zone {rtz!r}")
             tzone = rtz if logical == _POSIXCT else None
         arr = _one(col)
@@ -336,7 +342,7 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
         elif rlog == "Date":
             as_type = pa.date32()
         elif rlog == "POSIXct":
-            as_type = pa.timestamp("us", r.get("tzone") or None)
+            as_type = pa.timestamp("us", _arrow_tz(r.get("tzone")) or None)
         else:
             as_type = {"integer": pa.int32(), "double": pa.float64(), "logical": pa.bool_(),
                        "character": pa.string()}[rphys]
