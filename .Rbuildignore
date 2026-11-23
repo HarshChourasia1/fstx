@@ -11,3 +11,4 @@
 ^tools/trials$
 ^tools/specreader$
 ^python$
+^cran-comments\.md$
