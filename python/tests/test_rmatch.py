@@ -264,7 +264,13 @@ def test_fixed_offset_pandas():
     assert v["columns"][0]["values"][0] == "2024-01-01 10:00:00.500000 +05:30"
     p = save(df2, "native_fixed_offset.pandas", v)
     back = fstx.to_pandas(check_fixed_file(p, ["+05:30", "-03:00"]))
-    pd.testing.assert_frame_equal(back, df2, check_dtype=True)
+    if int(pd.__version__.split(".")[0]) >= 3:
+        pd.testing.assert_frame_equal(back, df2, check_dtype=True)
+    else:  # pandas 2 names a fixed offset pytz.FixedOffset(330) where df2 says UTC+05:30: same times, same offsets
+        assert list(back.columns) == list(df2.columns)
+        for c in df2.columns:
+            assert back[c].dt.tz.utcoffset(None) == df2[c].dt.tz.utcoffset(None)
+            pd.testing.assert_series_equal(back[c].dt.tz_convert("UTC"), df2[c].dt.tz_convert("UTC"))
 
 
 def test_fixed_offset_polars():
