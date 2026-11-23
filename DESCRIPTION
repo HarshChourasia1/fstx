@@ -1,7 +1,7 @@
 Package: fstx
 Type: Package
 Title: Fast, Safe Column-Store Files for R Data Frames
-Version: 1.0.0
+Version: 1.0.1
 Authors@R: c(
     person("Harsh", "Chourasia", role = c("aut", "cre"), email = "31harshchourasia@gmail.com"),
     person("Meta Platforms, Inc. and affiliates", role = "cph", comment = "bundled 'Zstandard' library"),

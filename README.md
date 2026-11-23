@@ -7,13 +7,19 @@ run on all cores.
 
 ## Install
 
-Needs R 4.4.0 or newer and a C++17 compiler (Rtools on Windows). From the source tarball or a copy of the
-source folder:
+Needs R 4.4.0 or newer. Ready-built for Windows and macOS (and from source on Linux) through R-universe:
 
+```r
+install.packages("fstx", repos = c("https://harshchourasia1.r-universe.dev", "https://cloud.r-project.org"))
 ```
-R CMD INSTALL fstx_1.0.0.tar.gz
-R CMD INSTALL fstx
+
+From source (needs a C++17 compiler; Rtools on Windows):
+
+```r
+remotes::install_github("HarshChourasia1/fstx")
 ```
+
+For Python, `pip install fstx` (see `python/README.md`).
 
 ## Write and read
 

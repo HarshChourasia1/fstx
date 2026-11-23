@@ -1,3 +1,10 @@
+# fstx 1.0.1
+
+* No change for R users: files, results and speed are as in 1.0.0.
+* The engine now also builds with Microsoft's C++ compiler (used for the Python package, `pip install fstx`), and
+  the Arrow stream can pass Date and POSIXct columns as stored numbers (used by Python only; R is unchanged).
+* README: install from R-universe.
+
 # fstx 1.0.0
 
 * First public release. Needs R 4.4.0 or newer.

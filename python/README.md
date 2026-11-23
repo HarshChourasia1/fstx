@@ -5,6 +5,14 @@ C++ engine as the R package. A file written by either language is an ordinary fs
 Tables are `pyarrow.Table`s; pandas and polars are helpers on top. Python 3.10+, pyarrow 15+; pandas, polars and
 numpy are optional. The design, type by type, is in `DESIGN.md`; build and test notes are in `DEV.md`.
 
+## Install
+
+```
+pip install fstx
+```
+
+Wheels for Windows x64, Linux x86_64 and aarch64, and macOS (Intel and Apple silicon), Python 3.10 to 3.14.
+
 ## Usage
 
 ```python
