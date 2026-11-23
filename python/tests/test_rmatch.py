@@ -102,7 +102,11 @@ def test_r_to_pandas(case):
         warnings.simplefilter("ignore", fstx.FstxWarning)
         df = fstx.to_pandas(read(case))
     got = diff(rview.view_pandas(df), r_view(case))
-    assert got.keys() == known("pandas", case).keys(), got
+    pd = pytest.importorskip("pandas")
+    if int(pd.__version__.split(".")[0]) >= 3:
+        assert got.keys() == known("pandas", case).keys(), got
+    else:  # pandas 2 keeps NaN and NA apart, so the pandas 3 differences may not show
+        assert set(got) <= set(known("pandas", case)), got
 
 
 @pytest.mark.parametrize("case", CASES)
@@ -246,7 +250,8 @@ def test_fixed_offset_pandas():
     # pandas from pyarrow: datetime.timezone offsets; through fstx.to_pandas and back, nothing changes
     got = fstx.read_fstx(save(fixed_offsets_arrow(), "native_fixed_offset.pyarrow2", rview.view_arrow(fixed_offsets_arrow())))
     df = fstx.to_pandas(got)
-    assert str(df["+05:30"].dtype) == "datetime64[us, UTC+05:30]"
+    assert str(df["+05:30"].dtype).startswith("datetime64[us, ")
+    assert df["+05:30"].dt.tz.utcoffset(None) == dt.timedelta(hours=5, minutes=30)  # pandas 2 shows pytz.FixedOffset(330)
     assert diff(rview.view_pandas(df), rview.view_arrow(got)) == {}
     p = save(df, "native_fixed_offset.pandas_rt", rview.view_pandas(df))
     assert check_fixed_file(p, FIXED).equals(got)

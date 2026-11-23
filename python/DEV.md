@@ -103,7 +103,7 @@ python -m pytest python/tests -q -rs
   as the coretest build must: its path is `<core dir>/../tools/coretest`).
 - Wheels: `.github/workflows/python-wheels.yml` (cibuildwheel), on a `py-v*` tag or by hand, never on plain pushes.
   Windows x64 (cl), Linux x86_64 and aarch64 (manylinux_2_28; aarch64 on the native `ubuntu-24.04-arm` runner),
-  macOS x86_64 (`macos-15-intel`, 10.15+) and arm64 (`macos-15`, 11+). Per platform: a cp310 and a cp311 wheel
+  macOS x86_64 (`macos-15-intel`, 10.15+) and arm64 (`macos-latest`, 11+). Per platform: a cp310 and a cp311 wheel
   and one cp312-abi3 wheel, which cibuildwheel also tests on 3.13 and 3.14. pytest runs on every wheel. The sdist
   job also unpacks the sdist away from the tree, builds a wheel from it and runs pytest. Artifacts only: the
   PyPI job is in the file as comments, not enabled.

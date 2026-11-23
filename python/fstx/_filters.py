@@ -9,6 +9,8 @@ from __future__ import annotations
 import datetime as _dt
 import math
 import numbers
+import re
+import sys
 from typing import Any, List, Optional
 
 from . import _core, _meta
@@ -54,6 +56,18 @@ def _kind(col) -> str:
     raise ValueError("columns of class '%s' cannot be filtered" % "/".join(rc))
 
 
+def _iso_datetime(s: str) -> _dt.datetime:
+    """datetime.fromisoformat, plus what Python 3.10's version refuses: a trailing Z and 1-5 digit fractions."""
+    try:
+        return _dt.datetime.fromisoformat(s)
+    except ValueError:
+        if sys.version_info >= (3, 11):
+            raise
+    s = re.sub(r"[Zz]$", "+00:00", s)
+    s = re.sub(r"(\.\d{1,5})(?=$|[+-])", lambda m: m.group(1).ljust(7, "0"), s)
+    return _dt.datetime.fromisoformat(s)
+
+
 def _number(kind: str, col, v: Any, bad) -> Optional[float]:
     """One value as the double the column stores; None for NA (None)."""
     if v is None:
@@ -70,7 +84,7 @@ def _number(kind: str, col, v: Any, bad) -> Optional[float]:
     if kind == "POSIXct":
         if isinstance(v, str):
             try:
-                v = _dt.datetime.fromisoformat(v)
+                v = _iso_datetime(v)
             except ValueError:
                 raise bad("'%s' is not a date-time (ISO 8601)" % v) from None
         elif isinstance(v, _dt.date) and not isinstance(v, _dt.datetime):
