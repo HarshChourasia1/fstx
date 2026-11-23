@@ -1,6 +1,6 @@
 # Python wheels and sdist for fstx (python/, cibuildwheel). Runs on a py-v* tag (py-v1.0.0) or by hand only.
 # Settings for the wheels themselves (Pythons, archs, images, tests) are in python/pyproject.toml [tool.cibuildwheel].
-# Builds and tests only: nothing is uploaded anywhere except this run's artifacts. Prepared 17 Nov 2026, not run yet.
+# A py-v* tag also uploads the sdist and wheels to PyPI (trusted publishing, job "publish"); a run by hand only builds.
 name: python-wheels
 
 on:
@@ -78,21 +78,19 @@ jobs:
           path: wheelhouse/*.whl
 
   # ------------------------------------------------------------------------------------------------------------
-  # NOT ENABLED. PyPI upload through trusted publishing (no token). Before switching it on: register the project on
-  # PyPI with this repository, this workflow file and the environment "pypi" as a trusted publisher, add the
-  # environment in the repository settings, then remove the leading "# " from the lines below.
-  #
-  # publish:
-  #   name: upload to PyPI
-  #   needs: [sdist, wheels]
-  #   if: startsWith(github.ref, 'refs/tags/py-v')
-  #   runs-on: ubuntu-latest
-  #   environment: pypi
-  #   permissions:
-  #     id-token: write
-  #   steps:
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         path: dist
-  #         merge-multiple: true
-  #     - uses: pypa/gh-action-pypi-publish@release/v1
+  # PyPI upload through trusted publishing (no token): PyPI trusts this repository, this workflow file and the
+  # GitHub environment "pypi". Runs only on a py-v* tag, after the sdist and every wheel built and passed.
+  publish:
+    name: upload to PyPI
+    needs: [sdist, wheels]
+    if: startsWith(github.ref, 'refs/tags/py-v')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
