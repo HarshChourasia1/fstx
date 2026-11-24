@@ -3,15 +3,15 @@
 # (fstx_footer_generated.h) is pre-generated.
 CXX_STD = CXX17
 PKG_CPPFLAGS = -I. -Ivendor/flatbuffers/include -Ivendor/fsst -Ivendor/highway -DZSTD_DISABLE_ASM \
-  -DHWY_DISABLED_TARGETS=25956824
+  -DHWY_DISABLED_TARGETS=@FSTX_HWY_OFF@
 # 25956824 = Highway targets left out: x86 SSSE3 | AVX3 | AVX3_DL | AVX3_ZEN4 | AVX3_SPR | AVX10_2 (= 4568; SSE2,
 # SSE4, AVX2 kept) and ARM SVE | SVE2 | SVE_256 | SVE2_128 (the kernels keep arrays of vectors, which SVE's sizeless
 # types do not allow; ARM uses the NEON targets).
-# AVX3 (AVX-512) is off until it is tested on a CPU that has it (0.6.1).
+# AVX3 (AVX-512) is off until it is tested on a CPU that has it (0.6.1). ./configure.win fills in
+# @FSTX_HWY_OFF@: 25956824, or 25957336 (AVX2 also left out) with GCC on x86-64, which cannot align the Win64
+# stack for 32-byte vectors (GCC bug 54412).
 # @FSTX_CXXFLAGS@ is filled in by ./configure.win: -ffp-contract=off when the compiler takes it (no fused
-# multiply-add anywhere, so SIMD and plain code round the same and files are byte-identical on every CPU),
-# and, with GCC on x86-64 only, -Wa,-muse-unaligned-vector-move: GCC on Win64 cannot align the stack for
-# 32-byte vectors (GCC bug 54412); the assembler then writes unaligned moves, as fast on CPUs with AVX.
+# multiply-add anywhere, so SIMD and plain code round the same and files are byte-identical on every CPU).
 PKG_CXXFLAGS = @FSTX_CXXFLAGS@
 
 

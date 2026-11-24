@@ -1,8 +1,9 @@
 #!/bin/sh
 # FST-X: writes src/Makevars.win from src/Makevars.win.in. Adds -ffp-contract=off when the C++ compiler
-# accepts it (no fused multiply-add anywhere, so files are byte-identical on every CPU) and, with GCC on
-# x86-64 only, -Wa,-muse-unaligned-vector-move (GCC bug 54412: GCC cannot align the Win64 stack for
-# 32-byte vectors, so the assembler is told to write unaligned vector moves).
+# accepts it (no fused multiply-add anywhere, so files are byte-identical on every CPU). With GCC on
+# x86-64 the Highway AVX2 target is also left out: GCC cannot align the Win64 stack for 32-byte vectors
+# (GCC bug 54412), so AVX2 code could crash on an aligned move of a spilled vector. SSE2 and SSE4 (16-byte
+# vectors) are kept. Clang aligns the stack and keeps AVX2.
 CXX=`"${R_HOME}/bin${R_ARCH_BIN}/R.exe" CMD config CXX17`
 CXXFLAGS=`"${R_HOME}/bin${R_ARCH_BIN}/R.exe" CMD config CXX17FLAGS`
 FLAGS=""
@@ -18,16 +19,13 @@ else
 fi
 IS_GCC=no
 if ${CXX} --version 2>/dev/null | grep -qi clang; then :; else IS_GCC=yes; fi
+# 25956824: the targets Makevars.win.in always leaves out (see there); 25957336 = that | HWY_AVX2 (512)
+HWY_OFF=25956824
 case "`${CXX} -dumpmachine 2>/dev/null`" in
   x86_64*)
     if test "${IS_GCC}" = yes; then
-      printf "checking whether the assembler accepts -muse-unaligned-vector-move... "
-      if ${CXX} ${CXXFLAGS} -Wa,-muse-unaligned-vector-move -c conftest.cpp -o conftest.o > /dev/null 2>&1; then
-        FLAGS="${FLAGS} -Wa,-muse-unaligned-vector-move"
-        echo "yes"
-      else
-        echo "no"
-      fi
+      HWY_OFF=25957336
+      echo "GCC on x86-64 Windows: Highway AVX2 target left out (GCC bug 54412)"
     fi
     ;;
 esac
@@ -36,5 +34,5 @@ rm -f conftest.cpp conftest.o
 FSTX_VER=`sed -n 's/^Version:[[:space:]]*//p' DESCRIPTION | tr -d '\r'`
 FLAGS="${FLAGS} -DFSTX_VERSION=${FSTX_VER}"
 echo "fstx version: ${FSTX_VER}"
-sed "s|@FSTX_CXXFLAGS@|${FLAGS}|" src/Makevars.win.in > src/Makevars.win
+sed -e "s|@FSTX_CXXFLAGS@|${FLAGS}|" -e "s|@FSTX_HWY_OFF@|${HWY_OFF}|" src/Makevars.win.in > src/Makevars.win
 exit 0

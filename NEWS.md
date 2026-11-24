@@ -1,3 +1,9 @@
+# fstx 1.0.2
+
+* Windows builds made with GCC (Rtools, as on CRAN) no longer use the assembler flag
+  `-Wa,-muse-unaligned-vector-move`. They leave out the AVX2 kernels instead (GCC bug 54412: GCC cannot align the
+  Win64 stack for 32-byte vectors) and decode with SSE4. Files are unchanged; other platforms are unchanged.
+
 # fstx 1.0.1
 
 * No change for R users: files, results and speed are as in 1.0.0.

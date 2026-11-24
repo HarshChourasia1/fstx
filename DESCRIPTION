@@ -1,7 +1,7 @@
 Package: fstx
 Type: Package
 Title: Fast, Safe Column-Store Files for R Data Frames
-Version: 1.0.1
+Version: 1.0.2
 Authors@R: c(
     person("Harsh", "Chourasia", role = c("aut", "cre"), email = "31harshchourasia@gmail.com"),
     person("Meta Platforms, Inc. and affiliates", role = "cph", comment = "bundled 'Zstandard' library"),
@@ -16,11 +16,11 @@ Description: Reads and writes data frames in a column-store file format built
     'FSST' for strings), optionally under 'LZ4' or 'Zstandard' compression.
     A 'FlatBuffers' footer holds a page directory with per-page statistics,
     and every page carries an 'xxHash' checksum. Reads and writes run in
-    parallel, with SIMD decode kernels from 'Highway' chosen at run time.
+    parallel, with vectorised decode kernels from 'Highway' chosen at run time.
     Supports lazy 'ALTREP' columns over the memory-mapped file, character
     columns whose R strings are made on first use, factors built from string
     dictionaries, partial reads by row list, filters that skip pages by their
-    statistics, crash-safe appends and compaction. The file format (fstx
+    statistics, crash-safe appends and compaction. The file format ('fstx'
     format 1.0) is written down in a specification shipped with the package.
 License: MIT + file LICENSE
 URL: https://github.com/HarshChourasia1/fstx
