@@ -15,10 +15,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <exception>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -180,24 +184,87 @@ const void* in_place(const NumSrc& s, int phys, uint64_t r0, uint64_t n) {
   return (const char*)c.values + (size_t)(c.off + (int64_t)i0) * (phys == FSTX_FLOAT64 ? 8 : 4);
 }
 
-// Runs job(0 .. n-1) on up to `threads` threads (this one included).
-template <typename F>
-void run_parallel(size_t n, int threads, F job) {
-  const size_t t = std::min<size_t>(n, (size_t)std::max(threads, 1));
-  if (t <= 1) {
-    for (size_t i = 0; i < n; ++i) job(i);
-    return;
+// The threads of one write, kept from one parallel step to the next (checks, window fills): run(n, job) runs
+// job(0 .. n-1) on up to `threads` threads, the calling one included; threads are started when first needed.
+class Team {
+ public:
+  explicit Team(int threads) : max_(threads > 1 ? (size_t)threads - 1 : 0) {}
+  ~Team() {
+    {
+      std::lock_guard<std::mutex> g(m_);
+      stop_ = true;
+    }
+    cv_.notify_all();
+    for (std::thread& t : th_) t.join();
   }
-  std::atomic<size_t> next(0);
-  auto work = [&]() {
-    for (size_t i; (i = next.fetch_add(1)) < n;) job(i);
-  };
-  std::vector<std::thread> pool;
-  pool.reserve(t - 1);
-  for (size_t i = 1; i < t; ++i) pool.emplace_back(work);
-  work();
-  for (std::thread& th : pool) th.join();
-}
+  template <typename F>
+  void run(size_t n, F job) {
+    const size_t want = std::min(max_, n ? n - 1 : 0);
+    if (want == 0) {
+      for (size_t i = 0; i < n; ++i) job(i);
+      return;
+    }
+    while (th_.size() < want) th_.emplace_back([this] { loop(); });
+    std::function<void(size_t)> f(job);
+    {
+      std::lock_guard<std::mutex> g(m_);
+      job_ = &f;
+      n_ = n;
+      next_ = 0;
+      busy_ = th_.size();
+      ++gen_;
+    }
+    cv_.notify_all();
+    work(f, n);
+    std::unique_lock<std::mutex> lk(m_);
+    done_.wait(lk, [&] { return busy_ == 0; });
+    job_ = nullptr;
+    if (err_) {
+      std::exception_ptr e = err_;
+      err_ = nullptr;
+      std::rethrow_exception(e);
+    }
+  }
+
+ private:
+  void loop() {
+    uint64_t seen = 0;
+    for (;;) {
+      std::function<void(size_t)>* f;
+      size_t n;
+      {
+        std::unique_lock<std::mutex> lk(m_);
+        cv_.wait(lk, [&] { return stop_ || gen_ != seen; });
+        if (stop_) return;
+        seen = gen_;
+        f = job_;
+        n = n_;
+      }
+      work(*f, n);
+      std::lock_guard<std::mutex> g(m_);
+      if (--busy_ == 0) done_.notify_all();
+    }
+  }
+  void work(const std::function<void(size_t)>& f, size_t n) {  // an exception goes to run's caller
+    try {
+      for (size_t i; (i = next_.fetch_add(1)) < n;) f(i);
+    } catch (...) {
+      next_ = n;
+      std::lock_guard<std::mutex> g(m_);
+      if (!err_) err_ = std::current_exception();
+    }
+  }
+  const size_t max_;
+  std::vector<std::thread> th_;
+  std::mutex m_;
+  std::condition_variable cv_, done_;
+  std::function<void(size_t)>* job_ = nullptr;
+  size_t n_ = 0, busy_ = 0;
+  std::atomic<size_t> next_{0};
+  uint64_t gen_ = 0;
+  bool stop_ = false;
+  std::exception_ptr err_;
+};
 inline bool is_null(const StrChunk& c, uint64_t i) { return bit_off(c.valid, c.bit0 + (int64_t)i); }
 inline void span_of(const StrChunk& c, uint64_t i, int64_t* a, int64_t* b) {
   if (c.large) {
@@ -354,10 +421,10 @@ int check_range(const StrChunk& c, uint64_t i0, uint64_t i1, uint64_t* at, uint8
 
 constexpr uint64_t kCheckSlice = 65536;  // values per task of the string check
 
-// Every string of every string column before the engine sees it, on `threads` threads. Returns 0, or a problem
+// Every string of every string column before the engine sees it, on the team. Returns 0, or a problem
 // code (as check_range) with *col / *row set to the first column, and its first row, that shows one. A bad
 // dictionary value that no row uses is never written, so is let be.
-int check_strings(const std::vector<Col>& cols, const std::vector<fstx_write_column>& defs, int threads,
+int check_strings(const std::vector<Col>& cols, const std::vector<fstx_write_column>& defs, Team& team,
                   size_t* col, uint64_t* row) {
   // the dictionaries (the chunks of a column normally share one), each value's problem code kept
   struct Dict {
@@ -394,7 +461,7 @@ int check_strings(const std::vector<Col>& cols, const std::vector<fstx_write_col
       dict_of[j][k] = d;
     }
   }
-  run_parallel(tasks.size(), threads, [&](size_t i) {
+  team.run(tasks.size(), [&](size_t i) {
     const Task& t = tasks[i];
     uint64_t at = 0;
     const int r = check_range(*t.dict->c, t.a, t.b, &at, t.dict->codes.data());
@@ -413,7 +480,7 @@ int check_strings(const std::vector<Col>& cols, const std::vector<fstx_write_col
   }
   std::vector<int> code(tasks.size(), 0);
   std::vector<uint64_t> at(tasks.size(), 0);
-  run_parallel(tasks.size(), threads, [&](size_t i) {
+  team.run(tasks.size(), [&](size_t i) {
     const Task& t = tasks[i];
     const StrChunk& c = cols[t.col].src.chunks[t.chunk];
     const uint64_t first = cols[t.col].src.first[t.chunk];
@@ -452,8 +519,8 @@ int check_strings(const std::vector<Col>& cols, const std::vector<fstx_write_col
 }
 
 // The first int32 column (int32 / date32 chunks kept as they are, nothing added) that holds INT32_MIN in a row
-// that is not missing: R's NA_integer_, which cannot be stored as a value. -1 when none does. On `threads` threads.
-int64_t int_na_column(const std::vector<Col>& cols, const std::vector<fstx_write_column>& defs, int threads) {
+// that is not missing: R's NA_integer_, which cannot be stored as a value. -1 when none does. On the team.
+int64_t int_na_column(const std::vector<Col>& cols, const std::vector<fstx_write_column>& defs, Team& team) {
   struct Task {
     size_t col, chunk;
     uint64_t a, b;
@@ -468,7 +535,7 @@ int64_t int_na_column(const std::vector<Col>& cols, const std::vector<fstx_write
           tasks.push_back({j, k, a, std::min<uint64_t>(s.chunks[k].rows, a + (1u << 20))});
   }
   std::vector<uint8_t> hit(tasks.size(), 0);
-  run_parallel(tasks.size(), threads, [&](size_t i) {
+  team.run(tasks.size(), [&](size_t i) {
     const Task& t = tasks[i];
     const NumChunk& c = cols[t.col].num.chunks[t.chunk];
     const int32_t* x = (const int32_t*)c.values + c.off;
@@ -780,14 +847,15 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
   int64_t na_col = -1;
   {
     nb::gil_scoped_release nogil;  // no Python object is touched until this block ends
+    Team team(nthreads);
     try {
-      na_col = int_na_column(cols, defs, nthreads);
-      if (na_col < 0) bad = check_strings(cols, defs, nthreads, &bad_col, &bad_row);
+      na_col = int_na_column(cols, defs, team);
+      if (na_col < 0) bad = check_strings(cols, defs, team, &bad_col, &bad_row);
       if (na_col < 0 && !bad) {
         std::vector<size_t> sc;
         for (size_t j = 0; j < nc; ++j)
           if (defs[j].phys == FSTX_STRING) sc.push_back(j);
-        run_parallel(sc.size(), nthreads, [&](size_t i) { same_pointers(cols[sc[i]].src); });
+        team.run(sc.size(), [&](size_t i) { same_pointers(cols[sc[i]].src); });
       }
     } catch (const std::exception& e) {  // no thread or no memory
       rc = FSTX_ERR_MEMORY;
@@ -823,7 +891,7 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
               data[j].data = c.buf.data();
               for (uint64_t a = 0; a < n; a += 65536) pieces.push_back({j, a, std::min(n, a + 65536)});
             }
-            run_parallel(pieces.size(), nthreads, [&](size_t i) {
+            team.run(pieces.size(), [&](size_t i) {
               const Piece& q = pieces[i];
               const int ph = defs[q.col].phys;
               fill_rows(cols[q.col].num, ph, r0 + q.a, q.b - q.a,

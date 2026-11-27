@@ -593,6 +593,30 @@ def test_refused_strings_checked_on_many_threads(tmp_path):
             assert not p.exists()
 
 
+def test_one_thread_team_for_every_step(tmp_path):
+    # the checks and the window fills of one write share its threads (started once): any thread count gives the
+    # same file over many windows, and a write refused on a worker leaves the next write working
+    import numpy as np
+
+    n = 3 * 1_048_576  # whole row groups: a short last one could go plain (see STATUS-FIX, read side)
+    rng = np.random.default_rng(5)
+    nulls = rng.random(n) < 0.2
+    t = pa.table({
+        "i": pa.array(rng.integers(-1000, 1000, n).astype("int32"), mask=nulls),
+        "d": pa.array(rng.standard_normal(n), mask=~nulls),
+        "s": pa.array([f"s{i % 5000}" for i in range(n)]),
+    })
+    p, q = tmp_path / "one.fstx", tmp_path / "many.fstx"
+    fstx.write_fstx(t, p, threads=1)
+    bad = pa.table({"s": pa.array([b"ok"] * 200_000 + [b"\xff"], pa.binary()).view(pa.string())})
+    for threads in (2, 3, 8, None):
+        with pytest.raises(ValueError, match="UTF-8"):
+            fstx.write_fstx(bad, q, threads=threads)
+        fstx.write_fstx(t, q, threads=threads)
+        assert p.read_bytes() == q.read_bytes(), threads
+    assert fstx.read_fstx(q).equals(t.cast(fstx.read_fstx(q).schema))
+
+
 def test_repeated_strings_in_many_dictionaries(tmp_path):
     # a repeating column is coded in slices on many threads, each with its own dictionary; equal strings still
     # reach the engine as one pointer: the same file as one dictionary (one thread), and as chunks that each
