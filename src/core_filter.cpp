@@ -246,6 +246,8 @@ Verdict i64_verdict(const Pred& q, const fb::Page* p, bool known) {
   const bool mm = (p->flags() & kFlagMinMax) != 0;
   const double mn = p->min(), mx = p->max();
   const bool none_na = known && nc == 0;
+  // a damaged footer can hold NaN bounds with the flag set: no decision from them (and no NaN to compare exactly)
+  const bool bad = mm && (std::isnan(mn) || std::isnan(mx));
   switch (q.op) {
     case FSTX_OP_NONE: return V_SKIP;
     case FSTX_OP_ISNA:
@@ -255,9 +257,11 @@ Verdict i64_verdict(const Pred& q, const fb::Page* p, bool known) {
       if (!mm) return V_SKIP;
       return none_na ? V_ALL : V_MAYBE;
     case FSTX_OP_IN: {
-      // first set value not below mn
-      auto it = std::lower_bound(q.iset.begin(), q.iset.end(), mn,
-                                 [](int64_t e, double d) { return cmp_d_i64(d, e) > 0; });
+      if (bad) return V_MAYBE;
+      // first set value not below mn (the bounds only when the flag is set)
+      auto it = q.iset.end();
+      if (mm)
+        it = std::lower_bound(q.iset.begin(), q.iset.end(), mn, [](int64_t e, double d) { return cmp_d_i64(d, e) > 0; });
       const bool hit = mm && it != q.iset.end() && cmp_d_i64(mx, *it) >= 0;
       if (q.set_na && (nc > 0 || !known)) return (!mm && known) ? V_ALL : V_MAYBE;
       if (!hit) return V_SKIP;
@@ -267,6 +271,7 @@ Verdict i64_verdict(const Pred& q, const fb::Page* p, bool known) {
     default: break;
   }
   if (!mm) return V_SKIP;  // only missing values: no comparison is true
+  if (bad) return V_MAYBE;
   const bool empty = q.lo > q.hi;
   const bool overlap = !empty && cmp_d_i64(mn, q.hi) <= 0 && cmp_d_i64(mx, q.lo) >= 0;
   const bool inside = !empty && cmp_d_i64(mn, q.lo) >= 0 && cmp_d_i64(mx, q.hi) <= 0;
