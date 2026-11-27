@@ -525,6 +525,8 @@ void string_column(const ColSpec& c, SrcPtr s, const uint64_t* sel, uint64_t n, 
   make_utf8(h->dict, dn, dl, db);
 }
 
+#include "arrow_rows.h"  // rows_batch(): the row-list batches (filter matches, lists of rows)
+
 Stream* stream_of(ArrowArrayStream* st) { return (Stream*)st->private_data; }
 
 int fail_code(Stream& S, const char* what) {
@@ -606,6 +608,12 @@ int stream_get_next(ArrowArrayStream* st, ArrowArray* out) {
     for (size_t j = 0; j < S.cols.size(); ++j) h->kids.push_back(new_child());
     res.n_children = (int64_t)h->kids.size();
     res.children = h->kids.empty() ? nullptr : h->kids.data();
+    if (S.by_rows) {
+      rows_batch(S, h, a, b, sel.data(), n);
+      S.pos = next;
+      *out = res;
+      return 0;
+    }
     // String pages decode first, column by column, each in parallel on the engine pool. Then the columns are laid
     // out at once on own threads (no pool): fixed-width columns decode there too, since their NA / bool / Date
     // passes are single-threaded per column and dominate a page-parallel decode. With fewer columns than threads,
