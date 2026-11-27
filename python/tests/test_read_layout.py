@@ -107,3 +107,19 @@ def test_utf8_check_is_per_batch_and_per_path():
         assert raw == [[b"ok", bytes.fromhex("626164ff62797465")], [bytes.fromhex("e0a4"), "café".encode()], [None]]
     b = fstx.read_fstx(p, rows=[3, 1], invalid_utf8="binary")
     assert b.column("s").type == pa.binary() and b.column("s").to_pylist() == ["café".encode(), b"bad\xffbyte"]
+
+
+def test_page_buffers_kept_between_batches(tmp_path):
+    # row groups whose strings grow, shrink and grow again: buffers kept from one batch are too small, too big
+    p = tmp_path / "sizes.fstx"
+    parts = []
+    for k, width in enumerate((3, 400, 1, 90, 2000)):
+        n = 3_000 + 1_000 * k
+        s = pa.array([None if (i * 7 + k) % 11 == 0 else ("%d-" % i) + "y" * (width + i % 5) for i in range(n)])
+        parts.append(pa.table({"s": s, "d": pa.array(["a", "bb", None, "ccc"] * (n // 4) + ["a"] * (n % 4))}))
+        fstx.write_fstx(parts[-1], p, append=k > 0)
+    want = pa.concat_tables(parts)
+    for th in (1, None):
+        assert fstx.read_fstx(p, threads=th).equals(want)
+    with fstx.open(p) as f:
+        assert pa.Table.from_batches(f.to_batches(batch_rows=1_234)).equals(want)

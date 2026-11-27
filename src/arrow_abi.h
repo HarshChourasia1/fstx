@@ -98,6 +98,14 @@ int fstx_run_tasks(int64_t n, int threads, fstx_task_fn fn, void* ctx, fstx_erro
  * distinct pages of one source once its dictionaries are decoded (fstx_colsrc_dict); w may be NULL. */
 int fstx_colsrc_load_page(fstx_colsrc* s, uint32_t page, fstx_scratch* w, const int32_t** lens, const char** bytes,
                           int32_t* dict, fstx_error* err);
+/* Frees a loaded page's buffers (as fstx_colsrc_drop); thread-safe for distinct pages of one source. */
+void fstx_colsrc_drop_page(fstx_colsrc* s, uint32_t page);
+/* A pool of string page buffers: a source given one (before any page is loaded) takes its pages' buffers from it
+ * and gives them back when a page is dropped or the source freed. Thread-safe. The pool must outlive the source. */
+typedef struct fstx_bufpool fstx_bufpool;
+fstx_bufpool* fstx_bufpool_new(void); /* NULL when out of memory */
+void fstx_bufpool_free(fstx_bufpool* p);
+void fstx_colsrc_set_bufpool(fstx_colsrc* s, fstx_bufpool* p);
 
 #ifdef __cplusplus
 }

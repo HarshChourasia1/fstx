@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <new>
 
 #include "arrow_abi.h"
 #include "core_file.h"
@@ -38,6 +40,14 @@ struct PageData {
 };
 }  // namespace
 
+// Buffers of decoded string pages kept for the next batch of a stream (arrow_abi.h: fstx_bufpool_*), so that a
+// read does not map, fault in and free the same amount of memory once per batch.
+struct fstx_bufpool {
+  std::mutex m;
+  std::vector<std::vector<uint8_t>> bytes;
+  std::vector<std::vector<int32_t>> ints;
+};
+
 struct fstx_colsrc {
   const fstx_file* F = nullptr;
   uint32_t col = 0;
@@ -65,6 +75,7 @@ struct fstx_colsrc {
   std::unique_ptr<fstx::CodecContext> cc{new fstx::CodecContext()};
   std::vector<uint8_t> scratch, scratch2;
   std::mutex count_m;  // the counters above, when pages are loaded from several threads (fstx_colsrc_load_page)
+  fstx_bufpool* bufs = nullptr;  // string page buffers come from here and go back here (not owned)
   std::string name() const { return F ? F->col_name(col) : std::string("(in memory)"); }
 };
 
@@ -80,6 +91,28 @@ namespace {
 
 int width_mode(const fstx_colsrc& S) { return S.mode == FSTX_SRC_CODES ? 4 : width_of(S.phys); }
 
+// String page buffers: from the source's pool when it has one (any contents, any size), else new.
+template <typename T>
+std::vector<T> take_buf(fstx_bufpool* P, std::vector<std::vector<T>> fstx_bufpool::*which) {
+  std::vector<T> v;
+  if (P) {
+    std::lock_guard<std::mutex> g(P->m);
+    std::vector<std::vector<T>>& l = P->*which;
+    if (!l.empty()) {
+      v.swap(l.back());
+      l.pop_back();
+    }
+  }
+  return v;
+}
+template <typename T>
+void give_buf(fstx_bufpool* P, std::vector<std::vector<T>> fstx_bufpool::*which, std::vector<T>& v) {
+  if (!P || !v.capacity()) return;
+  std::lock_guard<std::mutex> g(P->m);
+  (P->*which).push_back(std::move(v));
+  v = std::vector<T>();
+}
+
 void free_page(fstx_colsrc& S, uint32_t p) {
   PageData& d = S.data[p];
   if (!d.ready) return;
@@ -90,6 +123,8 @@ void free_page(fstx_colsrc& S, uint32_t p) {
   } else {
     std::vector<uint8_t>().swap(d.vals);
   }
+  give_buf(S.bufs, &fstx_bufpool::ints, d.lens);
+  give_buf(S.bufs, &fstx_bufpool::bytes, d.own);
   std::vector<int32_t>().swap(d.lens);
   std::vector<uint8_t>().swap(d.own);
   d.bytes = nullptr;
@@ -165,7 +200,8 @@ void decode_page(const fstx_colsrc& S, uint32_t p, PageData& d, void* dst, Codec
       }
     } else if (sp.dict >= 0) {  // dictionary codes: strings mode keeps codes, codes mode maps them to levels
       const SrcDict& D = S.dicts[(size_t)sp.dict];
-      std::vector<int32_t> codes(n);
+      std::vector<int32_t> codes = take_buf(S.bufs, &fstx_bufpool::ints);
+      codes.resize(n);
       enc::decode_int_page(b, len, chain, n, enc::K_CODES, -1, codes.data());
       if (S.nulls) check_nulls(pg, codes.data(), n, -1);
       const int32_t nd = (int32_t)D.n;
@@ -186,14 +222,20 @@ void decode_page(const fstx_colsrc& S, uint32_t p, PageData& d, void* dst, Codec
           out[i] = k < 0 ? std::numeric_limits<int32_t>::min() : D.remap[(size_t)k];
         }
       } else {
-        d.lens.assign(codes.begin() + sp.skip, codes.begin() + sp.skip + sp.take);
+        if (sp.skip == 0 && sp.take == n) {
+          d.lens.swap(codes);
+        } else {
+          d.lens = take_buf(S.bufs, &fstx_bufpool::ints);
+          d.lens.assign(codes.begin() + sp.skip, codes.begin() + sp.skip + sp.take);
+        }
         d.bytes = nullptr;
         d.mem = d.lens.size() * 4;
       }
+      give_buf(S.bufs, &fstx_bufpool::ints, codes);
     } else {  // plain or FSST strings
       if (S.mode != FSTX_SRC_STRINGS) fail(FSTX_ERR_INTERNAL, "string page in a non-string source");
-      std::vector<int32_t> lv;
-      std::vector<uint8_t> fbuf;
+      std::vector<int32_t> lv = take_buf(S.bufs, &fstx_bufpool::ints);
+      std::vector<uint8_t> fbuf = take_buf(S.bufs, &fstx_bufpool::bytes);
       const char* bytes = nullptr;
       enc::decode_str_page(b, len, chain, n, enc::K_STR, lv, fbuf, &bytes);
       if (S.nulls) check_nulls(pg, lv.data(), n, -1);
@@ -201,7 +243,13 @@ void decode_page(const fstx_colsrc& S, uint32_t p, PageData& d, void* dst, Codec
       for (uint32_t i = 0; i < sp.skip; ++i) skip_bytes += (uint64_t)std::max(0, lv[i]);
       for (uint32_t i = 0; i < sp.take; ++i) take_bytes += (uint64_t)std::max(0, lv[sp.skip + i]);
       const char* first = bytes + skip_bytes;
-      d.lens.assign(lv.begin() + sp.skip, lv.begin() + sp.skip + sp.take);
+      if (sp.skip == 0 && sp.take == n) {
+        d.lens.swap(lv);
+      } else {
+        d.lens = take_buf(S.bufs, &fstx_bufpool::ints);
+        d.lens.assign(lv.begin() + sp.skip, lv.begin() + sp.skip + sp.take);
+      }
+      give_buf(S.bufs, &fstx_bufpool::ints, lv);
       check_no_nul(first, d.lens.data(), sp.take);
       const bool in_map = (const uint8_t*)bytes >= S.F->map.data() &&
                           (const uint8_t*)bytes < S.F->map.data() + S.F->map.size();
@@ -211,9 +259,11 @@ void decode_page(const fstx_colsrc& S, uint32_t p, PageData& d, void* dst, Codec
         d.own.swap(fbuf);
         d.bytes = (const char*)d.own.data() + skip_bytes;
       } else {
+        d.own = take_buf(S.bufs, &fstx_bufpool::bytes);
         d.own.assign((const uint8_t*)first, (const uint8_t*)first + take_bytes);
         d.bytes = (const char*)d.own.data();
       }
+      give_buf(S.bufs, &fstx_bufpool::bytes, fbuf);  // empty when it became the page's own bytes
       d.mem = d.lens.size() * 4 + d.own.size();
     }
     if (!(S.mode == FSTX_SRC_STRINGS && !S.own_bytes && sp.dict < 0 && pg->codec() == fb::Codec::None))
@@ -448,7 +498,18 @@ extern "C" int fstx_colsrc_from_strings(uint64_t n, const int32_t* lens, const c
   }
 }
 
-extern "C" void fstx_colsrc_free(fstx_colsrc* s) { delete s; }
+extern "C" void fstx_colsrc_free(fstx_colsrc* s) {
+  if (s && s->bufs)
+    for (PageData& d : s->data) {
+      give_buf(s->bufs, &fstx_bufpool::bytes, d.own);
+      give_buf(s->bufs, &fstx_bufpool::ints, d.lens);
+    }
+  delete s;
+}
+
+extern "C" fstx_bufpool* fstx_bufpool_new(void) { return new (std::nothrow) fstx_bufpool(); }
+extern "C" void fstx_bufpool_free(fstx_bufpool* p) { delete p; }
+extern "C" void fstx_colsrc_set_bufpool(fstx_colsrc* s, fstx_bufpool* p) { s->bufs = p; }
 
 extern "C" void fstx_colsrc_info_get(const fstx_colsrc* s, fstx_colsrc_info* o) {
   std::memset(o, 0, sizeof(*o));
@@ -586,6 +647,27 @@ extern "C" int fstx_colsrc_load_page(fstx_colsrc* s, uint32_t p, fstx_scratch* w
   } catch (...) {
     return to_error(err);
   }
+}
+
+// Thread-safe for distinct pages of one source: the page's buffers are freed outside the counters' lock.
+extern "C" void fstx_colsrc_drop_page(fstx_colsrc* s, uint32_t p) {
+  if (p >= s->data.size()) return;
+  PageData& d = s->data[p];
+  if (!d.ready) return;
+  std::vector<uint8_t> own, vals;
+  std::vector<int32_t> lens;
+  own.swap(d.own);
+  vals.swap(d.vals);
+  lens.swap(d.lens);
+  give_buf(s->bufs, &fstx_bufpool::bytes, own);
+  give_buf(s->bufs, &fstx_bufpool::ints, lens);
+  const uint64_t mem = d.mem;
+  d.bytes = nullptr;
+  d.mem = 0;
+  std::lock_guard<std::mutex> g(s->count_m);
+  d.ready = false;
+  s->cache_bytes -= mem;
+  --s->ready_count;
 }
 
 extern "C" int fstx_run_tasks(int64_t n, int threads, fstx_task_fn fn, void* ctx, fstx_error* err) {

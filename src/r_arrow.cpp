@@ -231,8 +231,10 @@ struct Stream : Live {
   int verify = 1;
   bool plain = false;              // FSTX_ARROW_PLAIN_STRINGS
   uint8_t* utf8_bad = nullptr;     // FSTX_ARROW_CHECK_UTF8: the caller's flags, one per column
+  std::vector<fstx_bufpool*> bufs;  // per column: string page buffers kept from one batch for the next
   std::string error;
   ~Stream() {
+    for (fstx_bufpool* p : bufs) fstx_bufpool_free(p);
     if (f) fstx_close(f);
   }
 };
@@ -630,9 +632,10 @@ struct StrCol {
   uint8_t* bits = nullptr;
 };
 
-void str_open(const Stream& S, StrCol& C, uint64_t a, uint64_t b) {
+void str_open(const Stream& S, StrCol& C, size_t j, uint64_t a, uint64_t b) {
   const bool check = S.utf8_bad != nullptr;
   C.s = open_src(S, *C.c, a, b);
+  if (j < S.bufs.size() && S.bufs[j]) fstx_colsrc_set_bufpool(C.s.get(), S.bufs[j]);
   fstx_colsrc_info si;
   fstx_colsrc_info_get(C.s.get(), &si);
   for (uint32_t d = 0; d < si.n_dicts; ++d) {  // dictionaries first (small): pages that use them may then decode
@@ -688,6 +691,8 @@ void str_prep(StrCol& C) {
 
 inline bool full_byte(uint64_t B, uint64_t r0, uint64_t r1) { return B * 8 >= r0 && B * 8 + 8 <= r1; }
 
+void str_page_bits(StrCol& C, StrPage& P);
+
 template <typename O>
 void str_write(StrCol& C, uint32_t q, bool check) {
   StrPage& P = C.pages[q];
@@ -710,7 +715,13 @@ void str_write(StrCol& C, uint32_t q, bool check) {
       pos += (uint64_t)D.lens[k];
     }
   }
-  if (!C.bits || !P.n) return;
+  if (C.bits && P.n) str_page_bits(C, P);
+  fstx_colsrc_drop_page(C.s.get(), q);  // the page is in the Arrow buffers now: free it here, in parallel
+  P.lens = nullptr;
+  P.bytes = nullptr;
+}
+
+void str_page_bits(StrCol& C, StrPage& P) {
   const uint64_t r0 = P.first, r1 = P.first + P.n;
   for (uint64_t B = r0 >> 3; B <= (r1 - 1) >> 3; ++B) {
     uint8_t v = 0;
@@ -760,7 +771,7 @@ void batch_range(const Stream& S, uint64_t a, uint64_t b, uint64_t n, ArrayHold*
       C.c = &c;
       C.out = h->kids[j];
       C.n = n;
-      str_open(S, C, a, b);
+      str_open(S, C, j, a, b);
       for (uint32_t q = 0; q < (uint32_t)C.pages.size(); ++q) tasks.push_back({j, q, 0});
       continue;
     }
@@ -789,6 +800,7 @@ void batch_range(const Stream& S, uint64_t a, uint64_t b, uint64_t n, ArrayHold*
     }
     if (C.c->out == O_UTF8) str_prep<int32_t>(C);
     else str_prep<int64_t>(C);
+    if (b >= S.to) fstx_colsrc_set_bufpool(C.s.get(), nullptr);  // last batch: its pages are freed as they go
     for (uint32_t q = 0; q < (uint32_t)C.pages.size(); ++q) tasks.push_back({j, q, 0});
   }
   const bool check = S.utf8_bad != nullptr;
@@ -1106,6 +1118,7 @@ extern "C" int fstx_arrow_stream_open(const char* path, const fstx_arrow_args* A
         }
         if (c.out == O_UTF8 && ci.raw_bytes > (uint64_t)INT32_MAX / 8) c.out = O_LARGE_UTF8;
       }
+      S->bufs.push_back(c.phys == FSTX_STRING ? fstx_bufpool_new() : nullptr);
       S->cols.push_back(std::move(c));
     }
   } catch (const std::bad_alloc&) {
