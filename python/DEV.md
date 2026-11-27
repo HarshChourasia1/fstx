@@ -442,3 +442,27 @@ Found:
   `scripts/tzprobe.R` (8 offsets, years 1900 to 9999): `format()`, `as.POSIXlt()$hour` / `$gmtoff` and R write ->
   read right on R 4.5.1 (laptop) and R 4.6.1 (desktop); every format warns "unknown timezone" (values right),
   so the POSIX form is used and the UTC fallback is not.
+
+## fstx 1.2: int64 and binary columns (branch `r12-pybind`, 27 Nov 2026)
+
+What changed (DESIGN.md section 10; the plan is `release-1.2/DESIGN-1.2.md` section 5):
+
+- `src/write.cpp`: an int64 column (`FSTX_INT64`) takes int64 chunks (in place when one chunk without nulls holds a
+  page, else filled with `FSTX_NA_INT64` for nulls); a binary column (`FSTX_BINARY`) goes the string way with no
+  UTF-8 or NUL check (`StrChunk::any`). `src/read.cpp`: filters take `i64` / `i64_set` (the engine's `has_i64`).
+  `src/file.cpp`: phys names `int64` / `binary`, the footer feature bits. `src/module.cpp`: `build_info()["features"]`.
+- `fstx/_write.py`: `int64=` gains `"native"`; `"auto"` past int32 is `_AUTO_WIDE` (one line: `"native"` now,
+  `"integer64"` gives back the 1.0 layout); metadata-driven layouts; appends follow the file; binary types.
+  `fstx/_read.py`: phys 4 / 5. `fstx/_filters.py`: int64 and binary terms. `fstx/_file.py`: `r_class` of int64,
+  `FileMeta.required_features` / `optional_features`.
+- Tests: `tests/test_types12.py` (every row of the plan's section 5 table); `conftest.py` carries the five 1.2
+  overrides of the 1.0 format files (`reserved_int64` / `reserved_binary` read; `reserved_phys4` / `phys5` /
+  `kind7` corrupt) and the `drop2` marker; `test_write.py` / `test_rmatch.py` follow the new `"auto"`.
+- R side of the tests (needs an R with fstx 1.2, bit64 and jsonlite): `golden/make_golden.R --v12` writes
+  `golden/v12/` (sidecars for int64 / binary, read by `test_types12.py`), `golden/rmatch/make_rmatch.R --v12`
+  writes `rmatch_int64_native` and `rmatch_binary` (views, and the same-bytes test in `test_rmatch.py`);
+  `rview.R` shows binary columns (lowercase hex). `check_rmatch.R` and `check_roundtrip.R` need fstx 1.2 to read
+  the files the tests now write (int64 columns from `"auto"`, binary).
+- `drop2` marker: tests that read int64 / binary through the engine's Arrow stream, or filter int64 exactly, are
+  skipped until the engine has drop 2 (`conftest.py` looks for `FSTX_BINARY` in `src/r_arrow.cpp` and `has_i64` in
+  `src/core_filter.cpp`; `FSTX_TEST_DROP2=1` / `0` overrides). Remove the marker once drop 2 is merged.
