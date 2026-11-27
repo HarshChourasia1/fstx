@@ -282,12 +282,28 @@ struct Filter {
     return false;
   }
 
+  // a worker's scratch, kept by the thread between pages and between calls (freed and made again per call, the
+  // buffers were page faults on every thread), up to 4 MB per buffer
   struct Scratch {
     CodecContext cc;
     std::vector<uint8_t> buf, fbuf, vals;
     std::vector<int32_t> lens;
     std::vector<uint64_t> words;
+    template <typename V>
+    static void trim(V& v) {
+      if (v.capacity() * sizeof(typename V::value_type) > (4u << 20)) V().swap(v);
+    }
+    void done() {
+      trim(buf);
+      trim(fbuf);
+      trim(vals);
+      trim(lens);
+    }
   };
+  static Scratch& scratch() {
+    static thread_local Scratch s;
+    return s;
+  }
 
   // decodes one page of predicate q and ANDs its result into the bitmap
   void eval_page(const Pred& q, const PageRef& r, Scratch& S) {
@@ -369,17 +385,20 @@ struct Filter {
       if (tasks.empty()) continue;
       const int k = (int)std::min<size_t>((size_t)std::max(hw, 1), tasks.size());
       if (k <= 1) {
-        Scratch S;
+        Scratch& S = scratch();
         for (const PageRef* r : tasks) eval_page(q, *r, S);
+        S.done();
         continue;
       }
-      std::vector<std::unique_ptr<Scratch>> sc;
-      for (int j = 0; j < k; ++j) sc.emplace_back(new Scratch());
       std::atomic<size_t> next(0);
       std::mutex m;
       std::exception_ptr err;
-      ThreadPool::instance().start(k, [&](int id) {
-        Scratch& S = *sc[(size_t)id];
+      ThreadPool::instance().start(k, [&](int) {
+        Scratch& S = scratch();
+        struct Done {
+          Scratch& s;
+          ~Done() { s.done(); }
+        } done{S};
         for (;;) {
           const size_t t = next.fetch_add(1);
           if (t >= tasks.size()) return;

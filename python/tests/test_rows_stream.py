@@ -132,3 +132,13 @@ def test_corrupt_page_is_refused_by_filters_and_row_lists(two_groups, tmp_path):
         with pytest.raises(fstx.FstxError, match="checksum"):
             fstx.read_fstx(bad, **kw)
 
+
+def test_reads_one_after_another_do_not_mix(two_groups, tmp_path):
+    # per-thread buffers outlive a read: a read of another file right after must not see the first one's bytes
+    other = tmp_path / "other.fstx"
+    fstx.write_fstx(_table(5000, 9), other, profile="balanced")
+    fa, fb = fstx.read_fstx(two_groups), fstx.read_fstx(other)
+    for _ in range(3):
+        for p, full in ((two_groups, fa), (other, fb)):
+            got = fstx.read_fstx(p, filters=[("i", ">", 500)])
+            assert same(got, _mask(full, pc.greater(full.column("i"), 500)))

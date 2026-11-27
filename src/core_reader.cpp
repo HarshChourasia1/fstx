@@ -540,6 +540,31 @@ struct StrSlot {
   std::vector<uint8_t> vm;
 };
 
+// Rows plans: a worker's scratch for decoding a page, kept by the thread between pages and between reads (a read of
+// scattered rows runs one plan per batch: buffers made and freed per batch were page faults on every thread), up
+// to kKeepRowsScratch bytes per buffer.
+constexpr size_t kKeepRowsScratch = 4u << 20;
+struct RowsScratch {
+  std::vector<uint8_t> buf, fbuf, vals, vm;
+  std::vector<int32_t> lv;
+  std::vector<uint64_t> off;
+  template <typename V>
+  static void trim(V& v) {
+    if (v.capacity() * sizeof(typename V::value_type) > kKeepRowsScratch) V().swap(v);
+  }
+  void done() {
+    trim(buf);
+    trim(fbuf);
+    trim(vals);
+    trim(lv);
+    trim(off);
+  }
+};
+RowsScratch& rows_scratch() {
+  static thread_local RowsScratch s;
+  return s;
+}
+
 // A string dictionary decoded once for a rows plan.
 struct DictData {
   std::vector<uint8_t> buf, fbuf;
@@ -576,15 +601,16 @@ struct Reader {
     return need < nv;
   }
 
-  void run_fixed_rows(const ReadTask& t, CodecContext& cc, std::vector<uint8_t>& scratch, std::vector<uint8_t>& vals) {
+  void run_fixed_rows(const ReadTask& t, CodecContext& cc) {
+    RowsScratch& T = rows_scratch();
+    std::vector<uint8_t>& vals = T.vals;
     const OutCol& oc = P.outs[t.out];
     const size_t w = (size_t)width_of(oc.phys);
     const uint32_t n = t.page->row_count();
     const uint64_t fr = t.page->first_row();
-    std::vector<uint8_t> vm;
-    const uint8_t* vmp = (!nulls && vector_mask(t, vm)) ? vm.data() : nullptr;  // null counts need the whole page
+    const uint8_t* vmp = (!nulls && vector_mask(t, T.vm)) ? T.vm.data() : nullptr;  // null counts need the whole page
     try {
-      const uint8_t* b = body(t, cc, scratch);
+      const uint8_t* b = body(t, cc, T.buf);
       if (vals.size() < (size_t)n * w) vals.resize((size_t)n * w);
       if (oc.phys == FSTX_FLOAT64)
         enc::decode_dbl_page_part(b, t.page->raw_len(), t.page->chain(), n, vmp, (double*)vals.data());
@@ -616,6 +642,7 @@ struct Reader {
         d[ident ? e : P.pos[e]] = x;
       }
     }
+    T.done();
   }
 
   void load_dict(uint32_t i, CodecContext& cc) {
@@ -636,23 +663,24 @@ struct Reader {
   }
 
   void run_string_rows(const ReadTask& t, CodecContext& cc, StrSlot& s) {
+    RowsScratch& T = rows_scratch();
     const uint32_t n = t.page->row_count();
     const uint64_t fr = t.page->first_row();
     const uint64_t cnt = t.e1 - t.e0;
     try {
-      const uint8_t* b = body(t, cc, s.buf);
+      const uint8_t* b = body(t, cc, T.buf);
       const size_t len = t.page->raw_len();
       s.olens.resize(cnt);
       s.obytes.clear();
       if (t.dict >= 0) {
         const DictData& D = dicts[(size_t)t.dict];
-        const uint8_t* vmp = (!nulls && vector_mask(t, s.vm)) ? s.vm.data() : nullptr;
-        if (s.lv.size() < n) s.lv.resize(n);
-        enc::decode_int_page_part(b, len, t.page->chain(), n, enc::K_CODES, -1, vmp, s.lv.data());
-        if (nulls) check_nulls(t.page, s.lv.data(), n, -1);
+        const uint8_t* vmp = (!nulls && vector_mask(t, T.vm)) ? T.vm.data() : nullptr;
+        if (T.lv.size() < n) T.lv.resize(n);
+        enc::decode_int_page_part(b, len, t.page->chain(), n, enc::K_CODES, -1, vmp, T.lv.data());
+        if (nulls) check_nulls(t.page, T.lv.data(), n, -1);
         const int32_t nd = (int32_t)D.n;
         for (uint64_t e = t.e0; e < t.e1; ++e) {
-          const int32_t k = s.lv[P.rows[e] - fr];
+          const int32_t k = T.lv[P.rows[e] - fr];
           if (k < -1 || k >= nd) enc::corrupt("dictionary code out of range");
           if (k < 0) {
             s.olens[e - t.e0] = -1;
@@ -663,21 +691,22 @@ struct Reader {
         }
       } else {
         const char* bytes = nullptr;
-        enc::decode_str_page(b, len, t.page->chain(), n, enc::K_STR, s.lv, s.fbuf, &bytes);
-        if (nulls) check_nulls(t.page, s.lv.data(), n, -1);
-        s.off.resize((size_t)n + 1);
-        s.off[0] = 0;
-        for (uint32_t i = 0; i < n; ++i) s.off[i + 1] = s.off[i] + (uint64_t)(s.lv[i] > 0 ? s.lv[i] : 0);
+        enc::decode_str_page(b, len, t.page->chain(), n, enc::K_STR, T.lv, T.fbuf, &bytes);
+        if (nulls) check_nulls(t.page, T.lv.data(), n, -1);
+        T.off.resize((size_t)n + 1);
+        T.off[0] = 0;
+        for (uint32_t i = 0; i < n; ++i) T.off[i + 1] = T.off[i] + (uint64_t)(T.lv[i] > 0 ? T.lv[i] : 0);
         for (uint64_t e = t.e0; e < t.e1; ++e) {
           const uint64_t i = P.rows[e] - fr;
-          s.olens[e - t.e0] = s.lv[i];
-          if (s.lv[i] > 0) s.obytes.insert(s.obytes.end(), bytes + s.off[i], bytes + s.off[i + 1]);
+          s.olens[e - t.e0] = T.lv[i];
+          if (T.lv[i] > 0) s.obytes.insert(s.obytes.end(), bytes + T.off[i], bytes + T.off[i + 1]);
         }
         check_no_nul(s.obytes.data(), s.olens.data(), (uint32_t)cnt);
       }
     } catch (...) {
       rethrow_in(t);
     }
+    T.done();
     s.kind = enc::K_STR;
     s.lens = s.olens.data();
     s.bytes = s.obytes.data();
@@ -692,7 +721,7 @@ struct Reader {
   [[noreturn]] void rethrow_in(const ReadTask& t) { rethrow_for_page(F, t.col, t.page); }
 
   void run_fixed(const ReadTask& t, CodecContext& cc, std::vector<uint8_t>& scratch, std::vector<uint8_t>& vals) {
-    if (P.rows_mode) return run_fixed_rows(t, cc, scratch, vals);
+    if (P.rows_mode) return run_fixed_rows(t, cc);
     const OutCol& oc = P.outs[t.out];
     const size_t w = (size_t)width_of(oc.phys);
     uint8_t* dst = dest[t.out] + t.dest * w;
