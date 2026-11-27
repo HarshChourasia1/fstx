@@ -462,21 +462,34 @@ def test_int64_filters_missing_and_numpy(i64_file):
     assert got == _expect(lambda v: v == 2**53 + 1)
 
 
-@drop2
 def test_binary_filters(tmp_path):
+    # the matching rows are read from the int column, so no binary column goes through the Arrow stream
+    vals = BIN * 300
+    p = tmp_path / "b.fstx"
+    write(pa.table({"n": pa.array(range(len(vals)), pa.int32()), "b": pa.array(vals)}), p)
+
+    def rows(*terms):
+        return fstx.read_fstx(p, columns=["n"], filters=list(terms)).column("n").to_pylist()
+
+    def want(fn):
+        return [i for i, v in enumerate(vals) if fn(v)]
+
+    assert rows(("b", "==", b"\x00\x01\x02")) == want(lambda v: v == b"\x00\x01\x02")
+    assert rows(("b", "==", bytearray(b"\x00"))) == want(lambda v: v == b"\x00")  # NUL is a byte like any other
+    assert rows(("b", "!=", b"")) == want(lambda v: v is not None and v != b"")
+    assert rows(("b", "in", [memoryview(b"text"), None])) == want(lambda v: v in (b"text", None))
+    assert rows(("b", "is_null")) == want(lambda v: v is None)
+    assert rows(("b", "not_null"), ("b", "!=", b"\x00")) == want(lambda v: v is not None and v != b"\x00")
+    assert rows(("b", "==", b"\xc3")) == []
+
+
+@drop2
+def test_binary_filters_read_back(tmp_path):
     vals = BIN * 300
     p = tmp_path / "b.fstx"
     write(pa.table({"b": pa.array(vals)}), p)
-
-    def rows(*terms):
-        return fstx.read_fstx(p, filters=list(terms)).column("b").to_pylist()
-
-    assert rows(("b", "==", b"\x00\x01\x02")) == [v for v in vals if v == b"\x00\x01\x02"]
-    assert rows(("b", "==", bytearray(b"\x00"))) == [v for v in vals if v == b"\x00"]  # NUL is a byte like any other
-    assert rows(("b", "!=", b"")) == [v for v in vals if v is not None and v != b""]
-    assert rows(("b", "in", [memoryview(b"text"), None])) == [v for v in vals if v in (b"text", None)]
-    assert rows(("b", "is_null")) == [None] * 300
-    assert rows(("b", "==", b"\xc3")) == []
+    got = fstx.read_fstx(p, filters=[("b", "in", [b"text", None])]).column("b").to_pylist()
+    assert got == [v for v in vals if v in (b"text", None)]
 
 
 # ---------------------------------------------------------------- polars and pandas
