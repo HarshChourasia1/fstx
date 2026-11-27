@@ -548,6 +548,7 @@ struct RowsScratch {
   std::vector<uint8_t> buf, fbuf, vals, vm;
   std::vector<int32_t> lv;
   std::vector<uint64_t> off;
+  std::vector<uint32_t> idx;
   template <typename V>
   static void trim(V& v) {
     if (v.capacity() * sizeof(typename V::value_type) > kKeepRowsScratch) V().swap(v);
@@ -558,6 +559,7 @@ struct RowsScratch {
     trim(vals);
     trim(lv);
     trim(off);
+    trim(idx);
   }
 };
 RowsScratch& rows_scratch() {
@@ -689,7 +691,12 @@ struct Reader {
             s.obytes.insert(s.obytes.end(), D.bytes + D.off[k], D.bytes + D.off[k + 1]);
           }
         }
-      } else {
+      } else if (!nulls) {  // only the strings asked for (FSST: only those are decompressed)
+        T.idx.resize(cnt);
+        for (uint64_t e = t.e0; e < t.e1; ++e) T.idx[e - t.e0] = (uint32_t)(P.rows[e] - fr);
+        enc::decode_str_page_rows(b, len, t.page->chain(), n, T.idx.data(), (uint32_t)cnt, T.lv, s.olens, s.obytes);
+        check_no_nul(s.obytes.data(), s.olens.data(), (uint32_t)cnt);
+      } else {  // FSTX_VERIFY_NULLS counts the whole page
         const char* bytes = nullptr;
         enc::decode_str_page(b, len, t.page->chain(), n, enc::K_STR, T.lv, T.fbuf, &bytes);
         if (nulls) check_nulls(t.page, T.lv.data(), n, -1);
