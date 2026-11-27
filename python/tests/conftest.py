@@ -31,9 +31,61 @@ CASES = [(GOLDEN / c["file"], _json(GOLDEN / (Path(c["file"]).stem + ".json")))
 
 FORMAT_DIR = _format_dir()
 _fmt = _json(GOLDEN / "format-1.0.json")["files"] if FORMAT_DIR.is_dir() else []
-# [(path, expectation dict)]: files that read, files that must be refused
+# fstx 1.2 changes five expectations of the 1.0 format files, and only these (DESIGN-1.2.md section 6, rule 1): the
+# feature bits 16 / 17 are known, so a file that sets one without having such a column reads; physical types 4 / 5
+# without their bit, and page kind 7 under an int32 column, are corrupt. The 1.0 files and format-1.0.json stay as
+# they are; the overrides live here.
+FORMAT_12_READ = {"reserved_int64.fstx", "reserved_binary.fstx"}
+FORMAT_12_CORRUPT = {"reserved_phys4.fstx", "reserved_phys5.fstx", "reserved_kind7.fstx"}
+# [(path, expectation dict)]: files that read, files that must be refused (as newer), files 1.2 finds corrupt,
+# files that only 1.2 reads (no value expectations: format-1.0.json holds a refusal for them)
 FORMAT_READ = [(FORMAT_DIR / f["file"], f) for f in _fmt if f["expect"] == "read"]
-FORMAT_REFUSE = [(FORMAT_DIR / f["file"], f) for f in _fmt if f["expect"] != "read"]
+FORMAT_REFUSE = [(FORMAT_DIR / f["file"], f) for f in _fmt
+                 if f["expect"] != "read" and f["file"] not in FORMAT_12_READ | FORMAT_12_CORRUPT]
+FORMAT_CORRUPT = [(FORMAT_DIR / f["file"], f) for f in _fmt if f["file"] in FORMAT_12_CORRUPT]
+FORMAT_READ_12 = [(FORMAT_DIR / f["file"], f) for f in _fmt if f["file"] in FORMAT_12_READ]
+
+# Golden files written by R with fstx 1.2 (golden/v12/, make_golden.R --v12): int64 and binary columns.
+GOLDEN12 = GOLDEN / "v12"
+_m12 = GOLDEN12 / "manifest.json"
+CASES12 = [(GOLDEN12 / c["file"], _json(GOLDEN12 / (Path(c["file"]).stem + ".json")))
+           for c in _json(_m12)["cases"]] if _m12.is_file() else []
+
+
+def _engine_has_drop2() -> bool:
+    """Whether the engine this tree builds reads int64 / binary columns through its Arrow stream and filters int64
+    exactly (agent E's drop 2 of fstx 1.2). Until then the Python reader must not open a stream on such a column.
+    FSTX_TEST_DROP2=1 / 0 overrides; otherwise the engine sources next to these tests are looked at. To be removed
+    (with the marker) once drop 2 is merged."""
+    env = os.environ.get("FSTX_TEST_DROP2")
+    if env in ("0", "1"):
+        return env == "1"
+    src = HERE.parents[1] / "src"
+    try:
+        arrow = (src / "r_arrow.cpp").read_text(encoding="utf-8", errors="replace")
+        filt = "".join(p.read_text(encoding="utf-8", errors="replace") for p in src.glob("core_filter*.cpp"))
+    except OSError:
+        return False
+    return "FSTX_BINARY" in arrow and "has_i64" in filt
+
+
+DROP2 = _engine_has_drop2()
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "drop2: needs the fstx 1.2 engine's int64 / binary Arrow stream and exact "
+                                       "int64 filters (agent E's drop 2)")
+
+
+def pytest_collection_modifyitems(config, items):
+    import pytest
+
+    if DROP2:
+        return
+    skip = pytest.mark.skip(reason="waits for engine drop 2 (int64 / binary in the Arrow stream, exact int64 filters)")
+    for item in items:
+        if "drop2" in item.keywords:
+            item.add_marker(skip)
 
 
 def ids(pairs):

@@ -1,13 +1,16 @@
 # R-match golden files: tables written by R, with R's own view of every value, for test_rmatch.py.
 #
 #   Rscript make_rmatch.R [out dir]          (default: the folder this script is in)
+#   Rscript make_rmatch.R --v12 [out dir]    only the fstx 1.2 cases (int64 and binary columns), with fstx 1.2
 #
-# Needs fstx 1.0.0, bit64 and jsonlite. Writes <case>.fstx and <case>.view.json (rview.R: per column typeof,
+# Needs fstx 1.0.0 (fstx 1.2.0 or later with --v12), bit64 and jsonlite. Writes <case>.fstx and <case>.view.json (rview.R: per column typeof,
 # class, tzone, levels and every value as R shows it). test_rmatch.py reads each file with pyarrow, pandas and
 # polars and compares what Python shows with this view, then writes the tables back for check_rmatch.R.
 # Synthetic values only.
 
 args <- commandArgs(TRUE)
+v12 <- "--v12" %in% args
+args <- setdiff(args, "--v12")
 me <- normalizePath(sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1]), winslash = "/")
 here <- dirname(me)
 out <- if (length(args)) normalizePath(args[1], winslash = "/", mustWork = FALSE) else here
@@ -16,7 +19,8 @@ suppressPackageStartupMessages({
   library(bit64)
   library(jsonlite)
 })
-stopifnot(identical(as.character(packageVersion("fstx")), "1.0.0"))
+if (v12) stopifnot(packageVersion("fstx") >= "1.2.0") else stopifnot(identical(as.character(packageVersion("fstx")), "1.0.0"))
+fv <- as.character(packageVersion("fstx"))
 source(file.path(here, "rview.R"))
 dir.create(out, recursive = TRUE, showWarnings = FALSE)
 
@@ -25,11 +29,34 @@ case <- function(name, x, about) {
   write_fstx(x, p, threads = 1L)
   y <- read_fstx(p, threads = 1L)
   if (!identical(y, x)) stop(sprintf("%s does not read back identical() in R", name))
-  v <- c(list(file = basename(p), about = about, made_with = paste("fstx 1.0.0,", R.version.string)), rview(y))
+  v <- c(list(file = basename(p), about = about, made_with = paste0("fstx ", fv, ", ", R.version.string)), rview(y))
   writeLines(rview_json(v, pretty = TRUE), file.path(out, paste0(name, ".view.json")), useBytes = TRUE)
   cat(sprintf("%-24s %6.0f bytes\n", basename(p), file.size(p)))
 }
 ct <- function(v, tz) .POSIXct(v, tz = tz)
+
+# ---------------------------------------------------------------- fstx 1.2: int64 and binary columns
+# Written with R's defaults (int64 = "native"), threads = 1. test_rmatch.py reads them, checks the view and writes
+# each table back from Python with the same settings: the bytes must be the same (DESIGN-1.2.md section 6, rule 3).
+if (v12) {
+  x <- data.frame(
+    big = as.integer64(c("0", "1", "-1", "2147483647", "2147483648", "-2147483648", "9007199254740993",
+                         "9223372036854775807", "-9223372036854775807", NA)),
+    small = as.integer64(c(1:9, NA)),
+    none = as.integer64(rep(NA, 10L)),
+    rep = as.integer64(rep(c("5000000000", "-1", NA, "5000000000", "7"), 2L)))
+  case("rmatch_int64_native", x, "int64 columns (fstx 1.2): past int32 and 2^53, the extremes, NA; small values; all NA; repeats")
+
+  big <- as.raw(rep(c(0x41, 0x00, 0xff), length.out = 70000L))   # 70,000 bytes with NULs: past 64 KB
+  x <- data.frame(id = 1:10)
+  x$bin <- list(as.raw(c(0x00, 0x01, 0x02)), raw(0), NULL, charToRaw("text"), as.raw(0:255), as.raw(c(0xff, 0x00)),
+                big, as.raw(0x00), NULL, as.raw(c(0xc3, 0x28)))
+  x$rep <- rep(list(as.raw(c(1, 2, 3)), as.raw(0x00), NULL, as.raw(c(1, 2, 3)), raw(0)), 2L)
+  x$asis <- I(rep(list(charToRaw("aé"), NULL), 5L))
+  x$none <- rep(list(NULL), 10L)
+  case("rmatch_binary", x, "binary columns (fstx 1.2): NUL bytes, empty raw, NULL, every byte value, 70 KB, invalid UTF-8; repeats; AsIs; all NULL")
+  quit(save = "no")
+}
 
 # ---------------------------------------------------------------- part A: dates, times, integer64
 days <- as.Date(c("1969-12-31", "1970-01-01", "2024-02-29", "1900-03-01", "0001-01-01", "9999-12-31", NA, "2026-11-18"))

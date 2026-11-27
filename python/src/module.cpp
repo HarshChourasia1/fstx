@@ -51,6 +51,15 @@ static nb::dict build_info() {
   d["simd_cpu"] = target_names(fstx::simd::cpu_targets());
   d["simd_compiled"] = target_names(fstx::simd::compiled_targets());
   d["hardware_threads"] = fstx_hardware_threads();
+  // the file feature bits this engine reads (spec 5), by name: {"int64": 16, "binary": 17} for fstx 1.2
+  nb::dict feats;
+  const uint64_t known = fstx_features_known();
+  for (int b = 0; b < 64; ++b)
+    if (known & (1ULL << b)) {
+      const char* nm = fstx_feature_name(b);
+      feats[nm ? nm : ("bit " + std::to_string(b)).c_str()] = b;
+    }
+  d["features"] = feats;
   return d;
 }
 

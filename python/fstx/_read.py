@@ -3,9 +3,11 @@
 The engine's Arrow C stream (src/r_arrow.cpp) decodes the pages; pyarrow imports it and pulls the batches with
 the GIL released. The stream also lays out dictionary-coded strings as plain strings and checks that all text is
 valid UTF-8, on its own threads (ARROW_PLAIN_STRINGS, ARROW_CHECK_UTF8). This module chooses columns and rows,
-runs filters, and finishes each batch where the stream cannot know R's meaning: integer64 (the bits of a double
-column), factors, Dates and POSIXct that R stored as plain numbers with their class in the attribute blob,
-text that is not valid UTF-8, and the metadata that lets a writer store the table again the way R wrote it.
+runs filters, and finishes each batch where the stream cannot know R's meaning: integer64 in the fstx 1.0 layout
+(the bits of a double column), factors, Dates and POSIXct that R stored as plain numbers with their class in the
+attribute blob, text that is not valid UTF-8, and the metadata that lets a writer store the table again the way R
+wrote it. int64 columns (fstx 1.2) come from the stream as Arrow int64 and binary columns as binary /
+large_binary (dictionary-coded pages laid out as plain values), both as they are.
 
 Arrow metadata (DESIGN.md section 4; keys and helpers in ``_meta.py``):
 
@@ -93,6 +95,10 @@ def _column(c: ColumnMeta, datetimes: str, binary: bool, attributes: bool) -> _C
         if binary:
             return _Col(c, "string", pa.large_binary() if big else pa.binary(), md)
         return _Col(c, "string", pa.large_string() if big else pa.string(), md)
+    if c.phys == "binary":  # fstx 1.2: bytes; large_binary by the stream's rule for text (invalid_utf8 does not apply)
+        return _Col(c, "binary", pa.large_binary() if c.raw_bytes > _MAX_STRING else pa.binary(), md)
+    if c.phys == "int64":  # fstx 1.2: the stream gives Arrow int64, nulls where the file has INT64_MIN
+        return _Col(c, "same", pa.int64(), md)
     if c.phys == "logical":
         return _Col(c, "same", pa.bool_(), md)
     if c.logical == "factor":
@@ -366,6 +372,18 @@ def _strings(arr: pa.Array, j: int, col: _Col, mode: str, st: _State, bad: Optio
     return arr if arr.type == want else arr.cast(want)
 
 
+def _binary(arr: pa.Array, col: _Col) -> pa.Array:
+    """A binary column's batch as the plain binary type of its field (a dictionary-coded batch is laid out)."""
+    want = col.field.type
+    if pa.types.is_dictionary(arr.type):
+        try:
+            arr = arr.cast(pa.dictionary(pa.int32(), want)).dictionary_decode()
+        except (pa.ArrowInvalid, pa.ArrowCapacityError):
+            raise _error("column '%s': a batch holds more than 2 GB of bytes; read it with to_batches() and a "
+                         "smaller batch_rows" % col.meta.name, _core.ERR_ARG, col.meta.index) from None
+    return arr if arr.type == want else arr.cast(want)
+
+
 def _to_int64(arr: pa.Array) -> pa.Array:
     # bit64's integer64 is a double column holding int64 bit patterns: take the 8 bytes as they are. The
     # validity the stream made (from the page's missing-value marks and from NaN payloads) means nothing here:
@@ -425,6 +443,8 @@ def _finish(batch: pa.RecordBatch, plan: _Plan, schema: pa.Schema, st: _State,
         k = col.kind
         if k == "string":
             a = _strings(a, j, col, plan.invalid_utf8, st, None if bad is None else j in bad)
+        elif k == "binary":
+            a = _binary(a, col)
         elif k == "int64":
             a = _to_int64(a)
         elif k == "factor":
