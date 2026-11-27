@@ -119,3 +119,16 @@ def test_as_factor_after_a_filter(two_groups):
     assert got.schema.field("code").type == full.schema.field("code").type
     want = _mask(full, pc.greater(full.column("i"), 900))
     assert got.column("code").cast(pa.string()).equals(want.column("code").cast(pa.string()))
+
+
+def test_corrupt_page_is_refused_by_filters_and_row_lists(two_groups, tmp_path):
+    # pages of rows plans and filters are copied out of the file (no mapping): their checksums are still checked
+    bad = tmp_path / "bad.fstx"
+    raw = bytearray(two_groups.read_bytes())
+    mid = len(raw) // 2
+    raw[mid:mid + 4096] = bytes(b ^ 0xFF for b in raw[mid:mid + 4096])
+    bad.write_bytes(bytes(raw))
+    for kw in (dict(filters=[("i", ">", -2000)]), dict(rows=list(range(0, N1 + N2, 7)))):
+        with pytest.raises(fstx.FstxError, match="checksum"):
+            fstx.read_fstx(bad, **kw)
+

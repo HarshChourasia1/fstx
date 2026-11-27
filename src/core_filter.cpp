@@ -19,6 +19,10 @@ struct fstx_selection {
 };
 
 namespace fstx {
+// core_reader.cpp: a page body copied out of the file instead of touched in the mapping
+const uint8_t* page_body_read(const fstx_file& F, uint32_t col, const fb::Page* p, bool verify, CodecContext& cc,
+                              std::vector<uint8_t>& buf);
+
 namespace {
 
 const int32_t kNaI = std::numeric_limits<int32_t>::min();
@@ -185,7 +189,7 @@ struct Filter {
     std::vector<int32_t> lens;
     const char* bytes = nullptr;
     try {
-      const uint8_t* b = page_body(F, col, p, verify, cc, buf);
+      const uint8_t* b = page_body_read(F, col, p, verify, cc, buf);
       enc::decode_str_page(b, p->raw_len(), p->chain(), p->row_count(), enc::K_DICT, lens, fbuf, &bytes);
     } catch (...) {
       rethrow_for_page(F, col, p);
@@ -297,7 +301,7 @@ struct Filter {
       S.words[row / 64 - w0] &= ~(1ull << (row & 63));
     };
     try {
-      const uint8_t* b = page_body(F, q.col, p, verify, S.cc, S.buf);
+      const uint8_t* b = page_body_read(F, q.col, p, verify, S.cc, S.buf);
       const size_t len = p->raw_len();
       if (q.phys == FSTX_FLOAT64) {
         if (S.vals.size() < (size_t)n * 8) S.vals.resize((size_t)n * 8);
@@ -338,7 +342,6 @@ struct Filter {
           if (l > 0) off += (uint64_t)l;
         }
       }
-      F.map.release(p->offset(), p->comp_len());
     } catch (...) {
       rethrow_for_page(F, q.col, p);
     }

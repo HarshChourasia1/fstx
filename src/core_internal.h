@@ -127,6 +127,9 @@ class MappedFile {
   // Drops the OS pages under [off, off + n) from the process working set once a page is decoded. The data
   // stays mapped (a later touch is a soft fault from the file cache), so this only lowers reported RAM.
   void release(uint64_t off, uint64_t n) const;
+  // Copies [off, off + n) into dst with a positional read of the same open file (no page faults on the mapping,
+  // which the OS serialises per process); falls back to copying from the mapping. Safe from several threads.
+  void read_at(uint64_t off, void* dst, size_t n) const;
   const FileId& id() const { return id_; }
 
  private:
@@ -136,6 +139,7 @@ class MappedFile {
 #ifdef _WIN32
   void* file_ = nullptr;
   void* mapping_ = nullptr;
+  void* rfile_ = nullptr;  // the same file reopened for overlapped (positional, concurrent) reads; null: none
 #else
   int fd_ = -1;
 #endif

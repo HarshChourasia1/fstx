@@ -443,6 +443,45 @@ const uint8_t* page_body(const fstx_file& F, uint32_t col, const fb::Page* p, bo
   return buf.data();
 }
 
+// As page_body, but the stored bytes are copied out of the file with a positional read (MappedFile::read_at)
+// instead of being touched in the mapping: page faults on a mapped file are serialised per process, so a read of
+// scattered rows that decodes many pages on many threads spends most of its time there. The body lands in buf (no
+// codec) or the stored bytes in a per-thread buffer and the body in buf (codec). Used by rows plans and filters.
+// The codec context is per thread too and outlives the call (a ZSTD context is some 100 KB to set up).
+const uint8_t* page_body_read(const fstx_file& F, uint32_t col, const fb::Page* p, bool verify, CodecContext&,
+                              std::vector<uint8_t>& buf) {
+  static thread_local std::vector<uint8_t> stored;
+  static thread_local CodecContext cc;
+  const size_t cl = (size_t)p->comp_len();
+  const bool none = p->codec() == fb::Codec::None;
+  std::vector<uint8_t>& in = none ? buf : stored;
+  if (in.size() < cl) in.resize(cl);
+  F.map.read_at(p->offset(), in.data(), cl);
+  {
+    FSTX_PROF_SCOPE(R_HASH);
+    if (verify && hash64(in.data(), cl) != p->hash())
+      fail(FSTX_ERR_CHECKSUM, "page checksum mismatch in column '%s' (rows %llu to %llu): the file is corrupt",
+           F.col_name(col).c_str(), (unsigned long long)p->first_row() + 1,
+           (unsigned long long)(p->first_row() + p->row_count()));
+  }
+  if (none) return buf.data();
+  const size_t raw = p->raw_len();
+  if (p->codec() == fb::Codec::ZSTD) {
+    const unsigned long long fs = ZSTD_getFrameContentSize(in.data(), cl);
+    if (fs != raw)
+      fail(FSTX_ERR_CORRUPT, "column '%s' (rows %llu to %llu): the page size does not match its ZSTD frame: the file is "
+           "corrupt", F.col_name(col).c_str(), (unsigned long long)p->first_row() + 1,
+           (unsigned long long)(p->first_row() + p->row_count()));
+  }
+  if (buf.size() < raw) buf.resize(raw);
+  {
+    FSTX_PROF_SCOPE(R_DECOMP);
+    decompress_page(cc, (int)p->codec(), in.data(), cl, buf.data(), raw);
+  }
+  if (stored.capacity() > (4u << 20)) std::vector<uint8_t>().swap(stored);  // keep at most 4 MB per thread
+  return buf.data();
+}
+
 void rethrow_for_page(const fstx_file& F, uint32_t col, const fb::Page* p) {
   try {
     throw;
@@ -584,7 +623,7 @@ struct Reader {
     const fb::Page* p = P.dicts[i];
     const uint32_t col = P.dict_cols[i];
     try {
-      const uint8_t* b = page_body(F, col, p, verify, cc, D.buf);
+      const uint8_t* b = page_body_read(F, col, p, verify, cc, D.buf);
       enc::decode_str_page(b, p->raw_len(), p->chain(), p->row_count(), enc::K_DICT, D.lens, D.fbuf, &D.bytes);
       D.n = p->row_count();
       check_no_nul(D.bytes, D.lens.data(), D.n);
@@ -646,6 +685,7 @@ struct Reader {
 
   // the page body with the codec removed (the mapped file itself when there is no codec)
   const uint8_t* body(const ReadTask& t, CodecContext& cc, std::vector<uint8_t>& buf) {
+    if (P.rows_mode) return page_body_read(F, t.col, t.page, verify, cc, buf);
     return page_body(F, t.col, t.page, verify, cc, buf);
   }
 
@@ -752,7 +792,8 @@ struct Reader {
     else
       rc = H.on_strings(H.ctx, t.out, t.dest, t.take, s.lens, s.bytes);
     if (rc != 0) fail(FSTX_ERR_HOST, "the host failed while building strings");
-    F.map.release(t.page->offset(), t.page->comp_len());  // plain pages are read from the map: trim after use
+    if (!P.rows_mode)  // rows plans copy pages out of the file (page_body_read): nothing of the map to trim
+      F.map.release(t.page->offset(), t.page->comp_len());  // plain pages are read from the map: trim after use
   }
 
   void run(int threads) {
