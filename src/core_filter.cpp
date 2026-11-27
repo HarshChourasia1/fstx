@@ -223,7 +223,7 @@ struct Filter {
         if (rg->first_row() >= to || rg->first_row() + rg->row_count() <= from) continue;
         const fb::ColumnChunk* ch = rg->columns()->Get(q.col);
         int32_t di = -1;
-        if (q.phys == FSTX_STRING && ch->dictionary() && q.op != FSTX_OP_NONE) {  // code pages need it too
+        if (is_str(q.phys) && ch->dictionary() && q.op != FSTX_OP_NONE) {  // code pages need it too
           di = (int32_t)dm.size();
           dm.emplace_back();
           load_dict(q, q.col, ch->dictionary(), cc, dm.back());
@@ -232,7 +232,7 @@ struct Filter {
           const uint64_t fr = p->first_row(), e = fr + p->row_count();
           if (fr >= to || e <= from) continue;
           ++st.pages_total;
-          const Verdict v = q.phys == FSTX_STRING ? str_verdict(q, p, di >= 0 ? &dm[(size_t)di] : nullptr, !nulls)
+          const Verdict v = is_str(q.phys) ? str_verdict(q, p, di >= 0 ? &dm[(size_t)di] : nullptr, !nulls)
                                                   : num_verdict(q, p, dbl, !nulls);
           if (v == V_SKIP) {
             ++st.pages_skipped;
@@ -320,7 +320,7 @@ struct Filter {
         if (nulls) check_nulls(p, x, n);
         for (uint64_t row = r.r0; row < r.r1; ++row)
           if (!dbl_match(q, x[row - fr])) clear(row - from);
-      } else if (q.phys != FSTX_STRING) {
+      } else if (!is_str(q.phys)) {
         if (S.vals.size() < (size_t)n * 4) S.vals.resize((size_t)n * 4);
         int32_t* x = (int32_t*)S.vals.data();
         enc::decode_int_page(b, len, p->chain(), n, kind_of(q.phys), kNaI, x);
@@ -448,10 +448,13 @@ extern "C" int fstx_filter(const fstx_file* f, const fstx_pred* preds, uint32_t 
       q.v = s.value;
       q.set_na = s.set_na != 0;
       q.set_nan = s.set_nan != 0;
-      if (q.phys == FSTX_STRING) {
+      if (q.phys == FSTX_INT64)  // fstx 1.2 drop 2: exact int64 filters
+        fstx::fail(FSTX_ERR_ARG, "column '%s' holds 64-bit integers: filters on it are not supported yet",
+                   f->col_name(s.col).c_str());
+      if (fstx::is_str(q.phys)) {
         if (q.op >= FSTX_OP_LT && q.op <= FSTX_OP_GE)
-          fstx::fail(FSTX_ERR_ARG, "column '%s' holds strings: only ==, !=, %%in%% and is.na() are supported",
-                     f->col_name(s.col).c_str());
+          fstx::fail(FSTX_ERR_ARG, "column '%s' holds %s: only ==, !=, %%in%% and is.na() are supported",
+                     f->col_name(s.col).c_str(), q.phys == FSTX_BINARY ? "binary values" : "strings");
         if ((q.op == FSTX_OP_EQ || q.op == FSTX_OP_NE) && s.n_strs != 1)
           fstx::fail(FSTX_ERR_ARG, "predicate %u: one string expected", i + 1);
         for (uint64_t k = 0; k < s.n_strs; ++k) q.strs.emplace_back(s.strs[k], (size_t)std::max(0, s.str_lens[k]));

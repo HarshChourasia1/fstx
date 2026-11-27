@@ -14,6 +14,17 @@ page_bytes <- function(p, pg) {
 }
 u32 <- function(...) writeBin(as.integer(c(...)), raw(), size = 4, endian = "little")
 
+# fstx 1.2 (design 1.2 section 6, rule 1): five golden-1.0 refusals change, and only these; the 1.0 files and
+# files.csv stay as fstx 1.0 wrote them. Bits 16 and 17 are known now, so a file that sets one without having such a
+# column reads; a type 4 / 5 column without its bit, or kind 7 under an int32 column, is corrupt.
+v12_read <- c("reserved_int64.fstx", "reserved_binary.fstx")
+v12_corrupt <- c(
+  reserved_phys4.fstx = "is corrupt: column 'id' has type 4 \\(64-bit integers\\) but the file does not set feature bit 16",
+  reserved_phys5.fstx = "is corrupt: column 'id' has type 5 \\(binary\\) but the file does not set feature bit 17",
+  reserved_kind7.fstx = "page directory entry 0 of column 0, row group 0 is invalid"
+)
+v12_base <- data.frame(id = 1:3, v = c(0.5, 1, 1.5), s = c("a", "b", "c"), stringsAsFactors = FALSE)
+
 test_that("the spec's worked bit-packing example (section 6.4) is what fstx writes", {
   p <- tempfile(fileext = ".fstx")
   on.exit(unlink(p))
@@ -63,6 +74,21 @@ test_that("golden files are unchanged and read as recorded", {
     f <- file.path(gdir, fl$file[i])
     lab <- fl$file[i]
     expect_identical(unname(tools::md5sum(f)), fl$md5[i], label = lab)
+    if (lab %in% names(v12_corrupt)) {
+      expect_identical(fl$expect[i], "refuse", label = lab)
+      expect_error(fstx_meta(f), v12_corrupt[[lab]], label = lab)
+      expect_error(read_fstx(f), v12_corrupt[[lab]], label = lab)
+      next
+    }
+    if (lab %in% v12_read) {
+      expect_identical(fl$expect[i], "refuse", label = lab)
+      m <- fstx_meta(f)
+      expect_equal(c(m$format_version, m$nrow, m$ncol), c(3, 3, 3), label = lab)
+      expect_identical(read_fstx(f), v12_base, label = lab)
+      for (lazy in c(FALSE, TRUE))
+        expect_identical(golden_table_md5(read_fstx(f, lazy = lazy)), golden_table_md5(v12_base), label = paste(lab, lazy))
+      next
+    }
     if (fl$expect[i] == "refuse") {
       expect_error(fstx_meta(f), fl$message[i], label = lab)
       expect_error(read_fstx(f), "Update fstx", label = lab)
