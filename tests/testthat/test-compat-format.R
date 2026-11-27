@@ -317,11 +317,11 @@ test_that("every legal mix of kind, encoding, missing-value mode and codec round
         expect_same(read_fstx(p, where = i_b > 20), df_take(x, which(x$i_b > 20)), label = paste(lab, "where int"))
         expect_same(read_fstx(p, where = s_b == "café"), df_take(x, which(x$s_b == "café")),
                     label = paste(lab, "where string"))
-        if (fstx_drop2) {   # int64 and binary filters: engine drop 2
+        nb <- vapply(x$b_r, is.null, NA)
+        expect_same(read_fstx(p, where = is.na(b_r)), df_take(x, which(nb)), label = paste(lab, "where binary"))
+        if (fstx_drop2) {   # int64 filters: engine drop 2
           q5 <- i64_hex(x$q_b) == i64_hex(i64(5))
           expect_same(read_fstx(p, where = q_b == 5L), df_take(x, which(q5)), label = paste(lab, "where int64"))
-          nb <- vapply(x$b_r, is.null, NA)
-          expect_same(read_fstx(p, where = is.na(b_r)), df_take(x, which(nb)), label = paste(lab, "where binary"))
         }
         pg <- fstx_pages(p)
         bin <- fstx_meta(p)$columns$type[pg$column] == "binary"   # binary pages are string kinds

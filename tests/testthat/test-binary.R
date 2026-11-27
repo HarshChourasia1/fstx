@@ -1,5 +1,5 @@
 # fstx 1.2: binary columns (physical type 5) from list columns of raw vectors. Synthetic data only. Tests marked
-# skip_until_drop2() need the engine's binary filters and Arrow types (drop 2).
+# skip_until_drop2() need the engine's Arrow stream types (drop 2).
 
 bin_pool <- function() list(raw(0), as.raw(0), as.raw(c(0, 0, 0)), charToRaw("abc"), as.raw(c(0x61, 0, 0x62)),
                             as.raw(0:255), raw_n(300, 2), as.raw(0xff), charToRaw("café"))
@@ -210,7 +210,7 @@ test_that("int64 and binary columns together, with every other type", {
   invisible(gc())
 })
 
-# ---------------------------------------------------------------- filters (engine drop 2)
+# ---------------------------------------------------------------- filters
 test_that("binary filters: is.na() and !is.na() only", {
   x <- bin_df()
   p <- tempfile(fileext = ".fstx")
@@ -221,7 +221,6 @@ test_that("binary filters: is.na() and !is.na() only", {
   expect_error(fstx_which(p, lo == as.raw(1)), msg)
   expect_error(fstx_which(p, lo %in% list(raw(0))), msg)
   expect_error(fstx_which(p, lo), msg)
-  skip_until_drop2()
   nul <- vapply(x$lo, is.null, NA)
   expect_identical(fstx_which(p, is.na(lo)), as.numeric(which(nul)))
   expect_identical(fstx_which(p, !is.na(lo) & id < 100), as.numeric(which(!nul & x$id < 100)))
