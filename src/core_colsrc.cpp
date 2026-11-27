@@ -9,6 +9,7 @@
 
 #include "arrow_abi.h"
 #include "core_file.h"
+#include "vendor/zstd/zstd.h"
 
 namespace fb = fstx::fb;
 
@@ -102,14 +103,37 @@ struct fstx_scratchset {
 };
 
 namespace fstx {
-// core_reader.cpp: a page body copied out of the file instead of touched in the mapping
-const uint8_t* page_body_read(const fstx_file& F, uint32_t col, const fb::Page* p, bool verify, CodecContext& cc,
-                              std::vector<uint8_t>& buf);
-
 namespace {
 
-const uint8_t* body_of(const fstx_colsrc& S, const fb::Page* p, CodecContext& cc, std::vector<uint8_t>& buf) {
-  return S.read ? page_body_read(*S.F, S.col, p, S.verify, cc, buf) : page_body(*S.F, S.col, p, S.verify, cc, buf);
+// As page_body, but the stored bytes are copied out of the file (MappedFile::read_at) instead of touched in the
+// mapping: the stored bytes go to buf (no codec) or to in and the body to buf (codec). Only the caller's buffers and
+// codec context: these run on threads that may end (a stream pulled from a thread that is not R's).
+const uint8_t* page_body_copy(const fstx_colsrc& S, const fb::Page* p, CodecContext& cc, std::vector<uint8_t>& buf,
+                              std::vector<uint8_t>& in) {
+  const fstx_file& F = *S.F;
+  const size_t cl = (size_t)p->comp_len();
+  const bool none = p->codec() == fb::Codec::None;
+  std::vector<uint8_t>& got = none ? buf : in;
+  if (got.size() < cl) got.resize(cl);
+  F.map.read_at(p->offset(), got.data(), cl);
+  if (S.verify && hash64(got.data(), cl) != p->hash())
+    fail(FSTX_ERR_CHECKSUM, "page checksum mismatch in column '%s' (rows %llu to %llu): the file is corrupt",
+         F.col_name(S.col).c_str(), (unsigned long long)p->first_row() + 1,
+         (unsigned long long)(p->first_row() + p->row_count()));
+  if (none) return buf.data();
+  const size_t raw = p->raw_len();
+  if (p->codec() == fb::Codec::ZSTD && ZSTD_getFrameContentSize(in.data(), cl) != raw)
+    fail(FSTX_ERR_CORRUPT, "column '%s' (rows %llu to %llu): the page size does not match its ZSTD frame: the file is "
+         "corrupt", F.col_name(S.col).c_str(), (unsigned long long)p->first_row() + 1,
+         (unsigned long long)(p->first_row() + p->row_count()));
+  if (buf.size() < raw) buf.resize(raw);
+  decompress_page(cc, (int)p->codec(), in.data(), cl, buf.data(), raw);
+  return buf.data();
+}
+
+const uint8_t* body_of(const fstx_colsrc& S, const fb::Page* p, CodecContext& cc, std::vector<uint8_t>& buf,
+                       std::vector<uint8_t>& in) {
+  return S.read ? page_body_copy(S, p, cc, buf, in) : page_body(*S.F, S.col, p, S.verify, cc, buf);
 }
 
 int width_mode(const fstx_colsrc& S) { return S.mode == FSTX_SRC_CODES ? 4 : width_of(S.phys); }
@@ -160,7 +184,8 @@ void decode_dict(const fstx_colsrc& S, SrcDict& D, CodecContext& cc, std::vector
   if (D.ready) return;
   if (!S.F || !D.page) fail(FSTX_ERR_INTERNAL, "dictionary is not loaded");
   try {
-    const uint8_t* b = body_of(S, D.page, cc, buf);
+    std::vector<uint8_t> in;
+    const uint8_t* b = body_of(S, D.page, cc, buf, in);
     std::vector<uint8_t> fbuf;
     const char* bytes = nullptr;
     enc::decode_str_page(b, D.page->raw_len(), D.page->chain(), D.n, enc::K_DICT, D.lens, fbuf, &bytes);
@@ -184,7 +209,7 @@ void decode_page(const fstx_colsrc& S, uint32_t p, PageData& d, void* dst, Codec
   const fb::Page* pg = sp.page;
   const uint32_t n = sp.n;
   try {
-    const uint8_t* b = body_of(S, pg, cc, buf);
+    const uint8_t* b = body_of(S, pg, cc, buf, tmp);
     const size_t len = pg->raw_len();
     const uint32_t chain = pg->chain();
     if (S.mode == FSTX_SRC_FIXED) {
