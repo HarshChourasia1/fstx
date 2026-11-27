@@ -4,6 +4,7 @@
 // FNV-1a hash of each file is printed for comparing platforms. Build: tools/coretest/Makefile. Not in the
 // package tarball. MIT licence.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -668,6 +669,8 @@ static int sub_of(const T12& t, size_t j) {
   return k;
 }
 
+static int g_profile12 = FSTX_PROFILE_BALANCED;  // write12's profile (tests of the fast profile change it)
+
 // returns the append's code (FSTX_OK when written)
 static int write12(const std::string& path, const T12& t, int codec, int threads, int force, int fail_bin = 0,
                    int logical0 = 0, int values = 0, bool append = false) {
@@ -702,7 +705,7 @@ static int write12(const std::string& path, const T12& t, int codec, int threads
   o.codec = codec;
   o.level = 3;
   o.threads = threads;
-  o.profile = FSTX_PROFILE_BALANCED;
+  o.profile = g_profile12;
   o.keep_pct = 10;
   o.row_group_size = 16384;
   o.page_bytes = 65536;
@@ -1115,6 +1118,87 @@ static std::vector<uint64_t> test_i64_bin(const std::string& dir, std::vector<st
   return hs;
 }
 
+// a binary column of random 16-byte values (all distinct, at distinct pointers: what R raw vectors give): n rows,
+// plus an ASCII column of the same size when ascii (16 random letters and digits a value)
+static T12 make_rand16(uint64_t n, bool ascii) {
+  T12 t;
+  t.n = n;
+  t.names = {ascii ? "a16" : "r16"};
+  t.phys = {FSTX_BINARY};
+  t.idx.assign(1, std::vector<int32_t>(n));
+  t.tab.resize(n);
+  uint64_t s = ascii ? 4242 : 2424;
+  static const char kAl[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+  for (uint64_t i = 0; i < n; ++i) {
+    std::string v(16, '\0');
+    for (char& ch : v) {
+      const uint64_t r = splitmix(s);
+      ch = ascii ? kAl[r % 36] : (char)(r & 0xff);
+    }
+    t.tab[i] = v;
+    t.idx[0][i] = (int32_t)i;
+  }
+  return t;
+}
+
+// random 16-byte binary values: plain pages (no dictionary, no FSST) under the fast and the balanced profile
+static void test_rand16(const std::string& dir) {
+  const T12 t = make_rand16(100000, false);
+  const struct {
+    int profile, codec;
+    const char* nm;
+  } ps[] = {{FSTX_PROFILE_FAST, FSTX_CODEC_NONE, "fast"}, {FSTX_PROFILE_BALANCED, FSTX_CODEC_ZSTD, "balanced"}};
+  for (const auto& q : ps) {
+    const std::string p = dir + "/r16.fstx", lab = std::string("random 16-byte binary, ") + q.nm;
+    g_profile12 = q.profile;
+    const int rc = write12(p, t, q.codec, 4, 0);
+    g_profile12 = FSTX_PROFILE_BALANCED;
+    if (!rc_ok(rc, fstx_error{}, lab + ": write")) continue;
+    fstx_file* f = nullptr;
+    fstx_error e;
+    if (!rc_ok(fstx_open(p.c_str(), &f, &e), e, lab + ": open")) continue;
+    std::vector<fstx_page_info> pi((size_t)fstx_pages_get(f, nullptr, 0));
+    fstx_pages_get(f, pi.data(), pi.size());
+    bool plain = !pi.empty();
+    for (const fstx_page_info& g : pi) plain = plain && !g.is_dictionary && g.kind == 4 && g.enc[0] == 1;
+    fstx_close(f);
+    check(plain, lab + ": plain pages chosen");
+    check12(p, t, lab);
+    std::remove(p.c_str());
+  }
+}
+
+// coretest <dir> time-bin16 [rows]: fast-profile write time of a random 16-byte binary column against an ASCII
+// column of the same size (codec none, all threads), median of 7 alternating writes each
+static int time_bin16(const std::string& dir, uint64_t n) {
+  const T12 tb = make_rand16(n, false), ta = make_rand16(n, true);
+  const int th = (int)fstx_hardware_threads();
+  std::vector<double> sb, sa;
+  g_profile12 = FSTX_PROFILE_FAST;
+  for (int k = 0; k < 8; ++k)
+    for (int which = 0; which < 2; ++which) {
+      const std::string p = dir + "/t16.fstx";
+      const auto t0 = std::chrono::steady_clock::now();
+      const int rc = write12(p, which ? ta : tb, FSTX_CODEC_NONE, th, 0);
+      const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      std::remove(p.c_str());
+      if (rc != FSTX_OK) {
+        std::printf("time-bin16: write failed (%d)\n", rc);
+        return 1;
+      }
+      if (k == 0) continue;  // warm-up
+      (which ? sa : sb).push_back(sec);
+    }
+  std::sort(sb.begin(), sb.end());
+  std::sort(sa.begin(), sa.end());
+  const double mb = sb[sb.size() / 2], ma = sa[sa.size() / 2];
+  std::printf("time-bin16: %llu rows x 16 bytes, %d threads, fast profile, codec none: binary %.4f s, ascii %.4f s "
+              "(median of %zu), ratio %.3f (min %.4f / %.4f, max %.4f / %.4f)\n",
+              (unsigned long long)n, th, mb, ma, sb.size(), mb / ma, sb.front(), sa.front(), sb.back(), sa.back());
+  std::printf(mb <= 1.10 * ma ? "TIME-BIN16 OK (within 10%%)\n" : "TIME-BIN16 SLOWER than 10%%\n");
+  return 0;
+}
+
 static int open_code(const std::string& p) {
   fstx_error e;
   fstx_file* f = nullptr;
@@ -1405,6 +1489,8 @@ static void test_filter12(const std::string& dir) {
 
 int main(int argc, char** argv) {
   const std::string dir = argc > 1 ? argv[1] : ".";
+  if (argc > 2 && std::string(argv[2]) == "time-bin16")
+    return time_bin16(dir, argc > 3 ? std::strtoull(argv[3], nullptr, 10) : 4000000);
   const uint64_t n = argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 200000;
   std::printf("fstx coretest: %llu rows, folder %s, %u hardware threads\n", (unsigned long long)n, dir.c_str(),
               fstx_hardware_threads());
@@ -1454,6 +1540,7 @@ int main(int argc, char** argv) {
       ref12 = h12;
       test_rules12(dir);
       test_filter12(dir);
+      test_rand16(dir);
     } else {
       check(h12 == ref12, "1.2 files: same bytes as scalar under " + lab);
     }
