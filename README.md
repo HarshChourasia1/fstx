@@ -67,11 +67,28 @@ fstx_compact("sales.fstx")   # drop what appends leave behind; merge = TRUE rewr
 fstx_simd()                  # SIMD target in use (SSE2 / SSE4 / AVX2, chosen at run time)
 ```
 
+## Column types
+
+| R | stored as | notes |
+|---|---|---|
+| integer, double, logical, character | int32, float64, logical, string | NA kept; NaN, Inf and -0 kept in doubles |
+| factor, ordered | int32 codes with the levels | |
+| Date | int32 or float64 days | as R holds it |
+| POSIXct | float64 seconds with the time zone | the double R holds; nanoseconds are not kept |
+| `bit64::integer64` | int64 (fstx 1.2) | `write_fstx(int64 = "integer64")` writes the fstx 1.0 layout; `read_fstx(int64 = "double")` reads doubles |
+| list of raw vectors (also `blob`, `arrow_binary`, `I()`) | binary (fstx 1.2) | `NULL` is missing; any bytes, NUL included |
+| other attributes (labels, units, classes) | an attribute blob per column | |
+
+A file with an int64 or binary column needs fstx 1.2 or later to read: fstx 1.0 refuses it with "Update fstx".
+Write with `int64 = "integer64"` and without binary columns when fstx 1.0 must read the file. `where` filters
+int64 columns exactly; binary columns take only `is.na()`.
+
 ## File format
 
-fstx 1.0 writes fstx format 1.0 (format version 3 inside the file). The format is fixed: every later fstx
-reads these files. Its specification ships with the package:
-`system.file("spec", "fstx-format-1.0.md", package = "fstx")`.
+fstx 1.2 writes fstx format 1.2 (format version 3 inside the file): format 1.0 plus the int64 and binary column
+types. Every later fstx reads these files, and fstx 1.2 reads every file fstx 1.0 wrote. The specification ships
+with the package: `system.file("spec", "fstx-format-1.2.md", package = "fstx")` (and `fstx-format-1.0.md`, what
+fstx 1.0 implements).
 
 - A file from a later fstx that needs something this version does not know is refused with a message that
   names it and ends "Update fstx". It is not called corrupt.

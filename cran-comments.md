@@ -1,23 +1,34 @@
+<!-- DRAFT for fstx 1.2.0, written before the 1.2.0 check runs. Before submitting: fill in "Test environments"
+and "R CMD check results" from those runs, set the first line of "Submission" to how CRAN then lists fstx (an
+update of 1.0.2 once that is on CRAN), and delete this comment. Nothing below the comment has been run on 1.2.0. -->
+
 ## Submission
 
-This is a new submission.
+fstx 1.2.0 follows fstx 1.0.2. It adds two column types, 64-bit integers ('bit64' integer64 vectors) and binary
+values (lists of raw vectors), makes reads, filters and the Arrow stream faster, and fixes two bugs in
+`fstx_arrow_stream()` (see NEWS.md).
+
+* 'bit64' and 'blob' are new in Suggests. fstx does not call either package: an integer64 vector is a double vector
+  with a class, and a blob is a list of raw vectors with a class. 'bit64' is only checked for with
+  `requireNamespace()` to tell the user how to print an int64 column; the tests use both packages when installed.
+* Files with the new column types set a feature flag, so fstx 1.0.2 refuses them with a message that names the
+  feature and asks to update fstx. Every other file reads in both versions.
 
 ## Test environments
 
-* Windows 11, R 4.6.2 (Rtools): `R CMD check --as-cran`
+PENDING: the planned runs; keep only those that ran and passed.
+
+* Windows 11, R 4.6.2 (Rtools 4.5): `R CMD check --as-cran`
+* Ubuntu 24.04 (WSL), R-devel: `R CMD check --as-cran`
+* Ubuntu 24.04, gcc 13 and clang 18: AddressSanitizer + UndefinedBehaviorSanitizer, ThreadSanitizer and valgrind
+  runs of the test suite
 * GitHub Actions: Windows (R release), macOS arm64 (R release), Ubuntu x86_64 (R 4.4, release, devel),
   Ubuntu aarch64 (R release)
-* Ubuntu 24.04 (on fstx 1.0.0, whose R code and C++ code R uses are unchanged in 1.0.1): gcc 13 and clang 18;
-  AddressSanitizer + UndefinedBehaviorSanitizer, ThreadSanitizer and valgrind runs of the test suite, all clean
 
 ## R CMD check results
 
-0 errors | 0 warnings | 1 note
+PENDING: from the 1.2.0 runs above.
 
-* checking compilation flags used ... NOTE
-  Compilation used the following non-portable flag(s): '-Wa,-muse-unaligned-vector-move'
+## Reverse dependencies
 
-  This flag is added by `configure.win` on 64-bit Windows only. It works around GCC bug 54412: GCC does not
-  align the stack to 32 bytes on Win64, so aligned AVX moves of spilled vector registers can crash. The flag
-  makes the assembler emit unaligned moves instead. `configure.win` adds it only after checking that the
-  compiler accepts it. Other platforms do not use it.
+There are no reverse dependencies.
