@@ -183,23 +183,31 @@ test_that("fstx 1.2: an int64 / binary type without its bit, or with the wrong p
   write_fstx(small_df(), p, compress = "none")
   write_fstx(new_df(id = i64(1:3000)), p64, compress = "none")
   write_fstx(new_df(id = rep(list(as.raw(1:3)), 3000)), pb, compress = "none")
+  bit16 <- "type 4 \\(64-bit integers\\) but the file does not set feature bit 16"
+  bit17 <- "type 5 \\(binary\\) but the file does not set feature bit 17"
+  page0 <- "page directory entry 0 of column 0, row group 0 is invalid"
+  combo <- "column 0 has an invalid type combination"
   cases <- list(
-    list(p, list(phys0 = 4L)),                       # type 4 without bit 16 (golden reserved_phys4)
-    list(p, list(phys0 = 5L)),                       # type 5 without bit 17 (reserved_phys5)
-    list(p, list(kind0 = 7L)),                       # kind 7 under an int32 column (reserved_kind7)
-    list(p, list(phys0 = 4L, required = 16L)),       # int32 pages (kind 1) under an int64 column
-    list(p, list(phys0 = 5L, required = 17L)),       # int32 pages under a binary column
-    list(p64, list(required = integer(0))),          # the int64 column's bit cleared
-    list(p64, list(logical0 = 2L, required = 16L)),  # Date on int64
-    list(p64, list(kind0 = 1L, required = 16L)),     # an int page under an int64 column
-    list(pb, list(logical0 = 3L, required = 17L)),   # POSIXct on binary
-    list(pb, list(required = integer(0)))            # the binary column's bit cleared
+    list(p, list(phys0 = 4L), bit16),                      # golden reserved_phys4
+    list(p, list(phys0 = 5L), bit17),                      # golden reserved_phys5
+    list(p, list(kind0 = 7L), page0),                      # kind 7 under an int32 column (reserved_kind7)
+    list(p, list(phys0 = 4L, required = 16L), page0),      # int32 pages (kind 1) under an int64 column
+    list(p, list(phys0 = 5L, required = 17L), page0),      # int32 pages under a binary column
+    list(p64, list(required = integer(0)), bit16),         # the int64 column's bit cleared
+    list(p64, list(logical0 = 2L, required = 16L), combo), # Date on int64
+    list(p64, list(kind0 = 1L, required = 16L), page0),    # an int page under an int64 column
+    list(pb, list(logical0 = 3L, required = 17L), combo),  # POSIXct on binary
+    list(pb, list(required = integer(0)), bit17)           # the binary column's bit cleared
   )
   for (k in cases) {
     do.call(forge, c(list(k[[1]], q), k[[2]]))
-    lab <- paste(basename(k[[1]]) == basename(p64), names(k[[2]]), unlist(k[[2]]), collapse = " ")
-    expect_error(fstx_meta(q), "corrupt", label = lab)
-    expect_error(read_fstx(q), "corrupt", label = lab)
+    lab <- paste(c(c("int32", "int64", "binary")[match(k[[1]], c(p, p64, pb))], names(k[[2]]), unlist(k[[2]])),
+                 collapse = " ")
+    for (f in list(fstx_meta, read_fstx)) {
+      e <- tryCatch({ f(q); "no error" }, error = conditionMessage)
+      expect_match(e, k[[3]], label = lab)
+      expect_no_match(e, "Update fstx", label = lab)   # corrupt, not a newer file
+    }
   }
   # copies with their bits (a forge sets the feature fields it is given, none when not given) read
   forge(p64, q, required = 16L)
