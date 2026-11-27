@@ -610,7 +610,7 @@ int stream_get_next(ArrowArrayStream* st, ArrowArray* out) {
     res.n_children = (int64_t)h->kids.size();
     res.children = h->kids.empty() ? nullptr : h->kids.data();
     if (S.by_rows) {
-      rows_batch(S, h, a, b, sel.data(), n);
+      rows_batch(S, h, a, sel.data(), n);
       S.pos = next;
       *out = res;
       return 0;

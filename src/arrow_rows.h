@@ -8,7 +8,8 @@
 // requested rows are read, pages without a codec decode only the 1,024-row vectors needed, and the pages of all
 // columns decode side by side on the engine pool. Fixed-width values land in the Arrow buffer (or in a buffer of the
 // same width that is converted in place), strings are gathered per page by the workers and appended here in row
-// order. Columns that leave as dictionaries (every page dictionary-coded) take their codes from a column source.
+// order. Columns that leave as dictionaries (every page dictionary-coded) get their codes and the row group's dictionary
+// from the same plan (fstx_plan_rows_codes).
 
 struct RowsCol {
   size_t j = 0;               // stream column
@@ -21,6 +22,8 @@ struct RowsCol {
   std::vector<char> bytes;
   uint64_t tot = 0;
   std::unique_ptr<Validity> v;
+  int32_t* codes = nullptr;  // dictionary columns: the indexes
+  bool has_dict = false;
 };
 
 struct RowsHost {
@@ -66,6 +69,12 @@ void* rows_alloc(void* ctx, uint32_t k, uint32_t, int phys, uint64_t n) {
   RowsCol& R = (*H.cols)[k];
   const ColSpec& c = H.S->cols[R.j];
   try {
+    if (c.out == O_DICT_STR) {
+      array_init(R.out, (int64_t)n, 2);
+      R.codes = (int32_t*)array_buf(R.out, 1, (size_t)n * 4);
+      R.v.reset(new Validity{R.out, n});
+      return R.codes;
+    }
     if (phys == FSTX_STRING) {
       rows_str_init(c, R, n);
       return R.off;
@@ -81,6 +90,7 @@ int rows_strings(void* ctx, uint32_t k, uint64_t dest, uint32_t cnt, const int32
   RowsHost& H = *(RowsHost*)ctx;
   RowsCol& R = (*H.cols)[k];
   try {
+    if (R.codes) throw Fail("internal error: dictionary and plain pages mixed in column '" + H.S->cols[R.j].name + "'");
     uint64_t add = 0;
     for (uint32_t i = 0; i < cnt; ++i) {
       const int32_t l = lens[i];
@@ -104,13 +114,41 @@ int rows_strings(void* ctx, uint32_t k, uint64_t dest, uint32_t cnt, const int32
   }
 }
 
-int rows_no_dict(void* ctx, uint32_t, uint32_t, const int32_t*, const char*) {
-  ((RowsHost*)ctx)->error = "internal error: a rows plan delivered a dictionary";
-  return 1;
+// A dictionary child for array out (n entries laid out like on_strings).
+void set_dict(ArrowArray* out, uint32_t n, const int32_t* lens, const char* bytes) {
+  ArrayHold* hh = (ArrayHold*)out->private_data;
+  hh->dict = new_child();
+  out->dictionary = hh->dict;
+  make_utf8(hh->dict, n, lens, bytes);
 }
-int rows_no_codes(void* ctx, uint32_t, uint64_t, uint32_t, const int32_t*) {
-  ((RowsHost*)ctx)->error = "internal error: a rows plan delivered dictionary codes";
-  return 1;
+
+int rows_dict(void* ctx, uint32_t k, uint32_t n, const int32_t* lens, const char* bytes) {
+  RowsHost& H = *(RowsHost*)ctx;
+  RowsCol& R = (*H.cols)[k];
+  try {
+    if (R.has_dict) throw Fail("internal error: a batch spans more than one dictionary");
+    set_dict(R.out, n, lens, bytes);
+    R.has_dict = true;
+    return 0;
+  } catch (const std::exception& x) {
+    H.error = x.what();
+    return 1;
+  }
+}
+
+int rows_codes(void* ctx, uint32_t k, uint64_t dest, uint32_t cnt, const int32_t* codes) {
+  RowsHost& H = *(RowsHost*)ctx;
+  RowsCol& R = (*H.cols)[k];
+  if (!R.codes) {
+    H.error = "internal error: codes for a column that is not a dictionary";
+    return 1;
+  }
+  for (uint32_t i = 0; i < cnt; ++i) {
+    const int32_t x = codes[i];
+    R.codes[dest + i] = x < 0 ? 0 : x;
+    if (x < 0) R.v->null_at(dest + i);
+  }
+  return 0;
 }
 int rows_no_at(void* ctx, uint32_t, uint32_t, const uint64_t*, const int32_t*, const char*) {
   ((RowsHost*)ctx)->error = "internal error: rows out of order";
@@ -189,69 +227,28 @@ void rows_finish_strings(RowsCol& R) {
   R.v->done();
 }
 
-// A column that leaves as dictionary indexes into its row group's dictionary: codes of the pages that hold rows.
-void rows_dict_column(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b, const uint64_t* sel, uint64_t n,
-                      ArrowArray* out) {
-  SrcPtr s = open_src(S, c, a, b);
-  fstx_error e;
-  fstx_colsrc_info si;
-  fstx_colsrc_info_get(s.get(), &si);
-  if (si.n_dicts != 1) throw Fail("internal error: a batch spans more than one dictionary");
-  array_init(out, (int64_t)n, 2);
-  Validity v{out, n};
-  int32_t* o = (int32_t*)array_buf(out, 1, (size_t)n * 4);
-  uint32_t p = 0;
-  uint64_t first = 0;
-  uint32_t k = 0;
-  const int32_t* pl = nullptr;
-  bool have = false;
-  for (uint64_t i = 0; i < n; ++i) {
-    const uint64_t r = sel[i];
-    while (!have || r >= first + k) {
-      if (have) {
-        fstx_colsrc_drop(s.get(), p);
-        ++p;
-      }
-      fstx_colsrc_page_span(s.get(), p, &first, &k);
-      have = true;
-      if (r < first + k) {
-        const char* pb = nullptr;
-        int32_t d = -1;
-        check(fstx_colsrc_str_page(s.get(), p, &pl, &pb, &d, &e), e);
-        if (d < 0) throw Fail("internal error: dictionary and plain pages mixed in column '" + c.name + "'");
-      }
-    }
-    const int32_t code = pl[r - first];
-    o[i] = code < 0 ? 0 : code;
-    if (code < 0) v.null_at(i);
-  }
-  v.done();
-  uint32_t dn = 0;
-  const int32_t* dl = nullptr;
-  const char* db = nullptr;
-  check(fstx_colsrc_dict(s.get(), 0, &dn, &dl, &db, &e), e);
-  ArrayHold* h = (ArrayHold*)out->private_data;
-  h->dict = new_child();
-  out->dictionary = h->dict;
-  make_utf8(h->dict, dn, dl, db);
-}
-
 // A selection that spans several batches but is not big (kRowsAllMax rows at most) is decoded by one rows plan for
 // all of its rows when the first batch is asked for, and the batches are then cut from it: one parallel decode
-// instead of one per row group (each with its own start, tail and wait). Dictionary columns stay per batch (their
-// dictionaries are per row group).
+// instead of one per row group (each with its own start, tail and wait).
 constexpr uint64_t kRowsAllMax = 1u << 20;
 
+struct StageDict {
+  uint64_t start = UINT64_MAX;  // first staged row that uses it
+  std::vector<int32_t> lens;
+  std::string bytes;
+};
 struct StageCol {
   size_t j = 0;
-  bool str = false;
-  std::vector<uint8_t> vals;  // fixed width: stored values
+  bool str = false, dict = false;
+  std::vector<uint8_t> vals;  // fixed width: stored values; dictionary columns: int32 codes
   std::vector<uint64_t> off;  // strings: n + 1 offsets into bytes
   std::vector<uint8_t> na;
   std::vector<char> bytes;
+  std::vector<StageDict> dicts;  // dictionary columns, in row order
 };
 struct RowsStage {
-  std::vector<StageCol> cols;  // in plan order
+  const Stream* S = nullptr;
+  std::vector<StageCol> cols;  // one per stream column
   std::string error;
 };
 
@@ -259,6 +256,11 @@ void* stage_alloc(void* ctx, uint32_t k, uint32_t, int phys, uint64_t n) {
   RowsStage& G = *(RowsStage*)ctx;
   StageCol& C = G.cols[k];
   try {
+    if (G.S->cols[C.j].out == O_DICT_STR) {
+      C.dict = true;
+      C.vals.resize((size_t)n * 4);
+      return C.vals.data();
+    }
     if (phys == FSTX_STRING) {
       C.str = true;
       C.off.assign((size_t)n + 1, 0);
@@ -277,6 +279,7 @@ int stage_strings(void* ctx, uint32_t k, uint64_t dest, uint32_t cnt, const int3
   RowsStage& G = *(RowsStage*)ctx;
   StageCol& C = G.cols[k];
   try {
+    if (C.dict) throw Fail("internal error: dictionary and plain pages mixed in column '" + G.S->cols[C.j].name + "'");
     uint64_t add = 0;
     for (uint32_t i = 0; i < cnt; ++i) {
       const int32_t l = lens[i];
@@ -292,15 +295,45 @@ int stage_strings(void* ctx, uint32_t k, uint64_t dest, uint32_t cnt, const int3
   }
 }
 
-// Runs one rows plan for the stream columns that are not dictionaries, over file rows `rows`, with `host`.
-void rows_read(const Stream& S, const std::vector<uint32_t>& pcols, const uint64_t* rows, uint64_t n,
-               fstx_read_host& host, const std::string& host_error) {
+int stage_dict(void* ctx, uint32_t k, uint32_t n, const int32_t* lens, const char* bytes) {
+  RowsStage& G = *(RowsStage*)ctx;
+  StageCol& C = G.cols[k];
+  try {
+    StageDict D;
+    D.lens.assign(lens, lens + n);
+    uint64_t tot = 0;
+    for (uint32_t i = 0; i < n; ++i) tot += (uint64_t)std::max(0, lens[i]);
+    D.bytes.assign(bytes, (size_t)tot);
+    C.dicts.push_back(std::move(D));
+    return 0;
+  } catch (const std::exception& x) {
+    G.error = x.what();
+    return 1;
+  }
+}
+
+int stage_codes(void* ctx, uint32_t k, uint64_t dest, uint32_t cnt, const int32_t* codes) {
+  RowsStage& G = *(RowsStage*)ctx;
+  StageCol& C = G.cols[k];
+  if (!C.dict || C.dicts.empty()) {
+    G.error = "internal error: codes without a dictionary";
+    return 1;
+  }
+  if (C.dicts.back().start == UINT64_MAX) C.dicts.back().start = dest;
+  std::memcpy(C.vals.data() + (size_t)dest * 4, codes, (size_t)cnt * 4);
+  return 0;
+}
+
+// Runs one rows plan for all stream columns over file rows `rows` with `host`; dictionary columns as codes.
+void rows_read(const Stream& S, const uint64_t* rows, uint64_t n, fstx_read_host& host, const std::string& host_error) {
+  std::vector<uint32_t> pcols;
+  for (const ColSpec& c : S.cols) pcols.push_back(c.col);
   fstx_plan* plan = nullptr;
   fstx_error e;
   check(fstx_plan_create_rows(S.f, pcols.data(), (uint32_t)pcols.size(), rows, n, &plan, &e), e);
   std::unique_ptr<fstx_plan, void (*)(fstx_plan*)> pg(plan, fstx_plan_free);
-  host.on_dict = rows_no_dict;
-  host.on_codes = rows_no_codes;
+  for (size_t j = 0; j < S.cols.size(); ++j)
+    if (S.cols[j].out == O_DICT_STR) check(fstx_plan_rows_codes(plan, (uint32_t)j, &e), e);
   host.on_strings_at = rows_no_at;
   if (fstx_read(plan, &host, S.threads, S.verify, &e) != FSTX_OK) {
     if (!host_error.empty()) throw Fail(host_error);
@@ -310,22 +343,17 @@ void rows_read(const Stream& S, const std::vector<uint32_t>& pcols, const uint64
 
 RowsStage* rows_stage(Stream& S) {
   std::unique_ptr<RowsStage> G(new RowsStage());
-  std::vector<uint32_t> pcols;
-  for (size_t j = 0; j < S.cols.size(); ++j) {
-    if (S.cols[j].out == O_DICT_STR) continue;
-    StageCol C;
-    C.j = j;
-    G->cols.push_back(std::move(C));
-    pcols.push_back(S.cols[j].col);
-  }
-  if (!pcols.empty()) {
-    fstx_read_host host;
-    std::memset(&host, 0, sizeof(host));
-    host.ctx = G.get();
-    host.alloc_column = stage_alloc;
-    host.on_strings = stage_strings;
-    rows_read(S, pcols, S.rows.data(), S.rows.size(), host, G->error);
-  }
+  G->S = &S;
+  G->cols.resize(S.cols.size());
+  for (size_t j = 0; j < S.cols.size(); ++j) G->cols[j].j = j;
+  fstx_read_host host;
+  std::memset(&host, 0, sizeof(host));
+  host.ctx = G.get();
+  host.alloc_column = stage_alloc;
+  host.on_strings = stage_strings;
+  host.on_dict = stage_dict;
+  host.on_codes = stage_codes;
+  rows_read(S, S.rows.data(), S.rows.size(), host, G->error);
   RowsStage* g = G.release();
   S.rows_all = std::shared_ptr<void>(g, [](void* p) { delete (RowsStage*)p; });
   return g;
@@ -333,6 +361,23 @@ RowsStage* rows_stage(Stream& S) {
 
 // The batch's rows [i0, i0 + n) of the staged selection, into child array R.out.
 void rows_from_stage(const ColSpec& c, const StageCol& C, uint64_t i0, uint64_t n, RowsCol& R) {
+  if (C.dict) {
+    const StageDict* D = nullptr;  // the batch's row group's dictionary: the last one that starts at or before i0
+    for (const StageDict& d : C.dicts)
+      if (d.start != UINT64_MAX && d.start <= i0) D = &d;
+    if (!D) throw Fail("internal error: no dictionary for a batch of column '" + c.name + "'");
+    array_init(R.out, (int64_t)n, 2);
+    Validity v{R.out, n};
+    int32_t* o = (int32_t*)array_buf(R.out, 1, (size_t)n * 4);
+    const int32_t* x = (const int32_t*)C.vals.data() + i0;
+    for (uint64_t i = 0; i < n; ++i) {
+      o[i] = x[i] < 0 ? 0 : x[i];
+      if (x[i] < 0) v.null_at(i);
+    }
+    v.done();
+    set_dict(R.out, (uint32_t)D->lens.size(), D->lens.data(), D->bytes.data());
+    return;
+  }
   if (!C.str) {
     const size_t w = c.phys == FSTX_FLOAT64 ? 8 : 4;
     void* d = rows_fixed_init(c, R, n);
@@ -359,43 +404,29 @@ void rows_from_stage(const ColSpec& c, const StageCol& C, uint64_t i0, uint64_t 
   R.v->done();
 }
 
-// One batch of rows: file rows a + sel[i] for i in [0, n) (sel ascending, repeats allowed, sel[n - 1] = b - a - 1),
-// all inside one row group; they are S.rows[S.pos, S.pos + n). h is the batch's struct array with one child per
-// column.
-void rows_batch(Stream& S, ArrayHold* h, uint64_t a, uint64_t b, const uint64_t* sel, uint64_t n) {
+// One batch of rows: file rows a + sel[i] for i in [0, n) (sel ascending, repeats allowed), all inside one row
+// group; they are S.rows[S.pos, S.pos + n). h is the batch's struct array with one child per column.
+void rows_batch(Stream& S, ArrayHold* h, uint64_t a, const uint64_t* sel, uint64_t n) {
   const size_t nc = S.cols.size();
+  if (!nc) return;
   const uint64_t i0 = S.pos;
   RowsStage* G = (RowsStage*)S.rows_all.get();
   if (!G && i0 == 0 && n < S.rows.size() && S.rows.size() <= kRowsAllMax) G = rows_stage(S);
   if (G) {
-    size_t k = 0;
     for (size_t j = 0; j < nc; ++j) {
-      if (S.cols[j].out == O_DICT_STR) {
-        rows_dict_column(S, S.cols[j], a, b, sel, n, h->kids[j]);
-        continue;
-      }
       RowsCol R;
       R.j = j;
       R.out = h->kids[j];
-      rows_from_stage(S.cols[j], G->cols[k++], i0, n, R);
+      rows_from_stage(S.cols[j], G->cols[j], i0, n, R);
     }
     if (i0 + n >= S.rows.size()) S.rows_all.reset();  // the last batch: the staged rows go
     return;
   }
-  std::vector<RowsCol> rc;
-  std::vector<uint32_t> pcols;
+  std::vector<RowsCol> rc(nc);
   for (size_t j = 0; j < nc; ++j) {
-    if (S.cols[j].out == O_DICT_STR) {
-      rows_dict_column(S, S.cols[j], a, b, sel, n, h->kids[j]);
-      continue;
-    }
-    RowsCol R;
-    R.j = j;
-    R.out = h->kids[j];
-    rc.push_back(std::move(R));
-    pcols.push_back(S.cols[j].col);
+    rc[j].j = j;
+    rc[j].out = h->kids[j];
   }
-  if (rc.empty()) return;
   std::vector<uint64_t> rows((size_t)n);
   for (uint64_t i = 0; i < n; ++i) rows[(size_t)i] = a + sel[i];
   RowsHost H;
@@ -407,10 +438,18 @@ void rows_batch(Stream& S, ArrayHold* h, uint64_t a, uint64_t b, const uint64_t*
   host.ctx = &H;
   host.alloc_column = rows_alloc;
   host.on_strings = rows_strings;
-  rows_read(S, pcols, rows.data(), n, host, H.error);
+  host.on_dict = rows_dict;
+  host.on_codes = rows_codes;
+  rows_read(S, rows.data(), n, host, H.error);
   for (RowsCol& R : rc) {
     const ColSpec& c = S.cols[R.j];
-    if (c.phys == FSTX_STRING) rows_finish_strings(R);
-    else rows_finish_fixed(c, R, n);
+    if (c.out == O_DICT_STR) {
+      if (!R.has_dict) throw Fail("internal error: no dictionary for column '" + c.name + "'");
+      R.v->done();
+    } else if (c.phys == FSTX_STRING) {
+      rows_finish_strings(R);
+    } else {
+      rows_finish_fixed(c, R, n);
+    }
   }
 }

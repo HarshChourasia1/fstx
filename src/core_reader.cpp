@@ -45,6 +45,7 @@ struct fstx_plan {
   std::vector<uint64_t> pos;   // output position of each sorted entry; empty = rows were already sorted
   std::vector<const fb::Page*> dicts;  // string dictionaries the code pages need (decoded once each)
   std::vector<uint32_t> dict_cols;
+  std::vector<uint8_t> codes_out;  // rows plans, per output column: dictionary pages deliver codes (fstx_plan_rows_codes)
   uint64_t out_rows() const { return rows_mode ? (uint64_t)rows.size() : to - from; }
 };
 
@@ -583,6 +584,7 @@ struct Reader {
   bool verify, nulls;  // FSTX_VERIFY_HASH, FSTX_VERIFY_NULLS
   std::vector<uint8_t*> dest;
   std::vector<DictData> dicts;  // rows plans
+  std::vector<int32_t> sent_dict;  // rows plans with codes: the dictionary each output column had last
   Reader(const fstx_plan& p, const fstx_read_host& h, int v)
       : P(p), F(*p.f), H(h), verify((v & FSTX_VERIFY_HASH) != 0), nulls((v & FSTX_VERIFY_NULLS) != 0) {}
 
@@ -681,6 +683,18 @@ struct Reader {
         enc::decode_int_page_part(b, len, t.page->chain(), n, enc::K_CODES, -1, vmp, T.lv.data());
         if (nulls) check_nulls(t.page, T.lv.data(), n, -1);
         const int32_t nd = (int32_t)D.n;
+        if (t.out < P.codes_out.size() && P.codes_out[t.out]) {  // the codes themselves (dictionary sent apart)
+          for (uint64_t e = t.e0; e < t.e1; ++e) {
+            const int32_t k = T.lv[P.rows[e] - fr];
+            if (k < -1 || k >= nd) enc::corrupt("dictionary code out of range");
+            s.olens[e - t.e0] = k;
+          }
+          T.done();
+          s.kind = enc::K_CODES;
+          s.lens = s.olens.data();
+          s.bytes = nullptr;
+          return;
+        }
         for (uint64_t e = t.e0; e < t.e1; ++e) {
           const int32_t k = T.lv[P.rows[e] - fr];
           if (k < -1 || k >= nd) enc::corrupt("dictionary code out of range");
@@ -817,7 +831,16 @@ struct Reader {
     int rc;
     if (P.rows_mode) {
       const uint32_t cnt = (uint32_t)(t.e1 - t.e0);
-      if (P.pos.empty())
+      if (s.kind == enc::K_CODES) {  // fstx_plan_rows_codes: the dictionary when it changes, then the codes
+        if (sent_dict.size() <= t.out) sent_dict.resize((size_t)t.out + 1, -1);
+        if (sent_dict[t.out] != t.dict) {
+          const DictData& D = dicts[(size_t)t.dict];
+          if (H.on_dict(H.ctx, t.out, D.n, D.lens.data(), D.bytes) != 0)
+            fail(FSTX_ERR_HOST, "the host failed while building strings");
+          sent_dict[t.out] = t.dict;
+        }
+        rc = H.on_codes(H.ctx, t.out, t.e0, cnt, s.lens);
+      } else if (P.pos.empty())
         rc = H.on_strings(H.ctx, t.out, t.e0, cnt, s.lens, s.bytes);
       else
         rc = H.on_strings_at(H.ctx, t.out, cnt, P.pos.data() + t.e0, s.lens, s.bytes);
@@ -1115,6 +1138,21 @@ extern "C" int fstx_plan_create_rows(const fstx_file* f, const uint32_t* cols, u
   }
 }
 
+extern "C" int fstx_plan_rows_codes(fstx_plan* p, uint32_t out_index, fstx_error* err) {
+  fstx::set_error(err, FSTX_OK, "");
+  try {
+    if (!p || !p->rows_mode) fstx::fail(FSTX_ERR_ARG, "dictionary codes are for rows plans");
+    if (out_index >= p->outs.size() || p->outs[out_index].phys != FSTX_STRING)
+      fstx::fail(FSTX_ERR_ARG, "dictionary codes need a string column");
+    if (!p->pos.empty()) fstx::fail(FSTX_ERR_ARG, "dictionary codes need rows in ascending order");
+    if (p->codes_out.size() < p->outs.size()) p->codes_out.resize(p->outs.size(), 0);
+    p->codes_out[out_index] = 1;
+    return FSTX_OK;
+  } catch (...) {
+    return fstx::to_error(err);
+  }
+}
+
 extern "C" void fstx_plan_free(fstx_plan* p) { delete p; }
 extern "C" uint64_t fstx_plan_rows(const fstx_plan* p) { return p->out_rows(); }
 
@@ -1135,7 +1173,9 @@ extern "C" int fstx_read(const fstx_plan* p, const fstx_read_host* host, int thr
     if (!p || !host || !host->alloc_column || !host->on_strings) fstx::fail(FSTX_ERR_ARG, "missing plan or host callbacks");
     if (p->rows_mode && !p->pos.empty() && !p->strings.empty() && !host->on_strings_at)
       fstx::fail(FSTX_ERR_ARG, "rows out of order need the host's on_strings_at callback");
-    if (p->has_dict && (!host->on_dict || !host->on_codes))
+    bool codes = false;
+    for (uint8_t c : p->codes_out) codes = codes || c;
+    if ((p->has_dict || codes) && (!host->on_dict || !host->on_codes))
       fstx::fail(FSTX_ERR_ARG, "the file has string dictionaries but the host gave no dictionary callbacks");
     fstx::Reader r(*p, *host, verify);
     r.run(threads);

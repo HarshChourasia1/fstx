@@ -164,3 +164,18 @@ def test_batches_of_a_selection_keep_their_row_groups(two_groups, batch_rows):
             assert not (edge < n1 < edge + k)  # no batch holds rows of both row groups
             edge += k
     assert same(pa.Table.from_batches(bs), want)
+
+
+def test_dictionary_columns_after_a_filter_carry_their_row_groups_dictionary(two_groups):
+    # dictionary columns come from the rows plan as codes plus the row group's dictionary (fstx_plan_rows_codes)
+    full = fstx.read_fstx(two_groups, as_factor=["code"])
+    with fstx.open(two_groups) as f:
+        rd = f.to_batches(filters=[("i", ">", 800)])
+        typ = rd.schema.field("code").type
+        bs = list(rd)
+    got = pa.Table.from_batches(bs)
+    want = _mask(full, pc.greater(full.column("i"), 800))
+    assert got.column("code").cast(pa.string()).equals(want.column("code").cast(pa.string()))
+    for rows in ([0, 5, 69_999], [70_000, 99_999], [3, 70_001]):
+        assert fstx.read_fstx(two_groups, rows=rows, columns=["code"]).column(0).equals(
+            full.column("code").cast(pa.string()).take(rows))
