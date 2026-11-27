@@ -85,7 +85,7 @@ test_that("forging a file with row groups but no columns does not crash", {
 })
 
 test_that("the string pointer cache leaves the written bytes unchanged", {
-  # The prep pass keeps each plain / FSST chunk's string pointers (within a 64 MB budget per write) so the pages
+  # The prep pass keeps each plain / FSST chunk's string pointers (within an 8 MB budget per write) so the pages
   # need not read the strings again; .encoding = "no_str_cache" turns the cache off. Chunks that start plain,
   # give up their dictionary at 65,536 rows, keep it up to the end but do not choose it, or stay dictionaries.
   ps <- replicate(4, tempfile(fileext = ".fstx"))
@@ -127,6 +127,20 @@ test_that("the string pointer cache leaves the written bytes unchanged", {
   write_fstx(x1, ps[4], threads = 1, append = TRUE, .encoding = "no_str_cache")
   expect_identical(unname(tools::md5sum(ps[3])), unname(tools::md5sum(ps[4])))
   expect_identical(read_fstx(ps[3]), rbind(x1, x1))
+})
+
+test_that("bytes are the same when a write runs past the default string pointer cache budget", {
+  # 8 MB = 699,050 strings: two plain columns of 600,000 rows (dictionaries given up) in one row group, so one of
+  # the two chunks finds the budget spent and reads its strings again
+  p <- replicate(2, tempfile(fileext = ".fstx"))
+  on.exit(unlink(p))
+  n <- 600000
+  set.seed(8)
+  x <- data.frame(a = sprintf("a%07d", sample.int(n)), b = sprintf("bb%08d", sample.int(n)), stringsAsFactors = FALSE)
+  write_fstx(x, p[1], threads = test_threads(14))
+  write_fstx(x, p[2], threads = 1, .encoding = "no_str_cache")
+  expect_identical(unname(tools::md5sum(p[1])), unname(tools::md5sum(p[2])))
+  expect_identical(read_fstx(p[1]), x)
 })
 
 test_that("bytes are the same at 1 and many threads when only some string chunks get a pointer cache", {

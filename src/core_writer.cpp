@@ -568,8 +568,18 @@ struct WriterImpl {
   }
 
   // ---- encode + compress one page into a slot (worker side)
+  // A number page's rows: in place, or from the host's get_values into the worker's vals.
+  const void* num_rows(const Task& t, const fstx_column_data& d, std::vector<uint64_t>& vals) {
+    const size_t w = cols[t.col].phys == FSTX_FLOAT64 ? 8 : 4;
+    if (d.data) return (const char*)d.data + t.row_start * w;
+    if (vals.size() * 8 < (size_t)t.row_count * w) vals.resize(((size_t)t.row_count * w + 7) / 8);
+    const void* x = d.get_values(d.ctx, t.row_start, t.row_count, vals.data());
+    if (!x) fail(FSTX_ERR_HOST, "the number source of column %u failed", t.col);
+    return x;
+  }
+
   void encode(const Task& t, const fstx_column_data* data, Slot& s, CodecContext& cc, std::vector<const char*>& ptrs,
-              std::vector<int32_t>& lens) {
+              std::vector<int32_t>& lens, std::vector<uint64_t>& vals) {
     const ColDef& col = cols[t.col];
     const fstx_column_data& d = data[t.col];
     PageMeta& pm = s.meta;
@@ -582,7 +592,7 @@ struct WriterImpl {
     cx.cc = &cc;
 
     if (col.phys == FSTX_FLOAT64) {
-      const double* x = (const double*)d.data + t.row_start;
+      const double* x = (const double*)num_rows(t, d, vals);
       FSTX_PROF_BEGIN(prof_st, W_STATS);
       double mn, mx;
       uint32_t na;
@@ -597,7 +607,7 @@ struct WriterImpl {
       cx.force = force_num;
       pm.chain = enc::encode_dbl_page(x, n, cx, s.raw);
     } else if (col.phys == FSTX_INT32 || col.phys == FSTX_LOGICAL) {
-      const int32_t* x = (const int32_t*)d.data + t.row_start;
+      const int32_t* x = (const int32_t*)num_rows(t, d, vals);
       FSTX_PROF_BEGIN(prof_st, W_STATS);
       int32_t mn, mx;
       uint32_t na;
@@ -714,7 +724,7 @@ struct WriterImpl {
     for (uint32_t c = 0; c < cols.size(); ++c) {
       if (cols[c].phys == FSTX_STRING) {
         if (!data[c].get_strings) fail(FSTX_ERR_ARG, "string column %u has no string source", c);
-      } else if (!data[c].data) {
+      } else if (!data[c].data && !data[c].get_values) {
         fail(FSTX_ERR_ARG, "column %u has no data", c);
       }
     }
@@ -744,8 +754,9 @@ struct WriterImpl {
       Slot s;
       std::vector<const char*> ptrs(kVector);
       std::vector<int32_t> lens(kVector);
+      std::vector<uint64_t> vals;
       for (int64_t i = 0; i < N; ++i) {
-        encode(tasks[(size_t)i], data, s, ctx(0), ptrs, lens);
+        encode(tasks[(size_t)i], data, s, ctx(0), ptrs, lens, vals);
         put_page(tasks[(size_t)i], s, base_row);
       }
     } else {
@@ -761,6 +772,7 @@ struct WriterImpl {
       auto job = [&](int id) {
         std::vector<const char*> ptrs(kVector);
         std::vector<int32_t> lens(kVector);
+        std::vector<uint64_t> vals;  // number rows from get_values
         CodecContext& cc = *ctxs[(size_t)id];
         for (;;) {
           int64_t i;
@@ -772,7 +784,7 @@ struct WriterImpl {
           }
           Slot& s = slots[(size_t)(i % W)];
           try {
-            encode(tasks[(size_t)i], data, s, cc, ptrs, lens);
+            encode(tasks[(size_t)i], data, s, cc, ptrs, lens, vals);
           } catch (...) {
             std::lock_guard<std::mutex> g(m);
             if (!err) err = std::current_exception();

@@ -2,9 +2,9 @@
 
 Everything about types is decided here with pyarrow (DESIGN.md sections 3 to 5); ``_core.write`` receives, per
 column, the stored definition (spec 4.2) and Arrow arrays that the binding hands to the engine: the chunks of a
-number column as they are (``_Num``: the binding widens them and writes R's missing values, a window of rows at a
-time, so no joined copy of the column is made), or the string chunks (dictionary-coded when the column repeats
-its values, so that equal strings share one pointer as in R: ``_text_chunks``).
+number column as they are (``_Num``: the binding widens them and writes R's missing values a page at a time,
+as the engine asks for them, so no joined copy of the column is made), or the string chunks (dictionary-coded
+when the column repeats its values, so that equal strings share one pointer as in R: ``_text_chunks``).
 
 Metadata the reader left on a table says how R held a column and is used when it still fits the data
 (keys and helpers in ``_meta.py``; a column without any of it is written as the plain data it is):
@@ -114,7 +114,7 @@ def _one(col) -> pa.Array:
 
 
 class _Num:
-    """A number column as the engine's binding fills it, a window of rows at a time: the Arrow chunks as they are
+    """A number column as the engine's binding hands it over, a page of rows at a time: the Arrow chunks as they are
     (int8, int16, int32, uint8, uint16, int64, bool, date32, float32 or float64; no joined copy of the column),
     missing values left as nulls (the binding writes R's NA in their place). ``add`` is added to every value
     (factor codes from 0-based indices); ``bits``: int64 values kept bit for bit in a double (integer64)."""

@@ -264,7 +264,8 @@ typedef struct fstx_write_options {
 } fstx_write_options;
 
 typedef struct fstx_column_data {
-  /* INT32 / LOGICAL: const int32_t*; FLOAT64: const double*; NULL for STRING. Read in place, never copied. */
+  /* INT32 / LOGICAL: const int32_t*; FLOAT64: const double*; NULL for STRING. Read in place, never copied.
+   * NULL for a number column given through get_values instead. */
   const void* data;
   /* STRING only. Called from worker threads: must only read memory, never allocate or call into the host
    * runtime. Fill ptrs/lens for rows [row, row + n); lens[i] = -1 marks NA.
@@ -274,6 +275,12 @@ typedef struct fstx_column_data {
    * writer keeps them); it never uses them after fstx_writer_append returns. */
   int (*get_strings)(void* ctx, uint64_t row, uint32_t n, const char** ptrs, int32_t* lens);
   void* ctx;
+  /* INT32 / LOGICAL / FLOAT64 when data is NULL (optional: NULL when data is set). Called from worker threads
+   * under the same rules as get_strings, one page's rows at a time: returns rows [row, row + n) as data would
+   * hold them (int32_t / double), either a pointer into host memory or buf after filling it (the writer's, room
+   * for n values, 8-byte aligned). The writer reads them before the thread's next call. NULL fails the write with
+   * FSTX_ERR_HOST. Same file as with data. */
+  const void* (*get_values)(void* ctx, uint64_t row, uint32_t n, void* buf);
 } fstx_column_data;
 
 int fstx_writer_open(const char* path_utf8, const fstx_write_column* cols, uint32_t n_cols,

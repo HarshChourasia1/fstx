@@ -206,8 +206,9 @@ struct StrChunk {
   std::vector<const char*> cptr;
   std::vector<int32_t> clen;
 };
-// String pointer cache budget per write or append call: at most 64 MB (about 5.6 million cached strings).
-constexpr uint64_t kStrCacheBytes = 64ull << 20;
+// String pointer cache budget per write or append call: at most 8 MB (about 700,000 cached strings). 64 MB until
+// v1.0.2: R writes were 3-5% faster with it but took 57-70 MB more (desk, 27 Nov 2026).
+constexpr uint64_t kStrCacheBytes = 8ull << 20;
 constexpr uint64_t kTestStrCacheBytes = 12ull * 150000;  // tests (F_SMALL_STR_CACHE): 150,000 rows' worth
 
 // Reads rows [r0, r1) through the host callback, picks dictionary / FSST / plain, builds what the pages
