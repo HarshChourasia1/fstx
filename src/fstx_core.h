@@ -109,6 +109,10 @@ int fstx_plan_create(const fstx_file* f, const uint32_t* cols, uint32_t n_cols, 
  * that hold requested rows are read; pages without a codec decode only the 1,024-row vectors needed. */
 int fstx_plan_create_rows(const fstx_file* f, const uint32_t* cols, uint32_t n_cols, const uint64_t* rows,
                           uint64_t n_rows, fstx_plan** out, fstx_error* err);
+/* Rows plans with rows in ascending order (repeats allowed): output column out_index, a string column, delivers
+ * its dictionary-coded pages as codes instead of strings: on_dict (the page's dictionary, when it differs from the
+ * one sent before for this column), then on_codes for its rows. Pages without a dictionary still come as strings. */
+int fstx_plan_rows_codes(fstx_plan* p, uint32_t out_index, fstx_error* err);
 void fstx_plan_free(fstx_plan* p);
 uint64_t fstx_plan_rows(const fstx_plan* p);
 
@@ -130,7 +134,7 @@ typedef struct fstx_read_host {
    * (0-based; -1 = NA). Codes are checked against the dictionary size before this call. */
   int (*on_codes)(void* ctx, uint32_t out_index, uint64_t dest_row, uint32_t n, const int32_t* codes);
   /* Main thread, rows plans whose rows are not ascending: string i goes to output row dest[i] (laid out like
-   * on_strings). Rows plans never call on_dict / on_codes. */
+   * on_strings). Rows plans call on_dict / on_codes only for columns set with fstx_plan_rows_codes. */
   int (*on_strings_at)(void* ctx, uint32_t out_index, uint32_t n, const uint64_t* dest, const int32_t* lens,
                        const char* bytes);
 } fstx_read_host;

@@ -659,5 +659,91 @@ void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n
   }
 }
 
+// Rows plans (reads of scattered rows): only the strings at positions idx[0..cnt) of a K_STR page (ascending,
+// repeats allowed). Every length is decoded and checked as in decode_str_page; FSST pages decompress only the
+// strings asked for (the page's total decoded size is then not checked: the page checksum covers a corrupt page).
+void decode_str_page_rows(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, const uint32_t* idx,
+                          uint32_t cnt, std::vector<int32_t>& all, std::vector<int32_t>& lens, std::vector<char>& out) {
+  check_str_header(body, len, chain, n, K_STR);
+  Rd rd{body + 8, body + len};
+  Blk nb{};
+  const int na = body[1];
+  if (na) nb = rd.next();
+  if (rd.peek() != chain_tag(chain, 0)) corrupt("encoding does not match the page directory");
+  Blk vb = rd.next();
+  if (!rd.done()) corrupt("trailing bytes");
+  all.resize(n);
+  lens.resize(cnt);
+  out.clear();
+  for (uint32_t k = 1; k < cnt; ++k)
+    if (idx[k] < idx[k - 1]) corrupt("internal: rows out of order");
+  if (cnt && idx[cnt - 1] >= n) corrupt("internal: row outside the page");
+  const int32_t zero = 0;
+  if (vb.tag == T_PLAIN) {
+    Cur c(vb);
+    Rd in = c.rest();
+    decode_int32_blk(in, all.data(), n, 1);
+    Blk bb = in.next();
+    if (bb.tag != T_PLAIN) corrupt("string bytes");
+    uint64_t tot = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+      if (all[i] < 0) corrupt("string length");
+      tot += (uint64_t)all[i];
+    }
+    if (tot != bb.len) corrupt("string lengths do not match the bytes");
+    if (na) na_apply_i32(nb, na, n, all.data(), -1, &zero);
+    uint64_t off = 0;
+    uint32_t i = 0;
+    for (uint32_t k = 0; k < cnt; ++k) {
+      for (; i < idx[k]; ++i) off += (uint64_t)std::max(0, all[i]);
+      const int32_t l = all[i];
+      lens[k] = l;
+      if (l > 0) out.insert(out.end(), (const char*)bb.p + off, (const char*)bb.p + off + l);
+    }
+  } else if (vb.tag == T_FSST) {
+    Cur c(vb);
+    const uint64_t total = get_u64(c.take(8));
+    Rd in = c.rest();
+    Blk tb = in.next();
+    if (tb.tag != T_PLAIN || !fsst_table_ok(tb.p, tb.len)) corrupt("FSST symbol table");
+    fsst_decoder_t dec;
+    if (fsst_import(&dec, tb.p) == 0) corrupt("FSST symbol table");
+    Blk bb = in.next();
+    if (bb.tag != T_PLAIN) corrupt("FSST bytes");
+    decode_int32_blk(in, all.data(), n, 1);
+    uint64_t csum = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+      if (all[i] < 0) corrupt("FSST length");
+      csum += (uint64_t)all[i];
+    }
+    if (csum != bb.len || total > 8 * csum || total > kMaxRawPage) corrupt("FSST sizes");
+    if (na) na_apply_i32(nb, na, n, all.data(), -1, &zero);
+    const unsigned char* src = bb.p;
+    uint32_t i = 0;
+    for (uint32_t k = 0; k < cnt; ++k) {
+      for (; i < idx[k]; ++i) src += (size_t)std::max(0, all[i]);
+      const int32_t cl0 = all[i];
+      if (cl0 <= 0) {
+        lens[k] = cl0 < 0 ? -1 : 0;
+        continue;
+      }
+      const size_t cl = (size_t)cl0;
+      if (src[cl - 1] == 255) {  // a lone escape at the end (see decode_str_page)
+        size_t esc = 1;
+        while (esc < cl && src[cl - 1 - esc] == 255) ++esc;
+        if (esc & 1) corrupt("FSST escape at the end of a string");
+      }
+      const size_t at = out.size(), cap = 8 * cl + 32;  // a code expands to at most 8 bytes
+      out.resize(at + cap);
+      const size_t got = fsst_decompress(&dec, cl, src, cap, (unsigned char*)out.data() + at);
+      if (got > total || got > 8 * cl) corrupt("FSST string longer than the page");
+      out.resize(at + got);
+      lens[k] = (int32_t)got;
+    }
+  } else {
+    corrupt("unknown string encoding");
+  }
+}
+
 }  // namespace enc
 }  // namespace fstx
