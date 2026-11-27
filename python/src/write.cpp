@@ -608,6 +608,7 @@ bool over_half_distinct(nb::list chunks) {
       if (is_null(c, i)) continue;
       int64_t a, b;
       span_of(c, i, &a, &b);
+      if (a < 0 || b < a) return true;  // damaged offsets: the column goes as it is, and the check names them
       const unsigned char* p = (const unsigned char*)c.bytes + a;
       const int64_t len = b - a;
       const uint64_t hh = hash_bytes(p, (size_t)len);

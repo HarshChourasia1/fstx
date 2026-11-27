@@ -531,6 +531,22 @@ def test_over_half_distinct_is_count_distinct(case):
     assert _core.over_half_distinct([c.__arrow_c_array__() for c in col.chunks]) == want
 
 
+def test_refused_damaged_offsets_in_a_long_column(tmp_path):
+    # offsets that go backwards, past the first 65,536 rows' distinct count and into the string check
+    import numpy as np
+
+    n = 70_000
+    offs = np.arange(n + 1, dtype="int32") * 2
+    offs[40_000] = 5  # value 39,999 ends before it starts
+    data = pa.py_buffer(b"ab" * n)
+    bad = pa.Array.from_buffers(pa.string(), n, [None, pa.py_buffer(offs.tobytes()), data])
+    p = tmp_path / "bad.fstx"
+    with pytest.raises(ValueError, match="damaged string offsets") as e:
+        fstx.write_fstx(pa.table({"s": bad}), p)
+    assert "(row 39999)" in str(e.value)
+    assert not p.exists()
+
+
 def test_refused_int32_na_value_anywhere(tmp_path):
     # R's NA_integer_ as a value is looked for in every chunk, on all threads, before the file is touched; under
     # a missing value it does not count
