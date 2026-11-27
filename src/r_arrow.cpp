@@ -709,7 +709,13 @@ void str_bits(StrCol& C) {
 // tasks on the pool. Phase 2: string columns are laid out page by page (dictionary output: one task a column).
 void batch_range(const Stream& S, uint64_t a, uint64_t b, uint64_t n, ArrayHold* h, std::vector<uint8_t>& bad) {
   const size_t nc = S.cols.size();
-  const int parts = nc && nc < (size_t)S.threads ? (int)(((size_t)S.threads + nc - 1) / nc) : 1;
+  // fixed-width columns in row parts: about 3 tasks a thread over all the columns (columns differ in cost, so a
+  // task a thread leaves most threads idle at the end), parts of at least 32,768 rows
+  int parts = 1;
+  if (nc && S.threads > 1) {
+    const uint64_t want = ((uint64_t)S.threads * 3 + nc - 1) / nc, most = std::max<uint64_t>(1, n >> 15);
+    parts = (int)std::min(want, most);
+  }
   std::vector<std::unique_ptr<FixedCol>> fx(nc);
   std::vector<std::unique_ptr<StrCol>> sx(nc);
   struct Task {
