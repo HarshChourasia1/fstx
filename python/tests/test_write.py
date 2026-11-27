@@ -577,6 +577,32 @@ def test_refused_strings_checked_on_many_threads(tmp_path):
             assert not p.exists()
 
 
+def test_repeated_strings_in_many_dictionaries(tmp_path):
+    # a repeating column is coded in slices on many threads, each with its own dictionary; equal strings still
+    # reach the engine as one pointer: the same file as one dictionary (one thread), and as chunks that each
+    # bring a dictionary of their own (other values, other order, missing values, a value missing from some)
+    n = 1_200_000
+    vals = [None if i % 97 == 0 else f"code-{(i * 7919) % 300:03d}" for i in range(n)]
+    plain = pa.array(vals)
+    p, q, r = tmp_path / "one.fstx", tmp_path / "many.fstx", tmp_path / "own.fstx"
+    fstx.write_fstx(pa.table({"s": plain}), p, threads=1)
+    fstx.write_fstx(pa.table({"s": plain}), q, threads=None)
+    assert p.read_bytes() == q.read_bytes()
+    cuts = [0, 5, 70_000, 600_000, 1_100_000, n]
+    own = pa.chunked_array([plain.slice(a, b - a).dictionary_encode() for a, b in zip(cuts, cuts[1:])])
+    assert len({c.dictionary.buffers()[2].address for c in own.chunks}) == len(cuts) - 1
+    # (a dictionary-typed column is a factor; as text it goes through the string path of the binding directly)
+    from fstx import _write as W
+    col = W._Col("s", W._STRING, list(own.chunks))
+    spec = [(col.name, col.phys, col.logical, col.ordered, col.levels, col.tzone, col.attrs,
+             [a.__arrow_c_array__() for a in col.data], 0, False)]
+    from fstx import _core
+    _core.write(str(r), spec, W._table_blob(pa.table({"s": plain}), W._NO_INDEX), n, _core.CODEC_ZSTD, 3, 0, 1, 10,
+                False)
+    assert r.read_bytes() == p.read_bytes()
+    assert fstx.read_fstx(r).column("s").combine_chunks().equals(plain)
+
+
 def test_repeated_strings_are_dictionary_coded(tmp_path):
     # equal strings reach the engine as one pointer, as R's string cache gives them, so a column of 20 values
     # is stored as a dictionary (as R stores it), across chunks and with missing values

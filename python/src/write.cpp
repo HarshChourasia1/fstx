@@ -41,12 +41,18 @@ struct StrChunk {
   const uint8_t* ivalid = nullptr;
   int64_t ibit0 = 0;
   uint64_t dict_rows = 0;
+  // when the column's chunks have more than one dictionary: each dictionary value's pointer and length in the
+  // first dictionary that holds the same bytes (NA: nullptr, -1), so equal strings reach the engine as one pointer
+  const char* const* cptr = nullptr;
+  const int32_t* clen = nullptr;
 };
 
 struct StrSrc {
   std::vector<StrChunk> chunks;
   std::vector<uint64_t> first;  // first row of each chunk
   uint64_t base = 0;            // row of the table where the current engine call starts
+  std::vector<std::vector<const char*>> cptr;  // StrChunk::cptr / clen, one per dictionary
+  std::vector<std::vector<int32_t>> clen;
 };
 
 inline bool bit_off(const uint8_t* bits, int64_t b) { return bits && !((bits[b >> 3] >> (b & 7)) & 1); }
@@ -222,6 +228,12 @@ int get_strings(void* ctx, uint64_t row, uint32_t n, const char** ptrs, int32_t*
     if (c.idx) {
       na = bit_off(c.ivalid, c.ibit0 + (int64_t)i);
       if (!na) v = (uint64_t)c.idx[i];
+      if (!na && c.cptr) {
+        ptrs[j] = c.cptr[v];
+        lens[j] = c.clen[v];
+        ++i;
+        continue;
+      }
     }
     if (na || is_null(c, v)) {
       ptrs[j] = nullptr;
@@ -494,6 +506,70 @@ inline uint64_t hash_bytes(const unsigned char* p, size_t n) {
   return h ^ (h >> 29);
 }
 
+// A column whose chunks are coded with more than one dictionary (_write.py codes slices in parallel): every
+// dictionary value gets the pointer of the first value, in chunk order, with the same bytes. Runs after the check
+// (sound offsets).
+void same_pointers(StrSrc& s) {
+  std::vector<size_t> dict_of(s.chunks.size(), SIZE_MAX);
+  std::vector<const StrChunk*> dicts;
+  for (size_t k = 0; k < s.chunks.size(); ++k) {
+    const StrChunk& c = s.chunks[k];
+    if (!c.idx) continue;
+    for (size_t d = 0; d < dicts.size() && dict_of[k] == SIZE_MAX; ++d)
+      if (dicts[d]->offsets == c.offsets && dicts[d]->dict_rows == c.dict_rows) dict_of[k] = d;
+    if (dict_of[k] == SIZE_MAX) {
+      dict_of[k] = dicts.size();
+      dicts.push_back(&c);
+    }
+  }
+  if (dicts.size() < 2) return;
+  uint64_t total = 0;
+  for (const StrChunk* c : dicts) total += c->dict_rows;
+  size_t cap = 16;
+  while (cap < 2 * total) cap <<= 1;
+  std::vector<int64_t> slot(cap, -1);
+  std::vector<uint64_t> hv;
+  std::vector<std::pair<const char*, int32_t>> vals;
+  s.cptr.resize(dicts.size());
+  s.clen.resize(dicts.size());
+  for (size_t d = 0; d < dicts.size(); ++d) {
+    const StrChunk& c = *dicts[d];
+    std::vector<const char*>& cp = s.cptr[d];
+    std::vector<int32_t>& cl = s.clen[d];
+    cp.assign((size_t)c.dict_rows, nullptr);
+    cl.assign((size_t)c.dict_rows, -1);
+    for (uint64_t v = 0; v < c.dict_rows; ++v) {
+      if (is_null(c, v)) continue;
+      int64_t a, b;
+      span_of(c, v, &a, &b);
+      const char* p = c.bytes + a;
+      const int32_t len = (int32_t)(b - a);
+      const uint64_t h = hash_bytes((const unsigned char*)p, (size_t)len);
+      size_t i = (size_t)(h & (cap - 1));
+      for (;; i = (i + 1) & (cap - 1)) {
+        const int64_t e = slot[i];
+        if (e < 0) {
+          slot[i] = (int64_t)vals.size();
+          vals.push_back({p, len});
+          hv.push_back(h);
+          break;
+        }
+        if (hv[(size_t)e] == h && vals[(size_t)e].second == len && std::memcmp(vals[(size_t)e].first, p, (size_t)len) == 0) {
+          p = vals[(size_t)e].first;
+          break;
+        }
+      }
+      cp[(size_t)v] = p;
+      cl[(size_t)v] = len;
+    }
+  }
+  for (size_t k = 0; k < s.chunks.size(); ++k)
+    if (dict_of[k] != SIZE_MAX) {
+      s.chunks[k].cptr = s.cptr[dict_of[k]].data();
+      s.chunks[k].clen = s.clen[dict_of[k]].data();
+    }
+}
+
 // Whether more than half of the rows of these string / binary chunks are distinct values (missing values not
 // counted as values): pyarrow's count_distinct(chunks) * 2 > rows, stopping as soon as the answer is known.
 // chunks: (schema capsule, array capsule) pairs.
@@ -706,6 +782,12 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
     try {
       na_col = int_na_column(cols, defs, nthreads);
       if (na_col < 0) bad = check_strings(cols, defs, nthreads, &bad_col, &bad_row);
+      if (na_col < 0 && !bad) {
+        std::vector<size_t> sc;
+        for (size_t j = 0; j < nc; ++j)
+          if (defs[j].phys == FSTX_STRING) sc.push_back(j);
+        run_parallel(sc.size(), nthreads, [&](size_t i) { same_pointers(cols[sc[i]].src); });
+      }
     } catch (const std::exception& e) {  // no thread or no memory
       rc = FSTX_ERR_MEMORY;
       std::snprintf(err.message, sizeof(err.message), "write_fstx: %s", e.what());

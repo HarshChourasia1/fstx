@@ -148,8 +148,8 @@ def _pool() -> ThreadPoolExecutor:
 def _text_chunks(col: pa.ChunkedArray, threads: int = 0) -> List[pa.Array]:
     """The chunks of a string column as the engine takes them. The engine's string dictionary keys on pointers
     (R's string cache gives equal strings one pointer), so a column that repeats its values goes as int32 codes
-    into one dictionary shared by every chunk: equal strings then reach it as one pointer and are dictionary-coded
-    as R codes them. A column of mostly distinct values (more than half of its first 65,536 rows, where the
+    into dictionaries (one per slice coded): the binding gives equal strings one pointer, so they are
+    dictionary-coded as R codes them. A column of mostly distinct values (more than half of its first 65,536 rows, where the
     engine would give up) goes as it is. Long columns are coded in `threads` slices at once (0 = all cores)."""
     n = len(col)
     if n < 2 or col.null_count >= n - 1:
@@ -166,8 +166,7 @@ def _text_chunks(col: pa.ChunkedArray, threads: int = 0) -> List[pa.Array]:
                                   for c in part.chunks], pa.dictionary(pa.int32(), col.type))
     else:
         coded = col.dictionary_encode()
-    if len({c.dictionary.buffers()[1].address for c in coded.chunks}) > 1:
-        coded = coded.unify_dictionaries()
+    # (no unify_dictionaries: the binding gives equal strings in different dictionaries one pointer)
     return list(coded.chunks)
 
 
