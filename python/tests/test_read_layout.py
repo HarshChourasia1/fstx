@@ -184,7 +184,7 @@ def test_buffers_kept_between_reads(tmp_path):
     # string page buffers and workers' decode state go from one read to the next (any sizes, any contents): reads of
     # two files with different pages, one after the other and from two threads at once, give each file's table
     a = _table(60_001, 11)
-    b = pa.table({"s": pa.array(["%d" % k * (k % 7) for k in range(90_003)]), "i": pa.array(range(90_003))})
+    b = pa.table({"s": pa.array(["%d" % k * (k % 7) for k in range(90_003)]), "i": pa.array(range(90_003), pa.int32())})
     pa_, pb = tmp_path / "a.fstx", tmp_path / "b.fstx"
     fstx.write_fstx(a, pa_)
     fstx.write_fstx(b, pb, compress="zstd")
