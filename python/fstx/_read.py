@@ -448,12 +448,10 @@ class _Stream:
 
 
 def _batches(plan: _Plan, schema: pa.Schema, sel: _Rows, threads: int, batch_rows: int, verify: int,
-             st: _State, plain: bool = True, span: bool = False) -> Iterator[pa.RecordBatch]:
+             st: _State, plain: bool = True) -> Iterator[pa.RecordBatch]:
     """The finished batches of a read (not called for an empty selection or for no columns). plain: the stream
-    lays out dictionary-coded string columns as plain strings (else they come as dictionaries). span: one batch over
-    all the rows where the stream can (no batch per row group: one set of tasks for the whole read)."""
-    flags = (_core.ARROW_CHECK_UTF8 | (_core.ARROW_PLAIN_STRINGS if plain else 0) |
-             (_core.ARROW_SPAN_GROUPS if span else 0))
+    lays out dictionary-coded string columns as plain strings (else they come as dictionaries)."""
+    flags = _core.ARROW_CHECK_UTF8 | (_core.ARROW_PLAIN_STRINGS if plain else 0)
     # every engine call takes the engine lock (_engine.py); between batches other threads get their turn
     with _ENGINE_LOCK:
         # the capsule also holds the stream's UTF-8 flags: it stays referenced here while the batches are pulled
@@ -520,7 +518,7 @@ def read(f: File, columns=None, rows=None, filters=None, *, threads=None, verify
         return _no_columns(sel.n, schema)
     st = _State()
     stream_n = sel.n if sel.take is None else len(sel.sel) // 8
-    batches = list(_batches(plan, schema, sel, nt, 0, vf, st, plain=not fac, span=not fac)) if stream_n else []
+    batches = list(_batches(plan, schema, sel, nt, 0, vf, st, plain=not fac)) if stream_n else []
     if not batches:  # no rows: one empty batch, so that factors keep their levels
         batches = [_empty(plan, schema)]
     table = pa.Table.from_batches(batches, schema=schema)

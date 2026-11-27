@@ -231,7 +231,6 @@ struct Stream : Live {
   uint64_t batch_rows = 0;
   int verify = 1;
   bool plain = false;              // FSTX_ARROW_PLAIN_STRINGS
-  bool span = false;               // FSTX_ARROW_SPAN_GROUPS, and every column allows it
   uint8_t* utf8_bad = nullptr;     // FSTX_ARROW_CHECK_UTF8: the caller's flags, one per column
   std::vector<fstx_bufpool*> bufs;  // per column: string page buffers kept from one batch for the next
   fstx_scratchset* scratch = nullptr;  // the workers' codec contexts and page buffers, kept between batches
@@ -710,8 +709,7 @@ void str_bits(StrCol& C) {
 // tasks on the pool. Phase 2: string columns are laid out page by page (dictionary output: one task a column).
 void batch_range(const Stream& S, uint64_t a, uint64_t b, uint64_t n, ArrayHold* h, std::vector<uint8_t>& bad) {
   const size_t nc = S.cols.size();
-  int parts = nc && nc < (size_t)S.threads ? (int)(((size_t)S.threads + nc - 1) / nc) : 1;
-  if (n > (1u << 20)) parts *= (int)std::min<uint64_t>(n >> 20, 1024);  // a batch over many row groups: as many parts a row group
+  const int parts = nc && nc < (size_t)S.threads ? (int)(((size_t)S.threads + nc - 1) / nc) : 1;
   std::vector<std::unique_ptr<FixedCol>> fx(nc);
   std::vector<std::unique_ptr<StrCol>> sx(nc);
   struct Task {
@@ -845,7 +843,7 @@ int stream_get_next(ArrowArrayStream* st, ArrowArray* out) {
         return 0;
       }
       a = S.pos;
-      b = S.span && !S.batch_rows ? S.to : std::min(S.to, rg_end_of(S, a));
+      b = std::min(S.to, rg_end_of(S, a));
       if (b - a > cap) b = a + cap;
       n = b - a;
       next = b;
@@ -1014,37 +1012,6 @@ extern "C" int fstx_arrow_stream_open(const char* path, const fstx_arrow_args* A
       }
       S->bufs.push_back(c.phys == FSTX_STRING ? fstx_bufpool_new() : nullptr);
       S->cols.push_back(std::move(c));
-    }
-    // one batch over all the rows: every utf8 column's text must stay under 2 GB for sure. Bound: 8 bytes per byte
-    // of a plain / FSST page (FSST expands at most 8x), and the longest dictionary entry per row of a page of codes.
-    S->span = (A->flags & FSTX_ARROW_SPAN_GROUPS) && !S->by_rows && !A->batch_rows && r1 > r0;
-    for (size_t j = 0; j < S->cols.size() && S->span; ++j) {
-      const ColSpec& c = S->cols[j];
-      if (c.out == O_DICT_STR) S->span = false;
-      if (c.out != O_UTF8) continue;
-      uint64_t bound = 0, coded = 0;
-      for (const fstx_page_info& p : pi) {
-        if (p.column != c.col || p.is_dictionary || p.first_row + p.row_count <= r0 || p.first_row >= r1) continue;
-        if (std::strcmp(fstx_kind_name(p.kind), "codes") == 0) coded += p.row_count;
-        else bound += 8ull * p.raw_len;
-      }
-      if (coded) {
-        fstx_colsrc* s = nullptr;
-        if (fstx_colsrc_open(S->f, c.col, r0, r1, 0, 0, &s, err) != FSTX_OK) return err->code;
-        SrcPtr sp(s);
-        fstx_colsrc_info si;
-        fstx_colsrc_info_get(s, &si);
-        int32_t longest = 0;
-        for (uint32_t d = 0; d < si.n_dicts; ++d) {
-          uint32_t dn = 0;
-          const int32_t* dl = nullptr;
-          const char* db = nullptr;
-          if (fstx_colsrc_dict(s, d, &dn, &dl, &db, err) != FSTX_OK) return err->code;
-          for (uint32_t k = 0; k < dn; ++k) longest = std::max(longest, dl[k]);
-        }
-        bound += coded * (uint64_t)longest;
-      }
-      if (bound > (uint64_t)INT32_MAX) S->span = false;
     }
   } catch (const std::bad_alloc&) {
     err->code = FSTX_ERR_MEMORY;
