@@ -502,10 +502,17 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
   opt.threads = threads;
   opt.profile = profile;
   opt.keep_pct = keep_pct;
-  // whole row groups per engine call: an append keeps the file's row group size, which is not known here, so it
-  // goes in one call
+  // Rows per engine call. One call when every number column can be passed in place (or for an append, which keeps
+  // the file's row group size, not known here). Else whole row groups per call, so the window buffers stay small:
+  // one row group, or two when there are string columns (a string chunk's prep has steps that read its rows in
+  // order, the dictionary attempt and the FSST choice; two row groups a call keep two of them side by side).
+  bool fills = false, strings = false;
+  for (size_t j = 0; j < nc; ++j) {
+    if (defs[j].phys == FSTX_STRING) strings = true;
+    else if (nrow && !in_place(cols[j].num, defs[j].phys, 0, nrow)) fills = true;
+  }
   if (!append) opt.row_group_size = kRowGroup;
-  const uint64_t win = append ? std::max<uint64_t>(nrow, 1) : kRowGroup;
+  const uint64_t win = append || !fills ? std::max<uint64_t>(nrow, 1) : kRowGroup * (strings ? 2 : 1);
   const int nthreads = threads > 0 ? threads : (int)fstx_hardware_threads();
 
   fstx_error err;
