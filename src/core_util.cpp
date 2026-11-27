@@ -147,6 +147,7 @@ FileId file_id_of_path(const std::string& path) {
 MappedFile::~MappedFile() {
   if (data_) UnmapViewOfFile(data_);
   if (mapping_) CloseHandle((HANDLE)mapping_);
+  if (rfile_) CloseHandle((HANDLE)rfile_);
   if (file_ && file_ != INVALID_HANDLE_VALUE) CloseHandle((HANDLE)file_);
 }
 
@@ -167,12 +168,48 @@ void MappedFile::open(const std::string& path) {
   void* v = MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0);
   if (!v) fail(FSTX_ERR_IO, "cannot map '%s' (%s)", path.c_str(), win_error_text(GetLastError()).c_str());
   data_ = (const uint8_t*)v;
+  // ReOpenFile: the same file (never another one at the same path), opened for overlapped reads so that threads
+  // can read at their own offsets at once; read_at copies from the mapping if this is not possible
+  HANDLE r = ReOpenFile(h, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, FILE_FLAG_OVERLAPPED);
+  rfile_ = r == INVALID_HANDLE_VALUE ? nullptr : r;
 }
 
 void MappedFile::release(uint64_t off, uint64_t n) const {
   if (!data_ || n == 0 || off >= size_) return;
   const uint64_t a = off & ~(uint64_t)4095, e = std::min(size_, off + n);
   VirtualUnlock((LPVOID)(data_ + a), (SIZE_T)(e - a));  // not locked: this just trims the working set
+}
+
+namespace {
+struct ReadEvent {  // one event per thread for overlapped reads
+  HANDLE h = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  ~ReadEvent() {
+    if (h) CloseHandle(h);
+  }
+};
+}  // namespace
+
+void MappedFile::read_at(uint64_t off, void* dst, size_t n) const {
+  if (off > size_ || n > size_ - off) fail(FSTX_ERR_INTERNAL, "read outside the file");
+  static thread_local ReadEvent ev;
+  uint8_t* d = (uint8_t*)dst;
+  while (n && rfile_ && ev.h) {
+    OVERLAPPED o;
+    std::memset(&o, 0, sizeof(o));
+    o.Offset = (DWORD)(off & 0xFFFFFFFFull);
+    o.OffsetHigh = (DWORD)(off >> 32);
+    o.hEvent = ev.h;
+    const DWORD want = (DWORD)std::min<size_t>(n, (size_t)1 << 30);
+    DWORD got = 0;
+    if (!ReadFile((HANDLE)rfile_, d, want, &got, &o)) {
+      if (GetLastError() != ERROR_IO_PENDING || !GetOverlappedResult((HANDLE)rfile_, &o, &got, TRUE)) break;
+    }
+    if (got == 0) break;
+    d += got;
+    off += got;
+    n -= got;
+  }
+  if (n) std::memcpy(d, data_ + off, n);  // no reopened handle, or the read stopped: the mapping has the bytes
 }
 
 OutFile::~OutFile() { close_and_delete(); }
@@ -321,6 +358,19 @@ void MappedFile::open(const std::string& path) {
   void* v = mmap(nullptr, (size_t)size_, PROT_READ, MAP_SHARED, fd_, 0);
   if (v == MAP_FAILED) fail(FSTX_ERR_IO, "cannot map '%s'", path.c_str());
   data_ = (const uint8_t*)v;
+}
+
+void MappedFile::read_at(uint64_t off, void* dst, size_t n) const {
+  if (off > size_ || n > size_ - off) fail(FSTX_ERR_INTERNAL, "read outside the file");
+  uint8_t* d = (uint8_t*)dst;
+  while (n && fd_ >= 0) {
+    const ssize_t got = ::pread(fd_, d, std::min<size_t>(n, (size_t)1 << 30), (off_t)off);
+    if (got <= 0) break;  // EINTR included: the mapping has the bytes
+    d += got;
+    off += (uint64_t)got;
+    n -= (size_t)got;
+  }
+  if (n) std::memcpy(d, data_ + off, n);
 }
 
 // madvise needs page-aligned addresses: 4 KB on x86, but 16 KB on Apple silicon and 4-64 KB on Linux ARM

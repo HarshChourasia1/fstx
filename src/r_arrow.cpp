@@ -1,9 +1,10 @@
 // FST-X R layer, 1.0: Arrow C stream straight from the file (WS2). MIT licence.
 // The stream is built on the public engine calls of fstx_core.h (column sources), one batch per row group (or
 // smaller, batch_rows). Its callbacks are plain C++ and never call R: DuckDB, Polars or arrow may call them from
-// their own threads. Errors come back through the stream's error slot. Pages decode in parallel inside a batch
-// (columns, and row parts of fixed-width columns, on own threads); fixed-width columns decode straight into the
-// Arrow buffers, strings are copied once from the decoded pages.
+// their own threads. Errors come back through the stream's error slot. Range batches: every string page and every
+// row part of a fixed-width column decodes as a task on the engine pool; fixed-width columns decode straight into
+// the Arrow buffers, string pages are then copied once into them, page by page in parallel (batch_range).
+// Row-list batches: arrow_rows.h.
 // Everything above the R glue at the bottom builds without R (-DFSTX_ARROW_NO_R, for the fuzz target).
 #include <algorithm>
 #include <atomic>
@@ -234,6 +235,7 @@ struct Stream : Live {
   std::vector<fstx_bufpool*> bufs;  // per column: string page buffers kept from one batch for the next
   fstx_scratchset* scratch = nullptr;  // the workers' codec contexts and page buffers, kept between batches
   std::string error;
+  std::shared_ptr<void> rows_all;  // arrow_rows.h: a selection decoded once for all its batches
   ~Stream() {
     fstx_scratchset_free(scratch);
     for (fstx_bufpool* p : bufs) fstx_bufpool_free(p);
@@ -267,15 +269,14 @@ SrcPtr open_src(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b) {
   return SrcPtr(s);
 }
 
-// A fixed-width column (int, double, logical, factor codes, Date, POSIXct) of a batch over file rows [a, b); sel
-// (rows relative to a) or NULL for all of them. fixed_prep sets up its Arrow array on the calling thread; then
+// A fixed-width column (int, double, logical, factor codes, Date, POSIXct) of a range batch over file rows [a, b)
+// (row-list batches: arrow_rows.h). fixed_prep sets up its Arrow array on the calling thread; then
 // fixed_part fills output rows [i0, i1), one call or several at once on different threads. Parts split at page
 // edges that fall on a whole byte of the bitmaps, so no page is decoded twice and no byte is written by two parts.
 struct FixedCol {
   const ColSpec* c = nullptr;
   ArrowArray* out = nullptr;
   uint64_t a = 0, n = 0;
-  const uint64_t* sel = nullptr;
   bool same = false;  // the Arrow values are the stored values: decoded straight into the Arrow buffer
   bool scan = true;   // look for NAs (straight decode: only when a page of the batch has any, as before the split)
   void* vals = nullptr;
@@ -300,7 +301,7 @@ std::vector<uint64_t> fixed_prep(const Stream& S, FixedCol& F, uint64_t b, int p
   SrcPtr s = open_src(S, c, F.a, b);
   fstx_colsrc_info si;
   fstx_colsrc_info_get(s.get(), &si);
-  F.same = !F.sel && (c.out == O_INT32 || c.out == O_FLOAT64 || (c.out == O_DATE && c.phys == FSTX_INT32));
+  F.same = (c.out == O_INT32 || c.out == O_FLOAT64 || (c.out == O_DATE && c.phys == FSTX_INT32));
   F.scan = !F.same || si.null_count;
   array_init(F.out, (int64_t)n, 2);
   const size_t ow = c.out == O_BOOL ? 0 : (c.out == O_FLOAT64 || c.out == O_TS) ? 8 : 4;
@@ -323,7 +324,7 @@ std::vector<uint64_t> fixed_prep(const Stream& S, FixedCol& F, uint64_t b, int p
       uint64_t first = 0;
       uint32_t k = 0;
       fstx_colsrc_page_span(s.get(), q, &first, &k);
-      const uint64_t i = F.sel ? (uint64_t)(std::lower_bound(F.sel, F.sel + n, first) - F.sel) : first;
+      const uint64_t i = first;
       if (i > 0 && i < n && i % 8 == 0 && (edges.empty() || i > edges.back())) edges.push_back(i);
     }
     for (int p = 1; p < parts; ++p) {  // the first edge at or past each p/parts of the rows
@@ -337,8 +338,7 @@ std::vector<uint64_t> fixed_prep(const Stream& S, FixedCol& F, uint64_t b, int p
 
 void fixed_part(const Stream& S, FixedCol& F, uint64_t i0, uint64_t i1, int threads, fstx_scratch* ws = nullptr) {
   const ColSpec& c = *F.c;
-  const uint64_t* sel = F.sel;
-  const uint64_t lo = sel ? sel[i0] : i0, hi = sel ? sel[i1 - 1] + 1 : i1;  // file rows, relative to a
+  const uint64_t lo = i0, hi = i1;  // file rows, relative to a
   SrcPtr s = open_src(S, c, F.a + lo, F.a + hi);
   fstx_error e;
   const size_t w = c.phys == FSTX_FLOAT64 ? 8 : 4;
@@ -381,7 +381,7 @@ void fixed_part(const Stream& S, FixedCol& F, uint64_t i0, uint64_t i1, int thre
   }
   load(tmp);
   s.reset();
-  auto at = [&](uint64_t i) { return (sel ? sel[i] : i) - lo; };
+  auto at = [&](uint64_t i) { return i - lo; };
   if (c.phys == FSTX_FLOAT64) {
     const double* x = (const double*)tmp;
     auto is_na = [](double d) {
@@ -449,49 +449,6 @@ void fixed_part(const Stream& S, FixedCol& F, uint64_t i0, uint64_t i1, int thre
   F.nulls += nulls;
 }
 
-template <typename O>
-void plain_strings(const ColSpec& c, uint64_t n, const std::vector<const char*>& ptrs, const std::vector<int32_t>& lens,
-                   ArrowArray* out, Validity& v) {
-  O* off = (O*)array_buf(out, 1, (size_t)(n + 1) * sizeof(O));
-  uint64_t tot = 0;
-  off[0] = 0;
-  for (uint64_t i = 0; i < n; ++i) {
-    if (lens[i] < 0) v.null_at(i);
-    else tot += (uint64_t)lens[i];
-    if (tot > (uint64_t)std::numeric_limits<O>::max())
-      throw Fail("column '" + c.name + "': a batch holds more than 2 GB of text; use a smaller batch_rows");
-    off[i + 1] = (O)tot;
-  }
-  char* d = (char*)array_buf(out, 2, (size_t)tot);
-  // one copy per run of strings that follow each other in the decoded page (a whole page when no rows are skipped)
-  uint64_t i = 0;
-  while (i < n) {
-    if (lens[i] <= 0) {
-      ++i;
-      continue;
-    }
-    const char* src = ptrs[i];
-    uint64_t len = (uint64_t)lens[i], k = i + 1;
-    for (; k < n; ++k) {
-      if (lens[k] <= 0) continue;
-      if (ptrs[k] != src + len) break;
-      len += (uint64_t)lens[k];
-    }
-    std::memcpy(d + off[i], src, (size_t)len);
-    i = k;
-  }
-}
-
-// A character column over file rows [a, b), in two steps: string_load decodes its pages (in parallel on the
-// engine pool), string_column then lays them out as plain utf8 / large_utf8, or as dictionary indexes into the row
-// group's dictionary when every page of the column is dictionary-coded (no pool: may run beside other columns).
-SrcPtr string_load(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b, int threads) {
-  SrcPtr s = open_src(S, c, a, b);
-  fstx_error e;
-  check(fstx_colsrc_load(s.get(), nullptr, threads, &e), e);
-  return s;
-}
-
 // A string dictionary, with the byte offset of every entry (dictionary pages laid out as plain strings).
 struct DictTab {
   uint32_t n = 0;
@@ -516,73 +473,42 @@ DictTab dict_tab(fstx_colsrc* s, uint32_t d) {
   return t;
 }
 
-void string_column(const ColSpec& c, SrcPtr s, const uint64_t* sel, uint64_t n, ArrowArray* out) {
+// A dictionary-coded character column of a range batch (pages loaded), as dictionary indexes into the row group's
+// dictionary (its one dictionary: a batch never spans row groups).
+void dict_column(const ColSpec& c, fstx_colsrc* s, uint64_t n, ArrowArray* out) {
   fstx_error e;
   fstx_colsrc_info si;
-  fstx_colsrc_info_get(s.get(), &si);
-  const bool dict = c.out == O_DICT_STR;
-  if (dict && si.n_dicts != 1) throw Fail("internal error: a batch spans more than one dictionary");
-  std::vector<DictTab> dt;  // plain output: dictionary pages take their strings from these
-  if (!dict)
-    for (uint32_t d = 0; d < si.n_dicts; ++d) dt.push_back(dict_tab(s.get(), d));
-  // walk the pages in row order: ptrs / lens per output row (lens are codes for dictionary output)
-  std::vector<const char*> ptrs(dict ? 0 : (size_t)n);
-  std::vector<int32_t> lens((size_t)n);
-  uint32_t p = 0;
-  uint64_t first = 0, pos = 0;
-  uint32_t k = 0, j = 0;
-  const int32_t* pl = nullptr;
-  const char* pb = nullptr;
-  const DictTab* pd = nullptr;  // the dictionary of a dictionary page (plain output)
-  auto load_page = [&](uint32_t q) {
-    int32_t d = -1;
-    check(fstx_colsrc_str_page(s.get(), q, &pl, &pb, &d, &e), e);
-    if (dict && d < 0) throw Fail("internal error: dictionary and plain pages mixed in column '" + c.name + "'");
-    pd = !dict && d >= 0 ? &dt[(size_t)d] : nullptr;
-    fstx_colsrc_page_span(s.get(), q, &first, &k);
-    j = 0;
-    pos = 0;
-  };
-  if (si.n_pages) load_page(0);
-  for (uint64_t i = 0; i < n; ++i) {
-    const uint64_t r = sel ? sel[i] : i;
-    while (r >= first + k) load_page(++p);
-    for (; first + j < r; ++j)
-      if (!dict && !pd) pos += (uint64_t)std::max(0, pl[j]);
-    if (pd) {
-      const int32_t code = pl[j];
-      lens[(size_t)i] = code < 0 ? -1 : pd->lens[code];
-      ptrs[(size_t)i] = code < 0 ? nullptr : pd->bytes + pd->off[(size_t)code];
-      continue;
-    }
-    lens[(size_t)i] = pl[j];
-    if (!dict) ptrs[(size_t)i] = pb + pos;
-  }
-  if (!dict) {
-    array_init(out, (int64_t)n, 3);
-    Validity v{out, n};
-    if (c.out == O_UTF8) plain_strings<int32_t>(c, n, ptrs, lens, out, v);
-    else plain_strings<int64_t>(c, n, ptrs, lens, out, v);
-    v.done();
-    return;
-  }
+  fstx_colsrc_info_get(s, &si);
+  if (si.n_dicts != 1) throw Fail("internal error: a batch spans more than one dictionary");
   array_init(out, (int64_t)n, 2);
   Validity v{out, n};
   int32_t* o = (int32_t*)array_buf(out, 1, (size_t)n * 4);
-  for (uint64_t i = 0; i < n; ++i) {
-    o[i] = lens[(size_t)i] < 0 ? 0 : lens[(size_t)i];
-    if (lens[(size_t)i] < 0) v.null_at(i);
+  for (uint32_t q = 0; q < si.n_pages; ++q) {
+    const int32_t* pl = nullptr;
+    const char* pb = nullptr;
+    int32_t d = -1;
+    check(fstx_colsrc_str_page(s, q, &pl, &pb, &d, &e), e);
+    if (d < 0) throw Fail("internal error: dictionary and plain pages mixed in column '" + c.name + "'");
+    uint64_t first = 0;
+    uint32_t k = 0;
+    fstx_colsrc_page_span(s, q, &first, &k);
+    for (uint32_t j = 0; j < k; ++j) {
+      o[first + j] = pl[j] < 0 ? 0 : pl[j];
+      if (pl[j] < 0) v.null_at(first + j);
+    }
   }
   v.done();
   uint32_t dn = 0;
   const int32_t* dl = nullptr;
   const char* db = nullptr;
-  check(fstx_colsrc_dict(s.get(), 0, &dn, &dl, &db, &e), e);
+  check(fstx_colsrc_dict(s, 0, &dn, &dl, &db, &e), e);
   ArrayHold* h = (ArrayHold*)out->private_data;
   h->dict = new_child();
   out->dictionary = h->dict;
   make_utf8(h->dict, dn, dl, db);
 }
+
+#include "arrow_rows.h"  // rows_batch(): the row-list batches (filter matches, lists of rows)
 
 // Runs fn(i, w, threads) for i in [0, n): one task on this thread with all `threads` for its own decoding,
 // more on the engine's worker pool (one thread each). The first exception a task throws is rethrown here.
@@ -820,7 +746,7 @@ void batch_range(const Stream& S, uint64_t a, uint64_t b, uint64_t n, ArrayHold*
   auto layout = [&](size_t i, fstx_scratch*, int) {
     const Task& t = tasks[i];
     StrCol& C = *sx[t.j];
-    if (t.i1) string_column(*C.c, std::move(C.s), nullptr, n, C.out);  // its dictionary was checked in str_open
+    if (t.i1) dict_column(*C.c, C.s.get(), n, C.out);  // its dictionary was checked in str_open
     else if (C.c->out == O_UTF8) str_write<int32_t>(C, (uint32_t)t.i0, check);
     else str_write<int64_t>(C, (uint32_t)t.i0, check);
   };
@@ -843,75 +769,6 @@ bool array_utf8_ok(const ArrowArray* x, int out) {
   const uint64_t end = out == O_LARGE_UTF8 ? (uint64_t)((const int64_t*)x->buffers[1])[n]
                                            : (uint64_t)((const int32_t*)x->buffers[1])[n];
   return valid_utf8((const uint8_t*)x->buffers[2], (size_t)end);
-}
-
-// A batch of the rows in sel (relative to a) over file rows [a, b). String pages decode first, column by column,
-// each in parallel on the engine pool. Then the columns are laid out at once on own threads (no pool):
-// fixed-width columns decode there too, since their NA / bool / Date passes are single-threaded per column and
-// dominate a page-parallel decode. With fewer columns than threads, fixed-width columns are cut into row parts at
-// page edges (fixed_prep) so that every thread has work.
-void batch_rows(const Stream& S, uint64_t a, uint64_t b, uint64_t n, const uint64_t* sp, ArrayHold* h,
-                std::vector<uint8_t>& bad) {
-  const size_t nc = S.cols.size();
-  const int parts = nc && nc < (size_t)S.threads ? (int)(((size_t)S.threads + nc - 1) / nc) : 1;
-  std::vector<SrcPtr> loaded(nc);
-  std::vector<std::unique_ptr<FixedCol>> fx(nc);
-  struct Task {
-    size_t j;
-    uint64_t i0, i1;
-  };
-  std::vector<Task> tasks;
-  for (size_t j = 0; j < nc; ++j) {
-    const ColSpec& c = S.cols[j];
-    if (c.phys == FSTX_STRING) {
-      loaded[j] = string_load(S, c, a, b, S.threads);
-      tasks.push_back({j, 0, n});
-      continue;
-    }
-    fx[j].reset(new FixedCol());
-    FixedCol& F = *fx[j];
-    F.c = &c;
-    F.out = h->kids[j];
-    F.a = a;
-    F.n = n;
-    F.sel = sp;
-    const std::vector<uint64_t> cut = fixed_prep(S, F, b, parts);
-    for (size_t q = 0; q + 1 < cut.size(); ++q) tasks.push_back({j, cut[q], cut[q + 1]});
-  }
-  auto run = [&](const Task& t, int threads) {
-    if (fx[t.j]) fixed_part(S, *fx[t.j], t.i0, t.i1, threads);
-    else {
-      string_column(S.cols[t.j], std::move(loaded[t.j]), sp, n, h->kids[t.j]);
-      if (S.utf8_bad && !array_utf8_ok(h->kids[t.j], S.cols[t.j].out)) bad[t.j] = 1;
-    }
-  };
-  const size_t nt = tasks.size();
-  const int k = (int)std::min<size_t>((size_t)S.threads, nt);
-  if (k <= 1) {
-    for (const Task& t : tasks) run(t, S.threads);
-  } else {
-    std::atomic<size_t> nx{0};
-    std::vector<std::exception_ptr> ex((size_t)k);
-    auto work = [&](int id) {
-      try {
-        for (size_t i; (i = nx.fetch_add(1)) < nt;) run(tasks[i], 1);
-      } catch (...) {
-        ex[(size_t)id] = std::current_exception();
-        nx.store(nt);
-      }
-    };
-    std::vector<std::thread> ts;
-    try {
-      for (int i = 1; i < k; ++i) ts.emplace_back(work, i);
-    } catch (...) {  // no more threads: the ones started and this one share the work
-    }
-    work(0);
-    for (std::thread& t : ts) t.join();
-    for (std::exception_ptr& x : ex)
-      if (x) std::rethrow_exception(x);
-  }
-  for (size_t j = 0; j < nc; ++j)
-    if (fx[j]) h->kids[j]->null_count = fx[j]->nulls.load();
 }
 
 Stream* stream_of(ArrowArrayStream* st) { return (Stream*)st->private_data; }
@@ -996,8 +853,14 @@ int stream_get_next(ArrowArrayStream* st, ArrowArray* out) {
     res.n_children = (int64_t)h->kids.size();
     res.children = h->kids.empty() ? nullptr : h->kids.data();
     std::vector<uint8_t> bad(S.cols.size(), 0);
-    if (S.by_rows) batch_rows(S, a, b, n, sel.data(), h, bad);
-    else batch_range(S, a, b, n, h, bad);
+    if (S.by_rows) {
+      rows_batch(S, h, a, sel.data(), n);
+      if (S.utf8_bad)  // the row-list path lays out its strings on its own: check them here
+        for (size_t j = 0; j < S.cols.size(); ++j)
+          if (S.cols[j].phys == FSTX_STRING && !array_utf8_ok(h->kids[j], S.cols[j].out)) bad[j] = 1;
+    } else {
+      batch_range(S, a, b, n, h, bad);
+    }
     if (S.utf8_bad && !bad.empty()) std::memcpy(S.utf8_bad, bad.data(), bad.size());
     S.pos = next;
     *out = res;

@@ -221,6 +221,10 @@ uint32_t encode_str_page(int kind, const char* const* ptrs, const int32_t* lens,
 // another (into the body itself for plain pages, into buf for FSST pages).
 void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, int kind,
                      std::vector<int32_t>& lens, std::vector<uint8_t>& buf, const char** bytes);
+// Only the strings at positions idx[0..cnt) of a K_STR page (ascending, repeats allowed): lens gets cnt entries
+// (-1 = NA), out the strings back to back. all is scratch for the page's n lengths. (Rows plans, enc_str.cpp.)
+void decode_str_page_rows(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, const uint32_t* idx,
+                          uint32_t cnt, std::vector<int32_t>& all, std::vector<int32_t>& lens, std::vector<char>& out);
 
 }  // namespace enc
 }  // namespace fstx
