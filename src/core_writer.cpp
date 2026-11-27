@@ -1135,6 +1135,7 @@ static int writer_open(const char* path, const fstx_write_column* cols, uint32_t
   try {
     if (!fstx::host_is_little_endian()) fstx::fail(FSTX_ERR_FORMAT, "big-endian machines are not supported yet");
     if (!path || !opt) fstx::fail(FSTX_ERR_ARG, "missing path or options");
+    fstx::ThreadPool::instance().warm(fstx::resolve_threads(opt->threads));  // workers start in the background
     if (n_cols > 0 && !cols) fstx::fail(FSTX_ERR_ARG, "missing column definitions");
     w = new fstx_writer();
     fstx::WriterImpl& W = w->impl;

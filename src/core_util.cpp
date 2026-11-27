@@ -513,17 +513,12 @@ ThreadPool& ThreadPool::instance() {
 
 ThreadPool::~ThreadPool() { shutdown(); }
 
-void ThreadPool::worker_main(int id) {
-  uint64_t seen = 0;
-  std::unique_lock<std::mutex> lk(m_);
-  for (;;) {
-    cv_work_.wait(lk, [&] { return stop_ || generation_ != seen; });
-    if (stop_) return;
-    seen = generation_;
-    if (id >= active_) continue;
-    lk.unlock();
+void ThreadPool::run_slots(std::unique_lock<std::mutex>& lk) {
+  while (running_ && next_slot_ < active_) {
+    const int s = next_slot_++;
+    lk.unlock();  // job_ stays set: this slot is not finished, so wait() cannot return and clear it
     try {
-      job_(id);
+      job_(s);
     } catch (...) {
       std::lock_guard<std::mutex> g(m_);
       if (!error_) error_ = std::current_exception();
@@ -533,20 +528,64 @@ void ThreadPool::worker_main(int id) {
   }
 }
 
+void ThreadPool::worker_main() {
+  std::unique_lock<std::mutex> lk(m_);
+  uint64_t seen = running_ ? generation_ - 1 : generation_;  // a job already running: help with it
+  for (;;) {
+    cv_work_.wait(lk, [&] { return stop_ || generation_ != seen; });
+    if (stop_) return;
+    seen = generation_;
+    run_slots(lk);
+  }
+}
+
+// The spawner makes threads one after another until there are want_ (m_ is not held while one is made).
+void ThreadPool::spawn_loop() {
+  std::unique_lock<std::mutex> lk(m_);
+  while (!stop_ && (int)threads_.size() < want_) {
+    lk.unlock();
+    std::thread t;
+    try {
+      t = std::thread([this] { worker_main(); });
+    } catch (...) {  // no thread: the pool works with the ones it has (the caller runs any slot left)
+      lk.lock();
+      break;
+    }
+    lk.lock();
+    threads_.push_back(std::move(t));
+  }
+  spawning_ = false;  // the spawner touches nothing after this
+}
+
+void ThreadPool::grow(int k) {
+  if (k > want_) want_ = std::min(k, 256);
+  if (spawning_ || stop_ || (int)threads_.size() >= want_) return;
+  if (spawner_.joinable()) spawner_.join();  // the last one has finished (spawning_ is false)
+  spawning_ = true;
+  try {
+    spawner_ = std::thread([this] { spawn_loop(); });
+  } catch (...) {
+    spawning_ = false;
+  }
+}
+
+void ThreadPool::warm(int k) {
+  std::lock_guard<std::mutex> g(m_);
+  grow(k);
+}
+
 void ThreadPool::start(int k, std::function<void(int)> job) {
   std::unique_lock<std::mutex> lk(m_);
   if (running_) fail(FSTX_ERR_INTERNAL, "worker pool is already running a job");
   if (k < 1) k = 1;
-  while ((int)threads_.size() < k) {
-    int id = (int)threads_.size();
-    threads_.emplace_back([this, id] { worker_main(id); });
-  }
   job_ = std::move(job);
   active_ = k;
+  next_slot_ = 0;
   remaining_ = k;
   error_ = nullptr;
   running_ = true;
   ++generation_;
+  grow(k);
   cv_work_.notify_all();
 }
 
@@ -558,6 +597,7 @@ bool ThreadPool::busy() {
 void ThreadPool::wait() {
   std::unique_lock<std::mutex> lk(m_);
   if (!running_) return;
+  run_slots(lk);  // slots no worker has claimed yet run here (workers still starting up are not waited for)
   cv_done_.wait(lk, [&] { return remaining_ == 0; });
   running_ = false;
   job_ = nullptr;
@@ -573,12 +613,15 @@ void ThreadPool::shutdown() {
     stop_ = true;
   }
   cv_work_.notify_all();
+  if (spawner_.joinable()) spawner_.join();  // first: it may still add a thread
   for (auto& t : threads_)
     if (t.joinable()) t.join();
   threads_.clear();
   std::lock_guard<std::mutex> g(m_);
   stop_ = false;
   running_ = false;
+  spawning_ = false;
+  want_ = 0;
 }
 
 int resolve_threads(int threads) {

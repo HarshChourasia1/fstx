@@ -200,24 +200,36 @@ class OutFile {
 // ---------------------------------------------------------------- thread pool
 // Persistent worker pool. start() hands a job to k workers and returns at once, so the calling thread
 // can do its own part (the writer thread on write, building strings on read); wait() joins the job.
+// A job is k slots, job(0) .. job(k-1), each run once by whichever thread claims it first: a worker that is up,
+// or the caller in wait() (slots nobody has claimed yet). Threads are made in the background by a spawner thread
+// (warm() at the first open, or start() when a job wants more than there are), so no call waits for a thread to be
+// created or to start: the first read of a process no longer pays for it (0.5-3.6 ms with 14 threads on the desk).
 class ThreadPool {
  public:
   static ThreadPool& instance();
   void start(int k, std::function<void(int)> job);
+  void warm(int k);  // make up to k workers in the background (returns at once)
   bool busy();  // a job is running (callers then work on their own thread)
-  void wait();  // rethrows the first exception a worker raised
+  void wait();  // runs unclaimed slots, then waits for the others; rethrows the first exception a slot raised
   void shutdown();
   ~ThreadPool();
 
  private:
-  void worker_main(int id);
+  void worker_main();
+  void run_slots(std::unique_lock<std::mutex>& lk);  // claims and runs slots of the current job (m_ held)
+  void grow(int k);                                    // m_ held: ask the spawner for k threads
+  void spawn_loop();
   std::mutex m_;
   std::condition_variable cv_work_, cv_done_;
   std::vector<std::thread> threads_;
+  std::thread spawner_;
   std::function<void(int)> job_;
   uint64_t generation_ = 0;
-  int active_ = 0;
-  int remaining_ = 0;
+  int active_ = 0;     // slots of the current job
+  int next_slot_ = 0;  // first slot not claimed yet
+  int remaining_ = 0;  // slots not finished yet
+  int want_ = 0;       // threads the spawner makes
+  bool spawning_ = false;
   bool stop_ = false;
   bool running_ = false;
   std::exception_ptr error_;

@@ -1045,6 +1045,8 @@ extern "C" int fstx_open(const char* path, fstx_file** out, fstx_error* err) {
   try {
     if (!fstx::host_is_little_endian()) fstx::fail(FSTX_ERR_FORMAT, "big-endian machines are not supported yet");
     if (!path) fstx::fail(FSTX_ERR_ARG, "missing path");
+    // the worker threads start in the background while the footer is read, so the first read does not make them
+    fstx::ThreadPool::instance().warm(fstx::resolve_threads(0));
     f = new fstx_file();
     fstx::open_file(*f, path);
     fstx::registry_add(f->map.id());
