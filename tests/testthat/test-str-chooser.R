@@ -61,9 +61,11 @@ test_that("the string chooser keeps random text plain and the fast profile's rul
 
 test_that("the string chooser's pick does not depend on the thread count or the SIMD target", {
   x <- data.frame(comment = comment_like(120000, seed = 7), n = seq_len(120000), stringsAsFactors = FALSE)
-  on.exit(fstx_simd("auto"), add = TRUE)
+  s0 <- fstx_simd()
+  s0 <- if (s0$simd) tolower(s0$target) else "scalar"  # the run's setting (FSTX_SIMD may force one): put back
+  on.exit(fstx_simd(s0), add = TRUE)
   h <- character()
-  for (simd in c("scalar", "auto")) {
+  for (simd in unique(c("scalar", s0, "auto"))) {
     fstx_simd(simd)
     for (th in unique(c(1L, test_threads(2L), test_threads(8L)))) {
       q <- tempfile(fileext = ".fstx")
