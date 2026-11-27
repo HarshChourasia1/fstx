@@ -212,6 +212,7 @@ class ThreadPool {
   bool busy();  // a job is running (callers then work on their own thread)
   void wait();  // runs unclaimed slots, then waits for the others; rethrows the first exception a slot raised
   void shutdown();
+  void after_fork();  // POSIX: the child of fork() forgets the parent's threads (pthread_atfork)
   ~ThreadPool();
 
  private:

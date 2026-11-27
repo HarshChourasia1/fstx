@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <new>
 #include <cstdlib>
 #include <string>
 #include <map>
@@ -24,6 +25,7 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -507,8 +509,33 @@ bool registry_has(const FileId& id) {
 ThreadPool& ThreadPool::instance() {
   // Never destroyed: joining threads during process exit can deadlock on Windows.
   // fstx_shutdown() stops the workers when the R package is unloaded.
-  static ThreadPool* p = new ThreadPool();
+  static ThreadPool* p = [] {
+    ThreadPool* q = new ThreadPool();
+#ifndef _WIN32
+    // the child of fork() (R's parallel::mclapply) has none of the parent's workers: it starts its own
+    pthread_atfork(nullptr, nullptr, [] { ThreadPool::instance().after_fork(); });
+#endif
+    return q;
+  }();
   return *p;
+}
+
+// In the child of fork(), only the forking thread exists: the parent's worker and spawner threads are gone, and
+// the mutex and condition variables may still count their waiters, so they are made again (the old ones and the
+// thread handles are left as they are: never destroyed, joined or detached).
+void ThreadPool::after_fork() {
+  new (&m_) std::mutex();
+  new (&cv_work_) std::condition_variable();
+  new (&cv_done_) std::condition_variable();
+  std::vector<std::thread>* gone = new std::vector<std::thread>(std::move(threads_));
+  gone->push_back(std::move(spawner_));
+  threads_ = std::vector<std::thread>();
+  spawner_ = std::thread();
+  job_ = nullptr;
+  error_ = nullptr;
+  generation_ = 0;
+  active_ = next_slot_ = remaining_ = want_ = 0;
+  spawning_ = stop_ = running_ = false;
 }
 
 ThreadPool::~ThreadPool() { shutdown(); }
