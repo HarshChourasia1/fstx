@@ -27,6 +27,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   if (c.bit(6, 1)) g.req = 1ull << c.below(64);
   if (c.bit(6, 2)) g.opt = 1ull << c.below(64);
   if (c.bit(6, 3)) g.opt |= 1ull << c.below(64);
+  if (c.bit(6, 6)) g.req |= 3ull << 16;  // fstx 1.2: the int64 / binary bits, so forged types 4 / 5 can open
   const uint32_t nn = c.bit(6, 4) ? (uint32_t)c.below(4) : 0;
   for (uint32_t i = 0; i < nn; ++i) {
     std::string s;

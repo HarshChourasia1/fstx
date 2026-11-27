@@ -14,6 +14,7 @@ struct NewCol {
   int phys = 0;
   std::vector<int32_t> i;
   std::vector<double> d;
+  std::vector<int64_t> l;
   std::vector<std::string> s;
   std::vector<uint8_t> na;
 };
@@ -102,6 +103,23 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
           x.na.push_back(na ? 1 : 0);
           x.s.push_back(na ? std::string() : "v" + std::to_string(z % 97));
           break;
+        case FSTX_BINARY: {  // any bytes, NUL included, some repeated (dictionary candidates)
+          x.na.push_back(na ? 1 : 0);
+          std::string v;
+          if (!na)
+            for (uint32_t k = 0, len = (z >> 4) % 9; k < len; ++k) v.push_back((char)(k ? c.next() : z >> 8 & 3));
+          x.s.push_back(v);
+          break;
+        }
+        case FSTX_INT64: {  // small values, values past 2^53 and the extremes
+          const uint64_t hi = c.next();
+          const int64_t v = (z & 7) == 1 ? INT64_MAX - (int64_t)(hi & 7)
+                            : (z & 7) == 2 ? INT64_MIN + 1 + (int64_t)(hi & 7)
+                            : (z & 7) == 3 ? (int64_t)(hi << 32 | z)
+                                           : (int64_t)(z % 2001) - 1000;
+          x.l.push_back(na ? INT64_MIN : v);
+          break;
+        }
         case FSTX_LOGICAL: x.i.push_back(na ? kNaI : (int32_t)(z >> 4 & 1)); break;
         default:
           if (defs[j].logical == FSTX_LT_FACTOR)
@@ -138,7 +156,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     w.attrs_len = d.attrs.size();
     NewCol& x = nc[j];
     cd[j].data = x.phys == FSTX_FLOAT64 ? (const void*)x.d.data()
-                                        : x.phys == FSTX_STRING ? nullptr : (const void*)x.i.data();
+                 : x.phys == FSTX_INT64 ? (const void*)x.l.data()
+                 : fz::is_strlike(x.phys) ? nullptr : (const void*)x.i.data();
     cd[j].get_strings = get_strings;
     cd[j].ctx = &x;
   }
@@ -194,7 +213,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
           const uint64_t q = n_old + r;
           bool ok;
           if (x.phys == FSTX_FLOAT64) ok = fz::same_dbl(tc.d[q], x.d[r]);
-          else if (x.phys == FSTX_STRING) ok = (tc.na[q] == 1) == (x.na[r] == 1) && (x.na[r] || tc.s[q] == x.s[r]);
+          else if (x.phys == FSTX_INT64) ok = tc.l[q] == x.l[r];
+          else if (fz::is_strlike(x.phys)) ok = (tc.na[q] == 1) == (x.na[r] == 1) && (x.na[r] || tc.s[q] == x.s[r]);
           else ok = tc.i[q] == x.i[r];
           if (!ok) fz::fail("appended rows read back differently");
         }
