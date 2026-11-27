@@ -214,6 +214,26 @@ constexpr uint64_t kTestStrCacheBytes = 12ull * 150000;  // tests (F_SMALL_STR_C
 // need. force: 0, T_DICT (optionally | F_DICT_FSST), T_FSST or T_PLAIN. Returns the host's error code (0 = fine).
 int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const EncCtx& cx, int force, StrChunk& sc);
 
+// plan_str_chunk in three steps, so that the writer can share one chunk's rows among threads (same plan):
+// begin tries the dictionary, which needs the rows in order, until it is chosen (done) or ruled out; the vectors
+// left over ([next_v, number of vectors)) are then read by plan_str_vectors in any order and on any threads
+// (each vector once, never two calls on the same vector); finish picks FSST or plain from the samples.
+struct StrPrep {
+  bool done = false;                                  // the plan is complete (a dictionary chunk)
+  uint64_t next_v = 0;                                // first vector begin left to plan_str_vectors
+  int force = 0;                                      // force without flags
+  std::vector<uint64_t> svec;                         // sample vectors, ascending
+  std::vector<const unsigned char*> sp;               // samples read by begin, in row order
+  std::vector<size_t> sl;
+  std::vector<std::vector<const unsigned char*>> sp2;  // samples read by plan_str_vectors, per svec entry
+  std::vector<std::vector<size_t>> sl2;
+};
+int plan_str_begin(const fstx_column_data& d, uint64_t r0, uint64_t r1, const EncCtx& cx, int force, StrChunk& sc,
+                   StrPrep& p);
+int plan_str_vectors(const fstx_column_data& d, uint64_t r0, uint64_t r1, uint64_t v0, uint64_t v1, StrChunk& sc,
+                     StrPrep& p);
+void plan_str_finish(const EncCtx& cx, StrChunk& sc, StrPrep& p);
+
 // kind K_STR (may hold NA) or K_DICT (dictionary page, no NA). mode T_PLAIN or T_FSST.
 uint32_t encode_str_page(int kind, const char* const* ptrs, const int32_t* lens, uint32_t n, int mode,
                          const FsstTable* fsst, const EncCtx& cx, Buf& out);

@@ -354,7 +354,37 @@ def test_number_chunks_over_row_groups(tmp_path):
         assert g.equals(want.cast(g.type)), name
 
 
-@pytest.mark.parametrize("opts", [{}, {"compress": "lz4"}, {"compress": "none"}, {"profile": "small", "threads": 1},
+@pytest.mark.parametrize("profile", ["balanced", "fast"])
+def test_string_prep_on_many_threads(profile, tmp_path):
+    # the engine reads a row group's strings on many threads once its dictionary is ruled out: dictionaries ruled
+    # out early and late, kept, missing values, FSST and plain chunks give the same file on 1 thread and on all
+    import numpy as np
+
+    n = 1_048_576 + 300_001
+    rng = np.random.default_rng(11)
+    words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa"]
+    late = [words[i % 10] if i < 100_000 else f"late-{i}" for i in range(n)]
+    nul = [None if r < 0.4 else f"n{i}" for i, r in enumerate(rng.random(n))]
+    lens = rng.integers(0, 300, n)
+    noise = [("x" * int(k)) if k % 3 else "".join(chr(97 + int(c)) for c in rng.integers(0, 26, int(k) % 40))
+             for k in lens[:200_000]]
+    t = pa.table({
+        "distinct": [f"row{i}" for i in range(n)],
+        "late": late,
+        "low": [words[i % 7] for i in range(n)],
+        "nulls": nul,
+        "long": noise * (n // 200_000) + noise[: n % 200_000],
+    })
+    p, q = tmp_path / "one.fstx", tmp_path / "all.fstx"
+    fstx.write_fstx(t, p, threads=1, profile=profile)
+    fstx.write_fstx(t, q, threads=None, profile=profile)
+    assert p.read_bytes() == q.read_bytes()
+    back = fstx.read_fstx(q)
+    for name in t.column_names:
+        assert back.column(name).combine_chunks().equals(t.column(name).combine_chunks()), name
+
+
+@pytest.mark.parametrize("opts", [{}, {"compress": "lz4"},{"compress": "none"}, {"profile": "small", "threads": 1},
                                   {"profile": "fast"}, {"compress": "zstd", "level": 1}],
                          ids=["default", "lz4", "none", "small_1thread", "fast", "zstd1"])
 def test_many_rows(opts, request):

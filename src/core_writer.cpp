@@ -400,8 +400,14 @@ struct WriterImpl {
     }
   }
 
-  // ---- string prep pass, in parallel over (string column, row group): reads every string once, checks the
-  // encoding, records per-vector sizes for page planning and picks dictionary / FSST / plain for the chunk.
+  // ---- string prep pass: reads every string once, checks the encoding, records per-vector sizes for page
+  // planning and picks dictionary / FSST / plain for each (string column, row group) chunk. Three parallel
+  // steps (enc.h, StrPrep): per chunk, the dictionary attempt, which reads rows in order until the dictionary is
+  // chosen or ruled out (65,536 rows for a column of mostly distinct values); the rows left over, in slices of
+  // kPrepSlice vectors over all chunks; per chunk, the FSST choice from the samples. A row group's strings are
+  // then read by many threads, not one (the plans are the same as one pass makes).
+  static constexpr uint64_t kPrepSlice = 64;  // vectors (65,536 rows) per task of the second step
+
   void prep_strings(const fstx_column_data* data, uint64_t n) {
     FSTX_PROF_SCOPE(W_PREP_STR);
     std::vector<uint32_t> scols;
@@ -412,43 +418,75 @@ struct WriterImpl {
     sch.resize((size_t)nrg);
     for (auto& g : sch) g.resize(cols.size());
     if (scols.empty() || n == 0) return;
-    const uint64_t ntasks = nrg * scols.size();
-    std::atomic<uint64_t> next(0);
+    const uint64_t nchunks = nrg * scols.size();
+    std::vector<enc::StrPrep> prep((size_t)nchunks);
     std::atomic<int> bad(0);  // 0 ok, 1 translate, 2 impossible
     std::atomic<int64_t> bad_col(std::numeric_limits<int64_t>::max());
     std::atomic<uint64_t> cache_left(str_cache_bytes);
-    const int k = (int)std::min<uint64_t>((uint64_t)threads, ntasks);
-    for (int i = 0; i < std::max(k, 1); ++i) ctx(i);  // contexts are made here, before the workers start
-
-    auto job = [&](int id) {
-      enc::EncCtx cx;
-      cx.profile = profile;
-      cx.codec = codec;
-      cx.cc = ctxs[(size_t)id].get();
-      cx.str_cache = &cache_left;
-      for (;;) {
-        uint64_t t = next.fetch_add(1);
-        if (t >= ntasks) return;
-        const uint32_t c = scols[(size_t)(t / nrg)];
-        const uint64_t g = t % nrg;
-        const uint64_t r0 = g * rg_size, r1 = std::min(n, r0 + rg_size);
-        int rc = enc::plan_str_chunk(data[c], r0, r1, cx, force_str, sch[(size_t)g][c]);
-        if (rc != 0) {
-          int prev = bad.load();
-          while (rc > prev && !bad.compare_exchange_weak(prev, rc)) {
-          }
-          int64_t pc = bad_col.load();
-          while ((int64_t)c < pc && !bad_col.compare_exchange_weak(pc, (int64_t)c)) {
-          }
-        }
+    auto note = [&](int rc, uint32_t c) {
+      if (rc == 0) return;
+      int prev = bad.load();
+      while (rc > prev && !bad.compare_exchange_weak(prev, rc)) {
+      }
+      int64_t pc = bad_col.load();
+      while ((int64_t)c < pc && !bad_col.compare_exchange_weak(pc, (int64_t)c)) {
       }
     };
-    if (k <= 1) {
-      job(0);
-    } else {
-      ThreadPool::instance().start(k, job);
-      ThreadPool::instance().wait();
+    // chunk t: column scols[t / nrg], row group t % nrg
+    auto rows_of = [&](uint64_t t, uint64_t& r0, uint64_t& r1) {
+      r0 = (t % nrg) * rg_size;
+      r1 = std::min(n, r0 + rg_size);
+    };
+    auto run = [&](uint64_t ntasks, const std::function<void(uint64_t, enc::EncCtx&)>& one) {
+      if (ntasks == 0) return;
+      std::atomic<uint64_t> next(0);
+      const int k = (int)std::min<uint64_t>((uint64_t)threads, ntasks);
+      for (int i = 0; i < std::max(k, 1); ++i) ctx(i);  // contexts are made here, before the workers start
+      auto job = [&](int id) {
+        enc::EncCtx cx;
+        cx.profile = profile;
+        cx.codec = codec;
+        cx.cc = ctxs[(size_t)id].get();
+        cx.str_cache = &cache_left;
+        for (uint64_t t; (t = next.fetch_add(1)) < ntasks;) one(t, cx);
+      };
+      if (k <= 1) {
+        job(0);
+      } else {
+        ThreadPool::instance().start(k, job);
+        ThreadPool::instance().wait();
+      }
+    };
+    run(nchunks, [&](uint64_t t, enc::EncCtx& cx) {
+      const uint32_t c = scols[(size_t)(t / nrg)];
+      uint64_t r0, r1;
+      rows_of(t, r0, r1);
+      enc::StrPrep& p = prep[(size_t)t];
+      const int rc = enc::plan_str_begin(data[c], r0, r1, cx, force_str, sch[(size_t)(t % nrg)][c], p);
+      if (rc) p.done = true;  // nothing more is read from a chunk the host refused
+      note(rc, c);
+    });
+    struct Slice {
+      uint64_t t, v0, v1;
+    };
+    std::vector<Slice> slices;
+    for (uint64_t t = 0; t < nchunks; ++t) {
+      const enc::StrPrep& p = prep[(size_t)t];
+      const uint64_t nv = sch[(size_t)(t % nrg)][scols[(size_t)(t / nrg)]].vsizes.size();
+      if (!p.done)
+        for (uint64_t v = p.next_v; v < nv; v += kPrepSlice) slices.push_back({t, v, std::min(nv, v + kPrepSlice)});
     }
+    run(slices.size(), [&](uint64_t i, enc::EncCtx&) {
+      const Slice& s = slices[(size_t)i];
+      const uint32_t c = scols[(size_t)(s.t / nrg)];
+      uint64_t r0, r1;
+      rows_of(s.t, r0, r1);
+      note(enc::plan_str_vectors(data[c], r0, r1, s.v0, s.v1, sch[(size_t)(s.t % nrg)][c], prep[(size_t)s.t]), c);
+    });
+    if (bad.load() == 0)
+      run(nchunks, [&](uint64_t t, enc::EncCtx& cx) {
+        enc::plan_str_finish(cx, sch[(size_t)(t % nrg)][scols[(size_t)(t / nrg)]], prep[(size_t)t]);
+      });
     if (bad.load() == 1)
       throw Error(FSTX_ERR_TRANSLATE, "column '" + cols[(size_t)bad_col.load()].name + "' has strings that are not UTF-8",
                   bad_col.load());

@@ -349,7 +349,26 @@ size_t fsst_encode(const void* enc, size_t n, const size_t* len, const unsigned 
 
 }  // namespace
 
-int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const EncCtx& cx, int force, StrChunk& sc) {
+namespace {
+
+// The pointer cache for a chunk that ends plain / FSST, from the write's budget (false when it ran out).
+bool take_cache(const EncCtx& cx, uint64_t n, StrChunk& sc) {
+  const uint64_t need = 12 * n;
+  if (!cx.str_cache) return false;
+  uint64_t left = cx.str_cache->load();
+  while (left >= need)
+    if (cx.str_cache->compare_exchange_weak(left, left - need)) {
+      sc.cptr.resize(n);
+      sc.clen.resize(n);
+      return true;
+    }
+  return false;
+}
+
+}  // namespace
+
+int plan_str_begin(const fstx_column_data& d, uint64_t r0, uint64_t r1, const EncCtx& cx, int force, StrChunk& sc,
+                   StrPrep& p) {
   const uint64_t n = r1 - r0;
   const uint64_t nv = (n + kV - 1) / kV;
   sc.mode = T_PLAIN;
@@ -360,31 +379,30 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
   sc.vsizes.assign(nv, 0);
   sc.cptr.clear();
   sc.clen.clear();
+  p = StrPrep();
   const bool dict_fsst = (force & F_DICT_FSST) != 0;  // tests: FSST-code the dictionary page
   force &= 0xff;
+  p.force = force;
+  if (nv <= kStrSampleVectors) {
+    for (uint64_t v = 0; v < nv; ++v) p.svec.push_back(v);
+  } else {
+    for (uint64_t k = 0; k < kStrSampleVectors; ++k) p.svec.push_back(k * (nv - 1) / (kStrSampleVectors - 1));
+  }
+  p.sp2.resize(p.svec.size());
+  p.sl2.resize(p.svec.size());
 
   bool dict = force == 0 || force == T_DICT;
+  if (!dict) {  // nothing needs the rows in order: all of them go to plan_str_vectors
+    take_cache(cx, n, sc);
+    return 0;
+  }
   PtrDict pd;
   uint64_t dict_bytes = 0;
-  if (dict) {
-    sc.codes.resize(n);
-    pd.init(&sc.dptr, &sc.dlen);
-  }
+  sc.codes.resize(n);
+  pd.init(&sc.dptr, &sc.dlen);
   // Pointer cache, kept only for chunks that end plain / FSST: taken from the budget when the dictionary is
   // ruled out (rows seen so far come from the codes, which hold the same pointers), never for dictionary chunks.
   bool cache = false;
-  auto take_cache = [&]() {
-    const uint64_t need = 12 * n;
-    if (!cx.str_cache) return false;
-    uint64_t left = cx.str_cache->load();
-    while (left >= need)
-      if (cx.str_cache->compare_exchange_weak(left, left - need)) {
-        sc.cptr.resize(n);
-        sc.clen.resize(n);
-        return true;
-      }
-    return false;
-  };
   auto codes_to_cache = [&](uint64_t rows) {
     for (uint64_t i = 0; i < rows; ++i) {
       const int32_t c = sc.codes[i];
@@ -392,17 +410,8 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
       sc.clen[i] = c < 0 ? -1 : sc.dlen[(size_t)c];
     }
   };
-  if (!dict) cache = take_cache();
-  std::vector<uint64_t> svec;  // sample vectors, ascending
-  if (nv <= kStrSampleVectors) {
-    for (uint64_t v = 0; v < nv; ++v) svec.push_back(v);
-  } else {
-    for (uint64_t k = 0; k < kStrSampleVectors; ++k) svec.push_back(k * (nv - 1) / (kStrSampleVectors - 1));
-  }
   size_t si = 0;
-  std::vector<const unsigned char*> sp;
-  std::vector<size_t> sl;
-  uint64_t sbytes = 0, plain_bytes = 0;
+  uint64_t plain_bytes = 0;
   const char* ptrs[kV];
   int32_t lens[kV];
 
@@ -415,37 +424,39 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
       if (lens[i] > 0) s += (uint64_t)lens[i];
     sc.vsizes[v] = s;
     plain_bytes += s - 4ull * m;
-    if (dict) {
-      int32_t* codes = sc.codes.data() + v * kV;
-      for (uint32_t i = 0; i < m; ++i) codes[i] = lens[i] < 0 ? -1 : pd.code(ptrs[i], lens[i], dict_bytes);
-      const uint64_t seen = v * kV + m;
-      // Checked from 65,536 rows on: earlier checks gave up on medium-cardinality columns (50k product codes
-      // with skewed popularity pass rows / 2 distinct values in the first 16k rows).
-      if ((force != T_DICT && seen >= 65536 && sc.dptr.size() * 2 > seen) || sc.dptr.size() > (1u << 24) ||
-          dict_bytes + 8 * sc.dptr.size() > kMaxRawPage / 2) {
-        dict = false;  // too many distinct strings: stop paying for the hashing
-        if ((cache = take_cache())) codes_to_cache(v * kV);  // this vector is copied below
-        std::vector<int32_t>().swap(sc.codes);
-        std::vector<const char*>().swap(sc.dptr);
-        std::vector<int32_t>().swap(sc.dlen);
-      }
+    int32_t* codes = sc.codes.data() + v * kV;
+    for (uint32_t i = 0; i < m; ++i) codes[i] = lens[i] < 0 ? -1 : pd.code(ptrs[i], lens[i], dict_bytes);
+    const uint64_t seen = v * kV + m;
+    // Checked from 65,536 rows on: earlier checks gave up on medium-cardinality columns (50k product codes
+    // with skewed popularity pass rows / 2 distinct values in the first 16k rows).
+    if ((force != T_DICT && seen >= 65536 && sc.dptr.size() * 2 > seen) || sc.dptr.size() > (1u << 24) ||
+        dict_bytes + 8 * sc.dptr.size() > kMaxRawPage / 2) {
+      dict = false;  // too many distinct strings: stop paying for the hashing
+      if ((cache = take_cache(cx, n, sc))) codes_to_cache(v * kV);  // this vector is copied below
+      std::vector<int32_t>().swap(sc.codes);
+      std::vector<const char*>().swap(sc.dptr);
+      std::vector<int32_t>().swap(sc.dlen);
     }
-    if (si < svec.size() && svec[si] == v) {
+    if (si < p.svec.size() && p.svec[si] == v) {
       ++si;
       for (uint32_t i = 0; i < m; ++i)
         if (lens[i] >= 0) {
-          sp.push_back((const unsigned char*)(lens[i] > 0 ? ptrs[i] : ""));
-          sl.push_back((size_t)lens[i]);
-          sbytes += (uint64_t)lens[i];
+          p.sp.push_back((const unsigned char*)(lens[i] > 0 ? ptrs[i] : ""));
+          p.sl.push_back((size_t)lens[i]);
         }
     }
     if (cache) {
       std::memcpy(sc.cptr.data() + v * kV, ptrs, m * sizeof(const char*));
       std::memcpy(sc.clen.data() + v * kV, lens, m * sizeof(int32_t));
     }
+    if (!dict) {  // the rest of the rows in any order
+      p.next_v = v + 1;
+      return 0;
+    }
   }
+  p.next_v = nv;
 
-  if (dict && !sc.dptr.empty()) {
+  if (!sc.dptr.empty()) {
     const uint64_t nd = sc.dptr.size();
     const double dict_raw = (double)dict_bytes + (double)nd + (double)n * bits_of(nd - 1) / 8.0;
     const double plain_raw = (double)plain_bytes + (double)n;
@@ -466,16 +477,63 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
         ft->blob.assign(buf, buf + len);
         sc.fsst = std::move(ft);
       }
+      p.done = true;
       return 0;
     }
   }
-  if (dict && !cache && (cache = take_cache())) codes_to_cache(n);  // a dictionary was kept up but not chosen
+  if (take_cache(cx, n, sc)) codes_to_cache(n);  // a dictionary was kept up but not chosen
   std::vector<int32_t>().swap(sc.codes);
   std::vector<const char*>().swap(sc.dptr);
   std::vector<int32_t>().swap(sc.dlen);
+  return 0;
+}
 
-  if (force == T_PLAIN || sp.empty() || sbytes == 0) return 0;
-  if (force != T_FSST && sbytes < 4096) return 0;  // too little text to be worth a symbol table
+int plan_str_vectors(const fstx_column_data& d, uint64_t r0, uint64_t r1, uint64_t v0, uint64_t v1, StrChunk& sc,
+                     StrPrep& p) {
+  const uint64_t n = r1 - r0;
+  const bool cache = !sc.cptr.empty();
+  size_t si = (size_t)(std::lower_bound(p.svec.begin(), p.svec.end(), v0) - p.svec.begin());
+  const char* ptrs[kV];
+  int32_t lens[kV];
+  for (uint64_t v = v0; v < v1; ++v) {
+    const uint32_t m = (uint32_t)std::min<uint64_t>(kV, n - v * kV);
+    const int rc = d.get_strings(d.ctx, r0 + v * kV, m, ptrs, lens);
+    if (rc != 0) return rc;
+    uint64_t s = 4ull * m;
+    for (uint32_t i = 0; i < m; ++i)
+      if (lens[i] > 0) s += (uint64_t)lens[i];
+    sc.vsizes[v] = s;
+    if (si < p.svec.size() && p.svec[si] == v) {
+      for (uint32_t i = 0; i < m; ++i)
+        if (lens[i] >= 0) {
+          p.sp2[si].push_back((const unsigned char*)(lens[i] > 0 ? ptrs[i] : ""));
+          p.sl2[si].push_back((size_t)lens[i]);
+        }
+      ++si;
+    }
+    if (cache) {
+      std::memcpy(sc.cptr.data() + v * kV, ptrs, m * sizeof(const char*));
+      std::memcpy(sc.clen.data() + v * kV, lens, m * sizeof(int32_t));
+    }
+  }
+  return 0;
+}
+
+void plan_str_finish(const EncCtx& cx, StrChunk& sc, StrPrep& p) {
+  if (p.done) return;
+  std::vector<const unsigned char*>& sp = p.sp;  // begin's samples, then the others in row order
+  std::vector<size_t>& sl = p.sl;
+  for (size_t k = 0; k < p.sp2.size(); ++k) {
+    sp.insert(sp.end(), p.sp2[k].begin(), p.sp2[k].end());
+    sl.insert(sl.end(), p.sl2[k].begin(), p.sl2[k].end());
+  }
+  uint64_t sbytes = 0;
+  for (size_t l : sl) sbytes += (uint64_t)l;
+  const int force = p.force;
+  p.done = true;
+
+  if (force == T_PLAIN || sp.empty() || sbytes == 0) return;
+  if (force != T_FSST && sbytes < 4096) return;  // too little text to be worth a symbol table
 
   std::unique_ptr<FsstTable> ft(new FsstTable());
   FSTX_PROF_BEGIN(prof_tab, W_FSST_TABLE);
@@ -510,7 +568,14 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
     sc.fsst = std::move(ft);
     sc.mode = T_FSST;
   }
-  return 0;
+}
+
+int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const EncCtx& cx, int force, StrChunk& sc) {
+  StrPrep p;
+  int rc = plan_str_begin(d, r0, r1, cx, force, sc, p);
+  if (rc == 0 && !p.done) rc = plan_str_vectors(d, r0, r1, p.next_v, sc.vsizes.size(), sc, p);
+  if (rc == 0) plan_str_finish(cx, sc, p);
+  return rc;
 }
 
 uint32_t encode_str_page(int kind, const char* const* ptrs, const int32_t* lens, uint32_t n, int mode,
