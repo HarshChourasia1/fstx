@@ -678,6 +678,10 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
   opt.threads = threads;
   opt.profile = profile;
   opt.keep_pct = keep_pct;
+  // No string pointer cache (the engine's flag 0x800, F_NO_STR_CACHE, which R's tests call no_str_cache): it saves
+  // R a second walk over its CHARSXPs, but get_strings here only reads Arrow offsets, so pages read the strings
+  // again as fast as from the cache, and the cache's up to 64 MB a call (12 bytes a string) stay free. Same bytes.
+  opt.force_encoding = 0x800;
   // Rows per engine call. One call when every number column can be passed in place (or for an append, which keeps
   // the file's row group size, not known here). Else whole row groups per call, so the window buffers stay small:
   // one row group, or two when there are string columns (a string chunk's prep has steps that read its rows in
