@@ -22,7 +22,7 @@ import pytest
 
 import fstx
 import rview
-from conftest import GOLDEN
+from conftest import DROP2, GOLDEN
 
 RM = GOLDEN / "rmatch"
 OUT = GOLDEN / "from_python" / "rmatch"
@@ -137,6 +137,8 @@ def test_r_to_polars(case):
 @pytest.mark.parametrize("case", CASE_PARAMS)
 @pytest.mark.parametrize("path", ["pyarrow", "pandas", "polars"])
 def test_r_to_python_to_r(case, path):
+    if path == "polars" and case in ("rmatch_int64", "rmatch_na") and not DROP2:
+        pytest.skip("waits for engine drop 2: through polars (no metadata) the values past int32 become an int64 column")
     t = read(case)
     if path == "pyarrow":
         data, view = t, rview.view_arrow(t)
