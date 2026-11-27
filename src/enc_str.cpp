@@ -5,9 +5,12 @@
 #include <cstring>
 #include <limits>
 
+#include "core_internal.h"  // kDefaultPageBytes, CodecContext
 #include "enc.h"
 #include "fsst.h"
 #include "libfsst.hpp"
+#define ZSTD_STATIC_LINKING_ONLY  // ZSTD_getCParams, ZSTD_CCtx_setCParams
+#include "vendor/zstd/zstd.h"
 
 namespace fstx {
 namespace enc {
@@ -351,6 +354,30 @@ size_t fsst_encode(const void* enc, size_t n, const size_t* len, const unsigned 
 
 namespace {
 
+// ZSTD -1 size of a sample of n bytes that stands for pages of about `page` bytes. zstd picks its tables by the
+// input's size (up to 16 KB, 128 KB, 256 KB, more), so a sample smaller than the page it stands for was judged with
+// smaller tables than the page gets: mixed.comment's FSST samples (about 107 KB) took the 128 KB tables while its
+// FSST pages (about 136 KB) get the 256 KB ones and come out 4% smaller than estimated, so the chooser kept plain
+// pages that were 3% bigger. The estimate now takes the parameters zstd picks for the page size.
+size_t zstd_est_page(const EncCtx& cx, const uint8_t* p, size_t n, uint64_t page) {
+  if (!cx.cc || n == 0) return n;
+  FSTX_PROF_SCOPE(W_ZSTD_EST);
+  CodecContext& cc = *cx.cc;
+  if (!cc.zc) {
+    cc.zc = ZSTD_createCCtx();
+    if (!cc.zc) fail(FSTX_ERR_MEMORY, "cannot create a ZSTD context");
+  }
+  ZSTD_CCtx* z = (ZSTD_CCtx*)cc.zc;
+  std::vector<uint8_t> tmp(ZSTD_compressBound(n));
+  ZSTD_CCtx_reset(z, ZSTD_reset_session_and_parameters);
+  size_t r = ZSTD_CCtx_setCParams(z, ZSTD_getCParams(-1, page ? page : n, 0));
+  if (!ZSTD_isError(r)) r = ZSTD_compress2(z, tmp.data(), tmp.size(), p, n);
+  // compress_page (ZSTD_compressCCtx) ignores these parameters; reset them anyway so the context carries nothing
+  ZSTD_CCtx_reset(z, ZSTD_reset_session_and_parameters);
+  if (ZSTD_isError(r)) fail(FSTX_ERR_INTERNAL, "ZSTD estimate failed: %s", ZSTD_getErrorName(r));
+  return r;
+}
+
 // The pointer cache for a chunk that ends plain / FSST, from the write's budget (false when it ran out).
 bool take_cache(const EncCtx& cx, uint64_t n, StrChunk& sc) {
   const uint64_t need = 12 * n;
@@ -540,31 +567,51 @@ void plan_str_finish(const EncCtx& cx, StrChunk& sc, StrPrep& p) {
   ft->enc = fsst_create(sp.size(), sl.data(), sp.data(), 0);
   FSTX_PROF_END(prof_tab);
   if (!ft->enc) fail(FSTX_ERR_MEMORY, "cannot create an FSST symbol table");
-  bool use = force == T_FSST;
-  if (!use) {
-    FSTX_PROF_SCOPE(W_STR_CHOOSE);
-    std::unique_ptr<uint8_t[]> fo(new uint8_t[2 * sbytes + 16]);
-    std::vector<size_t> lo(sp.size());
-    {
-      size_t fbytes = fsst_encode(ft->enc, sp.size(), sl.data(), sp.data(), fo.get(), lo.data());
-      fbytes += FSST_MAXHEADER / 2;  // the symbol table goes into every page
-      if (cx.codec == FSTX_CODEC_NONE) {
-        use = fbytes * 100 < sbytes * 85;
-      } else {
-        std::vector<uint8_t> cat;
-        cat.reserve(sbytes);
-        for (size_t k = 0; k < sp.size(); ++k) cat.insert(cat.end(), sp[k], sp[k] + sl[k]);
-        const size_t zp = zstd_est(cx, cat.data(), cat.size());
-        // FSST output is contiguous in fo
-        const size_t zf = std::min(fbytes, zstd_est(cx, fo.get(), fbytes - FSST_MAXHEADER / 2) + FSST_MAXHEADER / 2);
-        use = zf < zp;
-      }
-    }
-  }
-  if (use) {
+  {
     unsigned char buf[FSST_MAXHEADER];
     const unsigned int len = fsst_export((fsst_encoder_t*)ft->enc, buf);
     ft->blob.assign(buf, buf + len);
+  }
+  bool use = force == T_FSST;
+  if (!use && cx.codec == FSTX_CODEC_NONE) {
+    FSTX_PROF_SCOPE(W_STR_CHOOSE);
+    std::unique_ptr<uint8_t[]> fo(new uint8_t[2 * sbytes + 16]);
+    std::vector<size_t> lo(sp.size());
+    size_t fbytes = fsst_encode(ft->enc, sp.size(), sl.data(), sp.data(), fo.get(), lo.data());
+    fbytes += FSST_MAXHEADER / 2;  // the symbol table goes into every page
+    use = fbytes * 100 < sbytes * 85;
+  } else if (!use) {
+    FSTX_PROF_SCOPE(W_STR_CHOOSE);
+    // The samples as one page in each encoding (lengths included: FSST pages store the encoded lengths), each
+    // compressed as a page of the size it stands for. The writer cuts a page at the first 1,024-row vector that
+    // takes it to kDefaultPageBytes of plain size (4 x rows + text), so a page holds about vpp vectors of the
+    // chunk's average size (all of a smaller chunk) and page_text bytes of text; a page in either encoding is then
+    // about page_text / sbytes times the sample's page. From the whole chunk's sizes, not the sample's: the
+    // samples leave out missing rows and their share of them varies (integers: the same choice on every build).
+    std::vector<const char*> pp(sp.size());
+    std::vector<int32_t> ll(sp.size());
+    for (size_t k = 0; k < sp.size(); ++k) {
+      pp[k] = (const char*)sp[k];
+      ll[k] = (int32_t)sl[k];
+    }
+    Buf bp, bf;
+    encode_str_page(K_STR, pp.data(), ll.data(), (uint32_t)sp.size(), T_PLAIN, nullptr, cx, bp);
+    encode_str_page(K_STR, pp.data(), ll.data(), (uint32_t)sp.size(), T_FSST, ft.get(), cx, bf);
+    uint64_t all = 0;
+    for (uint64_t s : sc.vsizes) all += s;
+    const uint64_t nv = sc.vsizes.size(), avg = all / nv, lens = 4ull * kV * nv;  // lens: 4 x rows, to within a vector
+    const uint64_t vpp = avg ? std::min<uint64_t>(nv, (kDefaultPageBytes + avg - 1) / avg) : nv;
+    const uint64_t page_text = all > lens ? vpp * ((all - lens) / nv) : 0;
+    auto as_page = [&](size_t m) -> uint64_t {
+      if (!page_text) return m;
+      if (m >= (1ull << 31) || page_text >= (1ull << 32)) return std::max<uint64_t>(m, page_text);  // past 256 KB
+      return (uint64_t)m * page_text / sbytes;
+    };
+    const size_t zp = std::min(bp.size(), zstd_est_page(cx, bp.v.data(), bp.size(), as_page(bp.size())));
+    const size_t zf = std::min(bf.size(), zstd_est_page(cx, bf.v.data(), bf.size(), as_page(bf.size())));
+    use = zf < zp;
+  }
+  if (use) {
     sc.fsst = std::move(ft);
     sc.mode = T_FSST;
   }
