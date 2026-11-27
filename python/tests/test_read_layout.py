@@ -123,3 +123,18 @@ def test_page_buffers_kept_between_batches(tmp_path):
         assert fstx.read_fstx(p, threads=th).equals(want)
     with fstx.open(p) as f:
         assert pa.Table.from_batches(f.to_batches(batch_rows=1_234)).equals(want)
+
+
+def test_decode_state_kept_between_batches(tmp_path):
+    # zstd pages of every kind, read batch after batch: the workers' codec contexts and buffers are reused
+    n = 150_001
+    t = pa.table({"i": pa.array([None if k % 97 == 0 else k * 3 for k in range(n)], pa.int32()),
+                  "d": pa.array([k / 7 for k in range(n)], pa.float64()),
+                  "b": pa.array([None if k % 5 == 0 else k % 3 == 0 for k in range(n)], pa.bool_()),
+                  "s": pa.array(["v%d" % (k % 1_000) * (1 + k % 4) for k in range(n)])})
+    p = tmp_path / "z.fstx"
+    fstx.write_fstx(t, p, compress="zstd")
+    with fstx.open(p) as f:
+        for br in (None, 8_191, 50_000):
+            assert pa.Table.from_batches(f.to_batches(batch_rows=br)).equals(t)
+    assert fstx.read_fstx(p, columns=["d"], threads=2).column(0).equals(t.column("d"))

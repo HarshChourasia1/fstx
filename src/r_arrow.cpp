@@ -232,8 +232,10 @@ struct Stream : Live {
   bool plain = false;              // FSTX_ARROW_PLAIN_STRINGS
   uint8_t* utf8_bad = nullptr;     // FSTX_ARROW_CHECK_UTF8: the caller's flags, one per column
   std::vector<fstx_bufpool*> bufs;  // per column: string page buffers kept from one batch for the next
+  fstx_scratchset* scratch = nullptr;  // the workers' codec contexts and page buffers, kept between batches
   std::string error;
   ~Stream() {
+    fstx_scratchset_free(scratch);
     for (fstx_bufpool* p : bufs) fstx_bufpool_free(p);
     if (f) fstx_close(f);
   }
@@ -333,7 +335,7 @@ std::vector<uint64_t> fixed_prep(const Stream& S, FixedCol& F, uint64_t b, int p
   return cut;
 }
 
-void fixed_part(const Stream& S, FixedCol& F, uint64_t i0, uint64_t i1, int threads) {
+void fixed_part(const Stream& S, FixedCol& F, uint64_t i0, uint64_t i1, int threads, fstx_scratch* ws = nullptr) {
   const ColSpec& c = *F.c;
   const uint64_t* sel = F.sel;
   const uint64_t lo = sel ? sel[i0] : i0, hi = sel ? sel[i1 - 1] + 1 : i1;  // file rows, relative to a
@@ -347,9 +349,12 @@ void fixed_part(const Stream& S, FixedCol& F, uint64_t i0, uint64_t i1, int thre
     bits[i >> 3] &= (uint8_t) ~(1u << (i & 7));
     ++nulls;
   };
+  auto load = [&](void* dst) {  // with the task's decode state when it runs on the pool
+    check(ws ? fstx_colsrc_load_with(s.get(), dst, ws, &e) : fstx_colsrc_load(s.get(), dst, threads, &e), e);
+  };
   if (F.same) {  // decode straight into the Arrow buffer
     void* dst = (uint8_t*)F.vals + (size_t)i0 * w;
-    check(fstx_colsrc_load(s.get(), dst, threads, &e), e);
+    load(dst);
     if (F.scan) {
       if (w == 4) {
         const int32_t* x = (const int32_t*)F.vals;
@@ -366,7 +371,7 @@ void fixed_part(const Stream& S, FixedCol& F, uint64_t i0, uint64_t i1, int thre
     return;
   }
   std::vector<uint8_t> tmp((size_t)(hi - lo) * w);
-  check(fstx_colsrc_load(s.get(), tmp.data(), threads, &e), e);
+  load(tmp.data());
   s.reset();
   auto at = [&](uint64_t i) { return (sel ? sel[i] : i) - lo; };
   if (c.phys == FSTX_FLOAT64) {
@@ -574,7 +579,7 @@ void string_column(const ColSpec& c, SrcPtr s, const uint64_t* sel, uint64_t n, 
 // Runs fn(i, w, threads) for i in [0, n): one task on this thread with all `threads` for its own decoding,
 // more on the engine's worker pool (one thread each). The first exception a task throws is rethrown here.
 template <typename Fn>
-void run_tasks(size_t n, int threads, Fn& fn) {
+void run_tasks(size_t n, int threads, Fn& fn, fstx_scratchset* ss = nullptr) {
   if (n <= 1) {
     for (size_t i = 0; i < n; ++i) fn(i, (fstx_scratch*)nullptr, threads);
     return;
@@ -598,7 +603,7 @@ void run_tasks(size_t n, int threads, Fn& fn) {
     }
   };
   fstx_error e;
-  const int rc = fstx_run_tasks((int64_t)n, threads, cb, &ctx, &e);
+  const int rc = fstx_run_tasks((int64_t)n, threads, cb, &ctx, ss, &e);
   if (ctx.ex) std::rethrow_exception(ctx.ex);
   check(rc, e);
 }
@@ -786,10 +791,10 @@ void batch_range(const Stream& S, uint64_t a, uint64_t b, uint64_t n, ArrayHold*
   }
   auto decode = [&](size_t i, fstx_scratch* w, int threads) {
     const Task& t = tasks[i];
-    if (fx[t.j]) fixed_part(S, *fx[t.j], t.i0, t.i1, threads);
+    if (fx[t.j]) fixed_part(S, *fx[t.j], t.i0, t.i1, threads, w);
     else str_decode(*sx[t.j], (uint32_t)t.i0, w);
   };
-  run_tasks(tasks.size(), S.threads, decode);
+  run_tasks(tasks.size(), S.threads, decode, S.scratch);
   tasks.clear();
   for (size_t j = 0; j < nc; ++j) {
     if (!sx[j]) continue;
@@ -1045,6 +1050,7 @@ extern "C" int fstx_arrow_stream_open(const char* path, const fstx_arrow_args* A
     S->threads = A->threads > 0 && A->threads < hw ? A->threads : hw;
     S->batch_rows = A->batch_rows;
     S->verify = A->verify;
+    S->scratch = fstx_scratchset_new();
     S->plain = (A->flags & FSTX_ARROW_PLAIN_STRINGS) != 0;
     if (A->flags & FSTX_ARROW_CHECK_UTF8) {
       if (!A->utf8_bad) return arg_fail("FSTX_ARROW_CHECK_UTF8 needs utf8_bad");

@@ -86,6 +86,18 @@ struct fstx_scratch {
   std::vector<uint8_t>* b;
 };
 
+// Decode state per worker kept between fstx_run_tasks calls (a stream's batches): codec contexts and the page
+// buffers they decompress into are made once, not once per batch.
+struct fstx_scratchset {
+  std::vector<std::unique_ptr<fstx::CodecContext>> cc;
+  std::vector<std::vector<uint8_t>> a, b;
+  void ensure(size_t k) {  // before the workers start
+    while (cc.size() < k) cc.emplace_back(new fstx::CodecContext());
+    if (a.size() < k) a.resize(k);
+    if (b.size() < k) b.resize(k);
+  }
+};
+
 namespace fstx {
 namespace {
 
@@ -321,13 +333,20 @@ void make_ready(fstx_colsrc& S, uint32_t p) {
   trim_cache(S, p, p + 1);
 }
 
-// Runs fn(i) for i in [0, n) on up to `threads` workers (on this thread when the pool is busy).
+// Runs fn(i) for i in [0, n) on up to `threads` workers (on this thread when the pool is busy). ss: the workers'
+// decode state to use (else made for this call).
 void parallel_for(int64_t n, int threads, const std::function<void(int64_t, CodecContext&, std::vector<uint8_t>&,
-                                                                    std::vector<uint8_t>&)>& fn) {
+                                                                    std::vector<uint8_t>&)>& fn,
+                  fstx_scratchset* ss = nullptr) {
   if (n <= 0) return;
   int k = (int)std::min<int64_t>(resolve_threads(threads), n);
   ThreadPool& pool = ThreadPool::instance();
   if (k <= 1 || pool.busy()) {
+    if (ss) {
+      ss->ensure(1);
+      for (int64_t i = 0; i < n; ++i) fn(i, *ss->cc[0], ss->a[0], ss->b[0]);
+      return;
+    }
     CodecContext cc;
     std::vector<uint8_t> a, b;
     for (int64_t i = 0; i < n; ++i) fn(i, cc, a, b);
@@ -336,15 +355,20 @@ void parallel_for(int64_t n, int threads, const std::function<void(int64_t, Code
   std::atomic<int64_t> next(0);
   std::atomic<bool> stop(false);
   std::vector<std::unique_ptr<CodecContext>> ctxs;
-  for (int i = 0; i < k; ++i) ctxs.emplace_back(new CodecContext());
+  if (ss) ss->ensure((size_t)k);
+  else
+    for (int i = 0; i < k; ++i) ctxs.emplace_back(new CodecContext());
   pool.start(k, [&](int id) {
-    std::vector<uint8_t> a, b;
+    std::vector<uint8_t> la, lb;
+    std::vector<uint8_t>& a = ss ? ss->a[(size_t)id] : la;
+    std::vector<uint8_t>& b = ss ? ss->b[(size_t)id] : lb;
+    CodecContext& cc = ss ? *ss->cc[(size_t)id] : *ctxs[(size_t)id];
     for (;;) {
       if (stop.load()) return;
       const int64_t i = next.fetch_add(1);
       if (i >= n) return;
       try {
-        fn(i, *ctxs[(size_t)id], a, b);
+        fn(i, cc, a, b);
       } catch (...) {
         stop.store(true);
         throw;
@@ -670,13 +694,17 @@ extern "C" void fstx_colsrc_drop_page(fstx_colsrc* s, uint32_t p) {
   --s->ready_count;
 }
 
-extern "C" int fstx_run_tasks(int64_t n, int threads, fstx_task_fn fn, void* ctx, fstx_error* err) {
+extern "C" int fstx_run_tasks(int64_t n, int threads, fstx_task_fn fn, void* ctx, fstx_scratchset* ss,
+                              fstx_error* err) {
   set_error(err, FSTX_OK, "");
   try {
-    parallel_for(n, threads, [&](int64_t i, CodecContext& cc, std::vector<uint8_t>& a, std::vector<uint8_t>& b) {
-      fstx_scratch w{&cc, &a, &b};
-      if (fn(ctx, i, &w) != 0) fail(FSTX_ERR_INTERNAL, "a task failed");
-    });
+    parallel_for(
+        n, threads,
+        [&](int64_t i, CodecContext& cc, std::vector<uint8_t>& a, std::vector<uint8_t>& b) {
+          fstx_scratch w{&cc, &a, &b};
+          if (fn(ctx, i, &w) != 0) fail(FSTX_ERR_INTERNAL, "a task failed");
+        },
+        ss);
     return FSTX_OK;
   } catch (...) {
     return to_error(err);
@@ -693,8 +721,14 @@ extern "C" void fstx_colsrc_drop(fstx_colsrc* s, uint32_t p) {
   }
 }
 
-extern "C" int fstx_colsrc_load(fstx_colsrc* s, void* dst, int threads, fstx_error* err) {
+// fstx_colsrc_load on `threads` workers, or on this thread with a worker's decode state w.
+static int colsrc_load(fstx_colsrc* s, void* dst, int threads, fstx_scratch* w, fstx_error* err) {
   set_error(err, FSTX_OK, "");
+  using Fn = std::function<void(int64_t, CodecContext&, std::vector<uint8_t>&, std::vector<uint8_t>&)>;
+  auto parallel_for = [w](int64_t n, int threads, const Fn& fn) {
+    if (!w) return fstx::parallel_for(n, threads, fn);
+    for (int64_t i = 0; i < n; ++i) fn(i, *w->cc, *w->a, *w->b);
+  };
   try {
     if (s->mode != FSTX_SRC_STRINGS && !dst) fail(FSTX_ERR_ARG, "fixed-width sources load into a buffer");
     if (s->mode == FSTX_SRC_CODES) {
@@ -741,6 +775,17 @@ extern "C" int fstx_colsrc_load(fstx_colsrc* s, void* dst, int threads, fstx_err
     return to_error(err);
   }
 }
+
+extern "C" int fstx_colsrc_load(fstx_colsrc* s, void* dst, int threads, fstx_error* err) {
+  return colsrc_load(s, dst, threads, nullptr, err);
+}
+
+extern "C" int fstx_colsrc_load_with(fstx_colsrc* s, void* dst, fstx_scratch* w, fstx_error* err) {
+  return colsrc_load(s, dst, 1, w, err);
+}
+
+extern "C" fstx_scratchset* fstx_scratchset_new(void) { return new (std::nothrow) fstx_scratchset(); }
+extern "C" void fstx_scratchset_free(fstx_scratchset* ss) { delete ss; }
 
 extern "C" int fstx_colsrc_detach(fstx_colsrc* s, fstx_error* err) {
   set_error(err, FSTX_OK, "");
