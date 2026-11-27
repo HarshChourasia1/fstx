@@ -48,13 +48,27 @@ constexpr uint32_t kMaxDictEntries = 1u << 25;  // entries in one string diction
 
 // Feature bits (format 3: footer required_features / optional_features). Bits 0-15 are for features that change
 // how the header, tail or footer are read; they are also in header bytes 6-7, so a reader refuses them before it
-// reads the footer. Bits 16-63 are for everything else (types, codecs, encodings). This build uses none; the
-// named ones are reserved for later versions.
+// reads the footer. Bits 16-63 are for everything else (types, codecs, encodings). This build reads and writes
+// bits 16 (int64 columns) and 17 (binary columns), set exactly when the file has such a column; the other named
+// ones are reserved for later versions.
 enum : int { kFeatInt64 = 16, kFeatBinary = 17, kFeatZstdDict = 18, kFeatPcodec = 19, kFeatExperimental = 63 };
 constexpr uint64_t kFeatHeaderMask = 0xffffu;
 const char* feature_name(int bit);  // reserved name of a bit, or nullptr
 uint64_t features_known();          // bits this build can read
 bool valid_utf8(const char* s, size_t n);  // well-formed UTF-8 (no overlongs, surrogates or values past U+10FFFF)
+
+// -1, 0, 1 as d <, ==, > v exactly; d is not NaN. No long double (MSVC makes it a double).
+inline int cmp_d_i64(double d, int64_t v) {
+  if (d >= 9223372036854775808.0) return 1;
+  if (d < -9223372036854775808.0) return -1;
+  const int64_t t = (int64_t)d;  // d in [-2^63, 2^63): truncation toward 0, exact
+  if (t != v) return t < v ? -1 : 1;
+  const double f = d - (double)t;  // exact: |d| >= 2^53 is a whole number (f = 0); below, t is exact as a double
+  return f > 0 ? 1 : f < 0 ? -1 : 0;
+}
+// int64 page statistics (spec 4.5): the largest double not above v, and the smallest double not below v
+double i64_floor_d(int64_t v);
+double i64_ceil_d(int64_t v);
 
 // ---------------------------------------------------------------- errors
 struct Error : public std::exception {

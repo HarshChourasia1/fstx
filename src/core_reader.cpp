@@ -3,6 +3,7 @@
 // the host on the calling thread). File format 3 (encoded pages, enc.h). No R headers.
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <unordered_map>
@@ -62,7 +63,20 @@ const char* feature_name(int bit) {
   }
 }
 
-uint64_t features_known() { return codec_feature_bits(); }
+// fstx 1.2: int64 and binary columns (bits 16, 17), plus whatever the codecs need
+uint64_t features_known() { return codec_feature_bits() | (1ull << kFeatInt64) | (1ull << kFeatBinary); }
+
+double i64_floor_d(int64_t v) {
+  double d = (double)v;
+  if (cmp_d_i64(d, v) > 0) d = std::nextafter(d, -HUGE_VAL);
+  return d;
+}
+
+double i64_ceil_d(int64_t v) {
+  double d = (double)v;
+  if (cmp_d_i64(d, v) < 0) d = std::nextafter(d, HUGE_VAL);
+  return d;
+}
 
 namespace {
 // A number this reader does not know, in a header or footer whose checksum is valid: a newer fstx wrote it.
@@ -190,10 +204,13 @@ void open_file(fstx_file& F, const std::string& path) {
     int phys = (int)x->phys(), lt = (int)x->logical();
     if (!text_ok(x->name()) || !text_ok(x->tzone()))
       fail(FSTX_ERR_CORRUPT, "column %u: its name or time zone is not valid UTF-8 text", c + 1);
-    if (phys == 4) refuse_newer(path, "64-bit integer columns (column '%s', type 4)", F.col_name(c).c_str());
-    if (phys == 5) refuse_newer(path, "binary columns (column '%s', type 5)", F.col_name(c).c_str());
-    if (phys > FSTX_STRING) refuse_newer(path, "column type %d (column '%s')", phys, F.col_name(c).c_str());
+    if (phys > FSTX_BINARY) refuse_newer(path, "column type %d (column '%s')", phys, F.col_name(c).c_str());
     if (lt > FSTX_LT_POSIXCT) refuse_newer(path, "logical type %d (column '%s')", lt, F.col_name(c).c_str());
+    // fstx 1.2 types need their required bit (spec 4.2, 5): a type 4 / 5 column without it is corrupt
+    if ((phys == FSTX_INT64 && !(req >> kFeatInt64 & 1u)) || (phys == FSTX_BINARY && !(req >> kFeatBinary & 1u)))
+      fail(FSTX_ERR_CORRUPT, "'%s' is corrupt: column '%s' has type %d (%s) but the file does not set feature bit %d",
+           path.c_str(), F.col_name(c).c_str(), phys, phys == FSTX_INT64 ? "64-bit integers" : "binary",
+           phys == FSTX_INT64 ? (int)kFeatInt64 : (int)kFeatBinary);
     bool ok = true;
     switch (lt) {
       case FSTX_LT_NONE: break;
@@ -202,7 +219,7 @@ void open_file(fstx_file& F, const std::string& path) {
       case FSTX_LT_POSIXCT: ok = phys == FSTX_FLOAT64; break;
       default: ok = false;
     }
-    if (!ok) fail(FSTX_ERR_CORRUPT, "column %u has an invalid type combination", c);
+    if (!ok) fail(FSTX_ERR_CORRUPT, "column %u has an invalid type combination", c);  // logical 1-3 on type 4 / 5 too
   }
   F.n_rows = ft->row_count();
   if (F.n_rows > (1ull << 62)) fail(FSTX_ERR_CORRUPT, "row count out of range");
@@ -243,7 +260,7 @@ void open_file(fstx_file& F, const std::string& path) {
                          codec, F.col_name(c).c_str());
           refuse_newer(path, "codec %d (column '%s')", codec, F.col_name(c).c_str());
         }
-        if (enc::chain_kind(ch2) > enc::K_DICT)
+        if (enc::chain_kind(ch2) > enc::kMaxKind)
           refuse_newer(path, "page kind %d (column '%s')", enc::chain_kind(ch2), F.col_name(c).c_str());
         if (enc::chain_na(ch2) > enc::NA_RUNS)
           refuse_newer(path, "missing-value mode %d (column '%s')", enc::chain_na(ch2), F.col_name(c).c_str());
@@ -262,19 +279,19 @@ void open_file(fstx_file& F, const std::string& path) {
         // fixed-width values (enc.h): chains nest at most 3 deep and each level at most doubles the values, so
         // 64 x the plain size plus 64 KB of block headers is far above any page the writer can make
         if (ok && kind != enc::K_STR && kind != enc::K_DICT)
-          ok = rl <= (uint64_t)p->row_count() * (kind == enc::K_DBL ? 8u : 4u) * 64u + 65536u;
+          ok = rl <= (uint64_t)p->row_count() * ((kind == enc::K_DBL || kind == enc::K_I64) ? 8u : 4u) * 64u + 65536u;
         return ok;
       };
       const fb::Page* dp = ch->dictionary();
       if (dp) {
-        if (phys != FSTX_STRING || !page_ok(dp, enc::K_DICT) || dp->null_count() != 0 || dp->row_count() > kMaxDictEntries)
+        if (!is_str(phys) || !page_ok(dp, enc::K_DICT) || dp->null_count() != 0 || dp->row_count() > kMaxDictEntries)
           fail(FSTX_ERR_CORRUPT, "the dictionary of column %u, row group %u is invalid", c, g);
         F.sums[c].comp += dp->comp_len();
         F.sums[c].raw += dp->raw_len();
         F.sums[c].pages += 1;
         ++F.n_pages;
       }
-      const int kind = phys == FSTX_STRING && dp ? enc::K_CODES : kind_of(phys);
+      const int kind = is_str(phys) && dp ? enc::K_CODES : kind_of(phys);
       uint64_t pr = rg->first_row();
       for (uint32_t i = 0; i < pages->size(); ++i) {
         const fb::Page* p = pages->Get(i);
@@ -343,7 +360,7 @@ void make_plan(fstx_plan& P, const fstx_file& F, const uint32_t* cols, uint32_t 
           dict_sent = true;
         }
         ReadTask t{j, c, p, (uint32_t)(s - p->first_row()), (uint32_t)(e - s), s - from, 0, dp ? dp->row_count() : 0u};
-        (oc.phys == FSTX_STRING ? P.strings : P.fixed).push_back(t);
+        (is_str(oc.phys) ? P.strings : P.fixed).push_back(t);
       }
     }
   }
@@ -399,7 +416,7 @@ void make_plan_rows(fstx_plan& P, const fstx_file& F, const uint32_t* cols, uint
       ReadTask t{j, c, p, 0, (uint32_t)(e1 - e), e, 0, dp ? dp->row_count() : 0u};
       t.e0 = e;
       t.e1 = e1;
-      if (dp && oc.phys == FSTX_STRING) {
+      if (dp && is_str(oc.phys)) {
         auto it = dict_idx.find(dp);
         if (it == dict_idx.end()) {
           it = dict_idx.emplace(dp, (int32_t)P.dicts.size()).first;
@@ -408,7 +425,7 @@ void make_plan_rows(fstx_plan& P, const fstx_file& F, const uint32_t* cols, uint
         }
         t.dict = it->second;
       }
-      (oc.phys == FSTX_STRING ? P.strings : P.fixed).push_back(t);
+      (is_str(oc.phys) ? P.strings : P.fixed).push_back(t);
       e = e1;
     }
   }
@@ -511,6 +528,12 @@ void check_nulls(const fb::Page* p, const int32_t* x, uint32_t n, int32_t na) {
   if (k != p->null_count()) null_count_mismatch(k, p->null_count());
 }
 
+void check_nulls(const fb::Page* p, const int64_t* x, uint32_t n) {
+  uint32_t k = 0;
+  for (uint32_t i = 0; i < n; ++i) k += x[i] == std::numeric_limits<int64_t>::min();
+  if (k != p->null_count()) null_count_mismatch(k, p->null_count());
+}
+
 void check_nulls(const fb::Page* p, const double* x, uint32_t n) {
   uint32_t k = 0;
   for (uint32_t i = 0; i < n; ++i) {
@@ -608,11 +631,14 @@ struct Reader {
       if (vals.size() < (size_t)n * w) vals.resize((size_t)n * w);
       if (oc.phys == FSTX_FLOAT64)
         enc::decode_dbl_page_part(b, t.page->raw_len(), t.page->chain(), n, vmp, (double*)vals.data());
+      else if (oc.phys == FSTX_INT64)
+        enc::decode_i64_page_part(b, t.page->raw_len(), t.page->chain(), n, vmp, (int64_t*)vals.data());
       else
         enc::decode_int_page_part(b, t.page->raw_len(), t.page->chain(), n, kind_of(oc.phys),
                                   std::numeric_limits<int32_t>::min(), vmp, (int32_t*)vals.data());
       if (nulls) {
         if (oc.phys == FSTX_FLOAT64) check_nulls(t.page, (const double*)vals.data(), n);
+        else if (oc.phys == FSTX_INT64) check_nulls(t.page, (const int64_t*)vals.data(), n);
         else check_nulls(t.page, (const int32_t*)vals.data(), n, std::numeric_limits<int32_t>::min());
       }
     } catch (...) {
@@ -646,7 +672,7 @@ struct Reader {
       const uint8_t* b = page_body_read(F, col, p, verify, w.cc, D.buf, w.stored);
       enc::decode_str_page(b, p->raw_len(), p->chain(), p->row_count(), enc::K_DICT, D.lens, D.fbuf, &D.bytes);
       D.n = p->row_count();
-      check_no_nul(D.bytes, D.lens.data(), D.n);
+      if ((int)F.col(col)->phys() == FSTX_STRING) check_no_nul(D.bytes, D.lens.data(), D.n);
       D.off.resize((size_t)D.n + 1);
       D.off[0] = 0;
       for (uint32_t k = 0; k < D.n; ++k) D.off[k + 1] = D.off[k] + (uint64_t)(D.lens[k] > 0 ? D.lens[k] : 0);
@@ -696,7 +722,7 @@ struct Reader {
         T.idx.resize(cnt);
         for (uint64_t e = t.e0; e < t.e1; ++e) T.idx[e - t.e0] = (uint32_t)(P.rows[e] - fr);
         enc::decode_str_page_rows(b, len, t.page->chain(), n, T.idx.data(), (uint32_t)cnt, T.lv, s.olens, s.obytes);
-        check_no_nul(s.obytes.data(), s.olens.data(), (uint32_t)cnt);
+        if (text(t)) check_no_nul(s.obytes.data(), s.olens.data(), (uint32_t)cnt);
       } else {  // FSTX_VERIFY_NULLS counts the whole page
         const char* bytes = nullptr;
         enc::decode_str_page(b, len, t.page->chain(), n, enc::K_STR, T.lv, T.fbuf, &bytes);
@@ -709,7 +735,7 @@ struct Reader {
           s.olens[e - t.e0] = T.lv[i];
           if (T.lv[i] > 0) s.obytes.insert(s.obytes.end(), bytes + T.off[i], bytes + T.off[i + 1]);
         }
-        check_no_nul(s.obytes.data(), s.olens.data(), (uint32_t)cnt);
+        if (text(t)) check_no_nul(s.obytes.data(), s.olens.data(), (uint32_t)cnt);
       }
     } catch (...) {
       rethrow_in(t);
@@ -727,6 +753,9 @@ struct Reader {
 
   [[noreturn]] void rethrow_in(const ReadTask& t) { rethrow_for_page(F, t.col, t.page); }
 
+  // a string column's values are text, so a NUL is corrupt; binary columns may hold any byte
+  bool text(const ReadTask& t) const { return P.outs[t.out].phys == FSTX_STRING; }
+
   void run_fixed(const ReadTask& t, Work& wk, std::vector<uint8_t>& scratch, std::vector<uint8_t>& vals) {
     if (P.rows_mode) return run_fixed_rows(t, wk);
     const OutCol& oc = P.outs[t.out];
@@ -743,11 +772,14 @@ struct Reader {
       }
       if (oc.phys == FSTX_FLOAT64)
         enc::decode_dbl_page(b, t.page->raw_len(), t.page->chain(), n, (double*)to);
+      else if (oc.phys == FSTX_INT64)
+        enc::decode_i64_page(b, t.page->raw_len(), t.page->chain(), n, (int64_t*)to);
       else
         enc::decode_int_page(b, t.page->raw_len(), t.page->chain(), n, kind_of(oc.phys),
                              std::numeric_limits<int32_t>::min(), (int32_t*)to);
       if (nulls) {
         if (oc.phys == FSTX_FLOAT64) check_nulls(t.page, (const double*)to, n);
+        else if (oc.phys == FSTX_INT64) check_nulls(t.page, (const int64_t*)to, n);
         else check_nulls(t.page, (const int32_t*)to, n, std::numeric_limits<int32_t>::min());
       }
       if (!whole) {
@@ -782,7 +814,7 @@ struct Reader {
         FSTX_PROF_SCOPE(R_STR_DEC);
         enc::decode_str_page(b, len, chain, n, enc::K_DICT, s.lv, s.fbuf, &s.bytes);
         s.lens = s.lv.data();
-        check_no_nul(s.bytes, s.lens, n);
+        if (text(t)) check_no_nul(s.bytes, s.lens, n);
       } else if (t.dict_rows) {
         s.kind = enc::K_CODES;
         if (s.lv.size() < n) s.lv.resize(n);
@@ -805,7 +837,7 @@ struct Reader {
           if (s.lv[i] > 0) skip_bytes += (uint64_t)s.lv[i];
         s.lens = s.lv.data() + t.skip;
         s.bytes = bytes + skip_bytes;
-        check_no_nul(s.bytes, s.lens, t.take);
+        if (text(t)) check_no_nul(s.bytes, s.lens, t.take);
       }
     } catch (...) {
       rethrow_in(t);
@@ -1044,7 +1076,12 @@ extern "C" void fstx_file_info_get(const fstx_file* f, fstx_file_info* o) {
     o->table_attrs = a->data();
     o->table_attrs_len = a->size();
   }
+  o->required_features = f->footer->required_features();
+  o->optional_features = f->footer->optional_features();
 }
+
+extern "C" uint64_t fstx_features_known(void) { return fstx::features_known(); }
+extern "C" const char* fstx_feature_name(int bit) { return bit >= 0 && bit < 64 ? fstx::feature_name(bit) : nullptr; }
 
 extern "C" int fstx_column_info_get(const fstx_file* f, uint32_t c, fstx_column_info* o) {
   if (c >= f->n_cols) return FSTX_ERR_ARG;
@@ -1127,8 +1164,8 @@ extern "C" int fstx_plan_rows_codes(fstx_plan* p, uint32_t out_index, fstx_error
   fstx::set_error(err, FSTX_OK, "");
   try {
     if (!p || !p->rows_mode) fstx::fail(FSTX_ERR_ARG, "dictionary codes are for rows plans");
-    if (out_index >= p->outs.size() || p->outs[out_index].phys != FSTX_STRING)
-      fstx::fail(FSTX_ERR_ARG, "dictionary codes need a string column");
+    if (out_index >= p->outs.size() || !fstx::is_str(p->outs[out_index].phys))
+      fstx::fail(FSTX_ERR_ARG, "dictionary codes need a string or binary column");
     if (!p->pos.empty()) fstx::fail(FSTX_ERR_ARG, "dictionary codes need rows in ascending order");
     if (p->codes_out.size() < p->outs.size()) p->codes_out.resize(p->outs.size(), 0);
     p->codes_out[out_index] = 1;

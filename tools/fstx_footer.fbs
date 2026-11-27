@@ -9,9 +9,10 @@ namespace fstx.fb;
 
 file_identifier "FSTX";
 
-// How values sit in a page (the R storage type).
-// Reserved: 4 = 64-bit integer (fstx 1.1; its page min/max are rounded outward to doubles), 5 = binary.
-enum PhysType : ubyte { Int32 = 0, Float64 = 1, Logical = 2, String = 3 }
+// How values sit in a page (the R storage type). Int64 and Binary: fstx 1.2 (feature bits 16 and 17); int64 page
+// min / max are rounded outward to doubles. src/fstx_footer_generated.h was not regenerated for them (the code
+// compares the byte); a regeneration must use flatc 25.12.19.
+enum PhysType : ubyte { Int32 = 0, Float64 = 1, Logical = 2, String = 3, Int64 = 4, Binary = 5 }
 
 // R type layered on top of the physical type. Anything else is "None" and its
 // attributes travel in Column.attrs. 4-255 reserved.

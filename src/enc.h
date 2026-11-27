@@ -50,8 +50,9 @@ enum {
   F_SMALL_STR_CACHE = 0x1000
 };
 
-// page kinds (low nibble of chain byte 0, and byte 0 of the page body)
-enum : uint8_t { K_INT = 1, K_DBL = 2, K_LGL = 3, K_STR = 4, K_CODES = 5, K_DICT = 6 };
+// page kinds (low nibble of chain byte 0, and byte 0 of the page body); K_I64: fstx 1.2, int64 columns
+enum : uint8_t { K_INT = 1, K_DBL = 2, K_LGL = 3, K_STR = 4, K_CODES = 5, K_DICT = 6, K_I64 = 7 };
+constexpr int kMaxKind = K_I64;  // kinds above this are reserved (a newer fstx)
 enum : uint8_t { NA_NONE = 0, NA_BITMAP = 1, NA_RUNS = 2 };
 enum { P_FAST = 0, P_BALANCED = 1, P_SMALL = 2 };
 
@@ -173,6 +174,11 @@ void decode_int_page_part(const uint8_t* body, size_t len, uint32_t chain, uint3
                           const uint8_t* vm, int32_t* out);
 void decode_dbl_page_part(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, const uint8_t* vm,
                           double* out);
+// int64 pages (kind K_I64, fstx 1.2): tags 1-7 on the 64-bit values; INT64_MIN marks missing values.
+uint32_t encode_i64_page(const int64_t* x, uint32_t n, const EncCtx& cx, Buf& out);
+void decode_i64_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, int64_t* out);
+void decode_i64_page_part(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, const uint8_t* vm,
+                          int64_t* out);
 
 // ---- shared by enc_num.cpp and enc_str.cpp
 // int32 child chain (chooses its own encoding); returns its tags (top tag in the low byte)
