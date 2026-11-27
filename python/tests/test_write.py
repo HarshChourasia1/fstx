@@ -503,6 +503,30 @@ def test_refused_string_in_a_repeated_column(chunks, row, match, tmp_path):
     assert not p.exists()
 
 
+def test_refused_strings_checked_on_many_threads(tmp_path):
+    # the string check runs in slices of 65,536 values on all threads: the error still names the first column
+    # with a problem and its first row, whatever slice found it
+    n = 300_000
+    plain = [f"v{i}" for i in range(n)]
+    plain[140_001] = b"\xff"  # not UTF-8, in a later slice ...
+    plain[70_000] = "a\x00b"  # ... than this NUL
+    vals = [f"k{i % 9}" for i in range(n)]  # 9 values: goes to the engine dictionary-coded
+    vals[100_500] = "bad\x00"
+
+    def text(values):
+        return pa.array([v.encode() if isinstance(v, str) else v for v in values], pa.binary()).view(pa.string())
+
+    bad_plain, rep, good = text(plain), text(vals), pa.array([f"g{i}" for i in range(n)])
+    p = tmp_path / "refused.fstx"
+    for cols, name, row in (({"good": good, "a": bad_plain, "b": rep}, "a", 70_000),
+                            ({"good": good, "b": rep, "a": bad_plain}, "b", 100_500)):
+        for threads in (1, None):
+            with pytest.raises(ValueError, match="NUL") as e:
+                fstx.write_fstx(pa.table(cols), p, threads=threads)
+            assert f"column '{name}'" in str(e.value) and f"(row {row})" in str(e.value), str(e.value)
+            assert not p.exists()
+
+
 def test_repeated_strings_are_dictionary_coded(tmp_path):
     # equal strings reach the engine as one pointer, as R's string cache gives them, so a column of 20 values
     # is stored as a dictionary (as R stores it), across chunks and with missing values

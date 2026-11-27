@@ -237,6 +237,24 @@ int get_strings(void* ctx, uint64_t row, uint32_t n, const char** ptrs, int32_t*
   return 0;
 }
 
+const void* capsule(nb::handle h, const char* name) {
+  void* p = PyCapsule_GetPointer(h.ptr(), name);
+  if (!p) throw nb::python_error();
+  return p;
+}
+
+struct Col {
+  std::string name, tz;
+  std::vector<std::string> levels;
+  std::vector<const char*> lv_ptr;
+  std::vector<uint32_t> lv_len;
+  std::string attrs;
+  bool has_attrs = false, has_tz = false;
+  StrSrc src;
+  NumSrc num;
+  std::vector<uint8_t> buf;  // the window's rows, when they are filled
+};
+
 // Well-formed UTF-8 (no overlongs, surrogates or values past U+10FFFF) without NUL: 0 ok, 1 not UTF-8, 2 NUL.
 int text_problem(const unsigned char* p, int64_t n, bool text) {
   int64_t i = 0;
@@ -266,15 +284,21 @@ int text_problem(const unsigned char* p, int64_t n, bool text) {
   return 0;
 }
 
-// The `n` values of a plain chunk or of a dictionary: sound offsets, at most 2^31-1 bytes each, no NUL, and UTF-8
+// Values [i0, i1) of a plain chunk or of a dictionary: sound offsets, at most 2^31-1 bytes each, no NUL, and UTF-8
 // for text. Returns 0, or a problem code (1 not UTF-8, 2 NUL, 3 too long, 4 bad offsets) with *at set to the
-// first value that shows it. With `codes` (n entries) every value's own code is kept there and checking goes on
-// past a bad value; 4 still stops at once.
-int check_values(const StrChunk& c, uint64_t n, uint64_t* at, std::vector<uint8_t>* codes) {
-  if (n == 0) return 0;
+// first value that shows it. With `codes` (indexed by value) every value's own code is kept there and checking
+// goes on past a bad value; 4 still stops at once. Offsets are checked against the value before i0 too, so the
+// ranges of one chunk, checked apart, find what one pass over it finds.
+int check_range(const StrChunk& c, uint64_t i0, uint64_t i1, uint64_t* at, uint8_t* codes) {
+  if (i1 <= i0) return 0;
   int64_t a0, b0, a1, b1;
-  span_of(c, 0, &a0, &b0);
-  span_of(c, n - 1, &a1, &b1);
+  span_of(c, i0, &a0, &b0);
+  span_of(c, i1 - 1, &a1, &b1);
+  int64_t prev = a0;
+  if (i0 > 0) {
+    int64_t pa;
+    span_of(c, i0 - 1, &pa, &prev);
+  }
   bool plain = a0 >= 0 && b1 >= a0;
   if (plain) {  // fast path: the whole byte range is ASCII without NUL, so every string in it is fine
     const unsigned char* p = (const unsigned char*)c.bytes + a0;
@@ -294,10 +318,8 @@ int check_values(const StrChunk& c, uint64_t n, uint64_t* at, std::vector<uint8_
     }
     plain = !(any & highs) && !zero;
   }
-  if (codes) codes->assign((size_t)n, 0);
   int first = 0;
-  int64_t prev = a0;
-  for (uint64_t i = 0; i < n; ++i) {
+  for (uint64_t i = i0; i < i1; ++i) {
     int64_t a, b;
     span_of(c, i, &a, &b);
     if (a < 0 || b < a || a < prev) {
@@ -312,62 +334,110 @@ int check_values(const StrChunk& c, uint64_t n, uint64_t* at, std::vector<uint8_
       *at = i;
       return r;
     }
-    (*codes)[(size_t)i] = (uint8_t)r;
+    codes[i] = (uint8_t)r;
     if (!first) first = r, *at = i;
   }
   return first;
 }
 
-// Every string of a column before the engine sees it. Returns 0, or a problem code (as check_values) with *row
-// set to the first row that shows it. A bad dictionary value that no row uses is never written, so is let be.
-int check_strings(const StrSrc& s, uint64_t* row) {
-  std::vector<uint8_t> codes;
-  const void* checked = nullptr;  // the dictionary checked last (the chunks normally share one)
-  int dr = 0;                     // its result
-  for (size_t k = 0; k < s.chunks.size(); ++k) {
-    const StrChunk& c = s.chunks[k];
-    if (c.rows == 0) continue;
-    uint64_t at = 0;
-    if (!c.idx) {
-      const int r = check_values(c, c.rows, &at, nullptr);
-      *row = s.first[k] + at;
-      if (r) return r;
-      continue;
-    }
-    if (!checked || checked != c.offsets) {
-      dr = check_values(c, c.dict_rows, &at, &codes);
-      checked = c.offsets;
-    }
-    *row = s.first[k];
-    if (dr == 4) return 4;
-    for (uint64_t i = 0; i < c.rows; ++i) {
-      if (bit_off(c.ivalid, c.ibit0 + (int64_t)i)) continue;
-      const int32_t v = c.idx[i];
-      *row = s.first[k] + i;
-      if (v < 0 || (uint64_t)v >= c.dict_rows) return 4;
-      if (dr && codes[(size_t)v]) return codes[(size_t)v];
+constexpr uint64_t kCheckSlice = 65536;  // values per task of the string check
+
+// Every string of every string column before the engine sees it, on `threads` threads. Returns 0, or a problem
+// code (as check_range) with *col / *row set to the first column, and its first row, that shows one. A bad
+// dictionary value that no row uses is never written, so is let be.
+int check_strings(const std::vector<Col>& cols, const std::vector<fstx_write_column>& defs, int threads,
+                  size_t* col, uint64_t* row) {
+  // the dictionaries (the chunks of a column normally share one), each value's problem code kept
+  struct Dict {
+    const StrChunk* c;
+    std::vector<uint8_t> codes;
+    std::atomic<bool> broken{false}, bad{false};  // bad offsets somewhere; some value has a problem
+  };
+  std::vector<std::unique_ptr<Dict>> dicts;
+  std::vector<std::vector<Dict*>> dict_of(cols.size());  // [column][chunk]
+  struct Task {
+    size_t col, chunk;
+    Dict* dict;  // a dictionary's values [a, b), else rows [a, b) of the chunk
+    uint64_t a, b;
+  };
+  std::vector<Task> tasks;
+  for (size_t j = 0; j < cols.size(); ++j) {
+    if (defs[j].phys != FSTX_STRING) continue;
+    const StrSrc& s = cols[j].src;
+    dict_of[j].assign(s.chunks.size(), nullptr);
+    for (size_t k = 0; k < s.chunks.size(); ++k) {
+      const StrChunk& c = s.chunks[k];
+      if (!c.idx) continue;
+      Dict* d = nullptr;
+      for (auto& x : dicts)
+        if (x->c->offsets == c.offsets && x->c->dict_rows == c.dict_rows) d = x.get();
+      if (!d) {
+        dicts.emplace_back(new Dict());
+        d = dicts.back().get();
+        d->c = &c;
+        d->codes.assign((size_t)c.dict_rows, 0);
+        for (uint64_t a = 0; a < c.dict_rows; a += kCheckSlice)
+          tasks.push_back({j, k, d, a, std::min(c.dict_rows, a + kCheckSlice)});
+      }
+      dict_of[j][k] = d;
     }
   }
-  return 0;
-}
+  run_parallel(tasks.size(), threads, [&](size_t i) {
+    const Task& t = tasks[i];
+    uint64_t at = 0;
+    const int r = check_range(*t.dict->c, t.a, t.b, &at, t.dict->codes.data());
+    if (r == 4) t.dict->broken = true;
+    else if (r) t.dict->bad = true;
+  });
 
-const void* capsule(nb::handle h, const char* name) {
-  void* p = PyCapsule_GetPointer(h.ptr(), name);
-  if (!p) throw nb::python_error();
-  return p;
+  // the rows, in slices; each slice keeps its first problem
+  tasks.clear();
+  for (size_t j = 0; j < cols.size(); ++j) {
+    if (defs[j].phys != FSTX_STRING) continue;
+    const StrSrc& s = cols[j].src;
+    for (size_t k = 0; k < s.chunks.size(); ++k)
+      for (uint64_t a = 0; a < s.chunks[k].rows; a += kCheckSlice)
+        tasks.push_back({j, k, dict_of[j][k], a, std::min(s.chunks[k].rows, a + kCheckSlice)});
+  }
+  std::vector<int> code(tasks.size(), 0);
+  std::vector<uint64_t> at(tasks.size(), 0);
+  run_parallel(tasks.size(), threads, [&](size_t i) {
+    const Task& t = tasks[i];
+    const StrChunk& c = cols[t.col].src.chunks[t.chunk];
+    const uint64_t first = cols[t.col].src.first[t.chunk];
+    if (!t.dict) {
+      uint64_t v = 0;
+      code[i] = check_range(c, t.a, t.b, &v, nullptr);
+      at[i] = first + v;
+      return;
+    }
+    if (t.dict->broken) {  // a dictionary with damaged offsets: the chunk's first row
+      if (t.a == 0) code[i] = 4, at[i] = first;
+      return;
+    }
+    const bool bad = t.dict->bad;
+    for (uint64_t r = t.a; r < t.b; ++r) {
+      if (bit_off(c.ivalid, c.ibit0 + (int64_t)r)) continue;
+      const int32_t v = c.idx[r];
+      int p = 0;
+      if (v < 0 || (uint64_t)v >= c.dict_rows) p = 4;
+      else if (bad) p = t.dict->codes[(size_t)v];
+      if (p) {
+        code[i] = p;
+        at[i] = first + r;
+        return;
+      }
+    }
+  });
+  int res = 0;
+  for (size_t i = 0; i < tasks.size(); ++i)  // tasks are in column, then row order
+    if (code[i] && (!res || tasks[i].col < *col || (tasks[i].col == *col && at[i] < *row))) {
+      res = code[i];
+      *col = tasks[i].col;
+      *row = at[i];
+    }
+  return res;
 }
-
-struct Col {
-  std::string name, tz;
-  std::vector<std::string> levels;
-  std::vector<const char*> lv_ptr;
-  std::vector<uint32_t> lv_len;
-  std::string attrs;
-  bool has_attrs = false, has_tz = false;
-  StrSrc src;
-  NumSrc num;
-  std::vector<uint8_t> buf;  // the window's rows, when they are filled
-};
 
 std::string bytes_of(nb::handle h) {
   char* p = nullptr;
@@ -522,12 +592,14 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
   uint64_t bad_row = 0;
   {
     nb::gil_scoped_release nogil;  // no Python object is touched until this block ends
-    for (size_t j = 0; j < nc && !bad; ++j) {
-      if (defs[j].phys != FSTX_STRING) continue;
-      bad = check_strings(cols[j].src, &bad_row);
-      bad_col = j;
+    try {
+      bad = check_strings(cols, defs, nthreads, &bad_col, &bad_row);
+    } catch (const std::exception& e) {  // no thread or no memory
+      rc = FSTX_ERR_MEMORY;
+      std::snprintf(err.message, sizeof(err.message), "write_fstx: %s", e.what());
+      err.code = rc;
     }
-    if (!bad) {
+    if (!bad && rc == FSTX_OK) {
       fstx_writer* w = nullptr;
       const uint8_t* tap = has_ta ? (const uint8_t*)ta.data() : nullptr;
       rc = append ? fstx_writer_open_append(path.c_str(), defs.data(), (uint32_t)nc, tap, ta.size(), &opt, &w, &err)
