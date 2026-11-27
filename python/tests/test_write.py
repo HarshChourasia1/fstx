@@ -301,6 +301,59 @@ def test_chunked_and_sliced():
     assert kinds(m)["s"] == kinds(m)["ls"] == ("character", "none")
 
 
+def test_number_chunks_over_row_groups(tmp_path):
+    # number columns go to the engine a row group at a time, straight from their chunks (widened, NA written for
+    # nulls): chunks that cross the row group edge, sliced chunks, an empty chunk and nulls in every type give the
+    # same file as one array per column
+    import numpy as np
+
+    n = 1_048_576 + 70_001
+    rng = np.random.default_rng(7)
+    nulls = rng.random(n) < 0.1
+    big = rng.integers(-2**40, 2**40, n)
+
+    def arr(values, typ, with_nulls=True):
+        return pa.array(values, typ, mask=nulls if with_nulls else None)
+
+    cols = {
+        "i8": arr(rng.integers(-100, 100, n), pa.int8()),
+        "i16": arr(rng.integers(-3000, 3000, n), pa.int16()),
+        "u8": arr(rng.integers(0, 250, n), pa.uint8()),
+        "u16": arr(rng.integers(0, 60000, n), pa.uint16()),
+        "i32": arr(rng.integers(-2**31 + 1, 2**31, n), pa.int32()),
+        "i64_small": arr(rng.integers(-2**31 + 1, 2**31, n), pa.int64()),
+        "i64_big": arr(big, pa.int64()),
+        "b": arr(rng.random(n) < 0.5, pa.bool_()),
+        "d32": arr(rng.integers(-30000, 30000, n).astype("int32"), pa.int32()).cast(pa.date32()),
+        "f32": arr(rng.standard_normal(n).astype("float32"), pa.float32()),
+        "f64": arr(rng.standard_normal(n), pa.float64()),
+        "f64_full": arr(rng.standard_normal(n), pa.float64(), with_nulls=False),
+        "i32_full": arr(rng.integers(-2**31 + 1, 2**31, n), pa.int32(), with_nulls=False),
+        "fac": pa.DictionaryArray.from_arrays(arr(rng.integers(0, 3, n), pa.int8()), pa.array(["x", "y", "z"])),
+    }
+    one = pa.table(cols)
+    cuts = [0, 3, 65_536, 65_536, 1_000_000, 1_048_577, n]  # an empty chunk, a chunk over the row group edge
+
+    def chunked(a):
+        return pa.chunked_array([a.slice(cuts[k], cuts[k + 1] - cuts[k]) for k in range(len(cuts) - 1)], a.type)
+
+    many = pa.table({k: chunked(v) for k, v in cols.items()})
+    p, q = tmp_path / "one.fstx", tmp_path / "many.fstx"
+    for threads in (1, None):
+        fstx.write_fstx(one, p, threads=threads)
+        fstx.write_fstx(many, q, threads=threads)
+        assert p.read_bytes() == q.read_bytes()
+    m = fstx.metadata(q)
+    assert m.row_groups == 2
+    got = fstx.read_fstx(q)
+    for name, a in cols.items():
+        g = got.column(name).combine_chunks()
+        want = a.dictionary_decode() if name == "fac" else a
+        if name == "fac":
+            g = g.dictionary_decode()
+        assert g.equals(want.cast(g.type)), name
+
+
 @pytest.mark.parametrize("opts", [{}, {"compress": "lz4"}, {"compress": "none"}, {"profile": "small", "threads": 1},
                                   {"profile": "fast"}, {"compress": "zstd", "level": 1}],
                          ids=["default", "lz4", "none", "small_1thread", "fast", "zstd1"])

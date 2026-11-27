@@ -1,8 +1,9 @@
 """write_fstx: a pyarrow.Table (or a pandas / polars DataFrame) into an fstx file.
 
 Everything about types is decided here with pyarrow (DESIGN.md sections 3 to 5); ``_core.write`` receives, per
-column, the stored definition (spec 4.2) and Arrow arrays that are already what the engine takes: one int32 or
-float64 array with R's missing values filled in, or the string chunks (dictionary-coded when the column repeats
+column, the stored definition (spec 4.2) and Arrow arrays that the binding hands to the engine: the chunks of a
+number column as they are (``_Num``: the binding widens them and writes R's missing values, a window of rows at a
+time, so no joined copy of the column is made), or the string chunks (dictionary-coded when the column repeats
 its values, so that equal strings share one pointer as in R: ``_text_chunks``).
 
 Metadata the reader left on a table says how R held a column and is used when it still fits the data
@@ -68,7 +69,7 @@ class _Col:
         self.levels = levels
         self.tzone = tzone
         self.attrs = attrs
-        self.data = data  # list of pyarrow arrays
+        self.data = data  # numbers: a _Num; strings: list of pyarrow arrays
 
     def r_class(self) -> Optional[List[str]]:
         """R's class vector for the column ([] = none), or None when an R-serialization blob hides it."""
@@ -110,6 +111,19 @@ def _one(col) -> pa.Array:
     if col.num_chunks == 0:
         return pa.array([], col.type)
     return pa.concat_arrays(col.chunks)
+
+
+class _Num:
+    """A number column as the engine's binding fills it, a window of rows at a time: the Arrow chunks as they are
+    (int8, int16, int32, uint8, uint16, int64, bool, date32, float32 or float64; no joined copy of the column),
+    missing values left as nulls (the binding writes R's NA in their place). ``add`` is added to every value
+    (factor codes from 0-based indices); ``bits``: int64 values kept bit for bit in a double (integer64)."""
+    __slots__ = ("chunks", "add", "bits")
+
+    def __init__(self, col, add: int = 0, bits: bool = False):
+        self.chunks = list(col.chunks) if isinstance(col, pa.ChunkedArray) else [col]
+        self.add = add
+        self.bits = bits
 
 
 def _valid(arr) -> int:
@@ -156,28 +170,31 @@ def _text_chunks(col: pa.ChunkedArray, threads: int = 0) -> List[pa.Array]:
     return list(coded.chunks)
 
 
-def _int32(arr: pa.Array, name: str) -> pa.Array:
+# Arrow types the binding turns into int32 (with `add`) or float64 itself; anything else is cast first
+_AS_INT32 = (pt.is_int8, pt.is_int16, pt.is_int32, pt.is_uint8, pt.is_uint16, pt.is_boolean, pt.is_date32)
+_AS_DOUBLE = (pt.is_float64, pt.is_float32, pt.is_int32, pt.is_date32, pt.is_int64)
+
+
+def _int32(arr, name: str, add: int = 0) -> _Num:
     """int32 with NA_integer_ for nulls. A value that is itself R's NA cannot be stored."""
-    if arr.type != pa.int32():
+    if not any(f(arr.type) for f in _AS_INT32):
         arr = arr.cast(pa.int32())
-    if _valid(arr) and pc.min(arr).as_py() == _NA_INT:
+    if add == 0 and (pt.is_int32(arr.type) or pt.is_date32(arr.type)) and _valid(arr) and \
+            pc.min(arr.cast(pa.int32())).as_py() == _NA_INT:
         raise ValueError(f"write_fstx: column '{name}' holds -2147483648, which is R's missing integer and "
                          "cannot be stored as a value (cast the column to int64 or float64)")
-    return arr if arr.null_count == 0 else pc.fill_null(arr, pa.scalar(_NA_INT, pa.int32()))
+    return _Num(arr, add)
 
 
-def _double(arr: pa.Array) -> pa.Array:
+def _double(arr) -> _Num:
     """float64 with NA_real_ for nulls; every other value keeps its bits (NaN stays NaN)."""
-    if arr.type != pa.float64():
+    if not any(f(arr.type) for f in _AS_DOUBLE):
         arr = arr.cast(pa.float64(), safe=False)
-    if arr.null_count == 0:
-        return arr
-    bits = pc.fill_null(arr.view(pa.int64()), pa.scalar(fxa.NA_REAL_BITS, pa.int64()))
-    return bits.view(pa.float64())
+    return _Num(arr)
 
 
-def _int64_bits(arr: pa.Array, name: str) -> pa.Array:
-    """bit64 integer64: the int64 bit patterns in a float64 array, NA = INT64_MIN."""
+def _int64_bits(arr, name: str) -> _Num:
+    """bit64 integer64: the int64 bit patterns in a float64 column, NA = INT64_MIN."""
     if arr.type != pa.int64():
         try:
             arr = arr.cast(pa.int64())
@@ -187,9 +204,7 @@ def _int64_bits(arr: pa.Array, name: str) -> pa.Array:
     if _valid(arr) and pc.min(arr).as_py() == _NA_INT64:
         raise ValueError(f"write_fstx: column '{name}' holds -9223372036854775808, which is integer64's "
                          "missing value and cannot be stored as a value")
-    if arr.null_count:
-        arr = pc.fill_null(arr, pa.scalar(_NA_INT64, pa.int64()))
-    return arr.view(pa.float64())
+    return _Num(arr, bits=True)
 
 
 def _is_view(t) -> bool:
@@ -233,22 +248,23 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
             return natural("attributes only")
         if not (native or in_blob):
             return natural(described())
-        arr = _one(col.unify_dictionaries() if col.num_chunks > 1 else col)
-        levels = arr.dictionary.cast(pa.string()).to_pylist()
+        u = col.unify_dictionaries() if col.num_chunks > 1 else col
+        dic = u.chunk(0).dictionary if u.num_chunks else pa.array([], t.value_type)
+        levels = dic.cast(pa.string()).to_pylist()
         if len(set(levels)) != len(levels):
             raise ValueError(f"write_fstx: column '{name}' has a dictionary with repeated values, which cannot "
                              "be factor levels")
         if any(lv is not None and "\x00" in lv for lv in levels):
             raise ValueError(f"write_fstx: column '{name}' has a level with a NUL character")
-        codes = arr.indices
+        codes = pa.chunked_array([c.indices for c in u.chunks], t.index_type)
         if base_levels is not None and None not in levels and native and levels != base_levels:
             if t.ordered:
                 raise ValueError(f"write_fstx: ordered factor '{name}' must keep the file's levels")
             levels = base_levels + [lv for lv in levels if lv not in set(base_levels)]
-            codes = pc.index_in(arr.cast(pa.string()), value_set=pa.array(levels, pa.string()))
-        codes = _int32(pc.add(codes.cast(pa.int32()), pa.scalar(1, pa.int32())), name)
+            codes = pc.index_in(u.cast(pa.string()), value_set=pa.array(levels, pa.string()))
+        codes = _int32(codes, name, add=1)  # R's codes count from 1
         if native and None not in levels:
-            return _Col(name, _INT32, [codes], _FACTOR, bool(t.ordered), levels, attrs=blob)
+            return _Col(name, _INT32, codes, _FACTOR, bool(t.ordered), levels, attrs=blob)
         # a class of its own or NA as a level: plain integer codes, levels and class in the blob, as R writes it
         attrs: Dict[str, fxa.Vec] = {}
         if blob is not None:
@@ -262,7 +278,7 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
         attrs["levels"] = fxa.character(levels)
         if not in_blob:
             attrs["class"] = fxa.character(["ordered", "factor"] if t.ordered else ["factor"])
-        return _Col(name, _INT32, [codes], attrs=fxa.encode(attrs))
+        return _Col(name, _INT32, codes, attrs=fxa.encode(attrs))
 
     if pt.is_date(t):
         native = r is None or (rlog == "Date" and rphys in ("double", "integer"))
@@ -271,14 +287,12 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
             return natural("attributes only")
         if not (native or in_blob):
             return natural(described())
-        arr = _one(col)
-        if pt.is_date32(t):
-            days = arr.cast(pa.int32())
-            data, phys = (_int32(days, name), _INT32) if rphys == "integer" else (_double(days), _FLOAT64)
+        if pt.is_date32(t):  # days
+            data, phys = (_int32(col, name), _INT32) if rphys == "integer" else (_double(col), _FLOAT64)
         else:  # date64: milliseconds; a time of day becomes a fraction of a day
-            ms = arr.cast(pa.int64()).cast(pa.float64(), safe=False)
+            ms = col.cast(pa.int64()).cast(pa.float64(), safe=False)
             data, phys = _double(pc.divide(ms, pa.scalar(86400000.0))), _FLOAT64
-        return _Col(name, phys, [data], _DATE if native else _NONE, attrs=blob)
+        return _Col(name, phys, data, _DATE if native else _NONE, attrs=blob)
 
     if pt.is_timestamp(t):
         tz = t.tz or None
@@ -302,65 +316,64 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
             if not ((tz and (rtz in (tz, _r_tzone(tz)) or zero)) or (not tz and rtz in (None, ""))):
                 return natural(f"time zone {rtz!r}")
             tzone = rtz if logical == _POSIXCT else None
-        arr = _one(col)
-        secs = arr.cast(pa.int64()).cast(pa.float64(), safe=False)
+        secs = col.cast(pa.int64()).cast(pa.float64(), safe=False)
         if t.unit != "s":
             secs = pc.divide(secs, pa.scalar(_UNITS[t.unit]))
         if rphys == "integer" and _valid(secs):  # R held whole seconds in an integer vector: keep that if it fits
             mm = pc.min_max(secs).as_py()
             if pc.all(pc.equal(secs, pc.floor(secs))).as_py() and mm["min"] > _NA_INT and mm["max"] < 2**31:
-                return _Col(name, _INT32, [_int32(secs.cast(pa.int32()), name)], attrs=blob)
+                return _Col(name, _INT32, _int32(secs.cast(pa.int32()), name), attrs=blob)
         elif rphys == "integer":
-            return _Col(name, _INT32, [_int32(secs.cast(pa.int32()), name)], attrs=blob)
-        return _Col(name, phys, [_double(secs)], logical, tzone=tzone, attrs=blob)
+            return _Col(name, _INT32, _int32(secs.cast(pa.int32()), name), attrs=blob)
+        return _Col(name, phys, _double(secs), logical, tzone=tzone, attrs=blob)
 
     if pt.is_time(t) or pt.is_duration(t):
         if r is not None or blob is not None:
             return natural(described())
-        arr = _one(col)
-        secs = arr.cast(pa.int32() if pt.is_time32(t) else pa.int64()).cast(pa.float64(), safe=False)
+        secs = col.cast(pa.int32() if pt.is_time32(t) else pa.int64()).cast(pa.float64(), safe=False)
         if t.unit != "s":
             secs = pc.divide(secs, pa.scalar(_UNITS[t.unit]))
         if pt.is_time(t):  # as hms::hms()
             attrs = {"units": fxa.character(["secs"]), "class": fxa.character(["hms", "difftime"])}
         else:
             attrs = {"class": fxa.character(["difftime"]), "units": fxa.character(["secs"])}
-        return _Col(name, _FLOAT64, [_double(secs)], attrs=fxa.encode(attrs))
+        return _Col(name, _FLOAT64, _double(secs), attrs=fxa.encode(attrs))
 
     if pt.is_boolean(t):
         if r is not None and not (rphys == "logical" and rlog == "none"):
             return natural(described())
-        return _Col(name, _LOGICAL, [_int32(_one(col), name)], attrs=blob)
+        return _Col(name, _LOGICAL, _int32(col, name), attrs=blob)
 
     if pt.is_integer(t):
         if t.bit_width < 32 or t == pa.int32():
             if r is not None and not (rphys == "integer" and rlog in ("none", "Date")):
                 return natural(described())
-            return _Col(name, _INT32, [_int32(_one(col), name)], _DATE if rlog == "Date" else _NONE, attrs=blob)
+            return _Col(name, _INT32, _int32(col, name), _DATE if rlog == "Date" else _NONE, attrs=blob)
         is64 = r is not None and rphys == "double" and rlog == "none" and "integer64" in cls
         if (r is not None or blob is not None) and not is64:
             return natural(described())
-        arr = _one(col)
+        arr = col
         mm = pc.min_max(arr).as_py() if _valid(arr) else {"min": 0, "max": 0}
         fits = mm["min"] > _NA_INT and mm["max"] < 2**31
         if is64 or int64 == "integer64" or (int64 == "auto" and not fits):
-            return _Col(name, _FLOAT64, [_int64_bits(arr, name)],
+            return _Col(name, _FLOAT64, _int64_bits(arr, name),
                         attrs=blob if is64 else fxa.encode({"class": fxa.character(["integer64"])}))
         if int64 == "auto":
-            return _Col(name, _INT32, [_int32(arr, name)])
+            # every value fits: int64 is narrowed by the binding, the rest cast here
+            return _Col(name, _INT32, _Num(arr) if pt.is_int64(t) else _int32(arr, name))
         if mm["min"] < -(2**53) or mm["max"] > 2**53:
             raise ValueError(f"write_fstx: column '{name}' holds whole numbers past 2^53, which a double cannot "
                              "store exactly (use int64='integer64' or 'auto')")
-        return _Col(name, _FLOAT64, [_double(arr)])
+        return _Col(name, _FLOAT64, _double(arr))
 
     if pt.is_floating(t):
         if r is not None and not (rphys == "double" and "integer64" not in cls and rlog in ("none", "Date", "POSIXct")):
             return natural(described())
         try:
-            data = _double(_one(col))
+            data = _double(col)
         except pa.ArrowNotImplementedError:
             raise _refuse(name, t, " (cast it to float64 first)") from None
-        return _Col(name, _FLOAT64, [data], _LT.get(rlog, _NONE),
+        return _Col(name, _FLOAT64, data, _LT.get(rlog, _NONE),
                     tzone=r.get("tzone") if rlog == "POSIXct" else None, attrs=blob)
 
     if _is_text(t):
@@ -392,7 +405,7 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
         typed = pa.chunked_array([pa.nulls(len(col), as_type)])
         return _column(name, typed, r, blob, int64, quiet, base_levels, threads)
     if pt.is_null(t):  # an all-null column: logical NA, R's default
-        return _Col(name, _LOGICAL, [_int32(pa.nulls(len(col), pa.int32()), name)])
+        return _Col(name, _LOGICAL, _int32(pa.nulls(len(col), pa.int32()), name))
 
     if pt.is_decimal(t):
         raise _refuse(name, t, " (cast it to float64 or string first)")
@@ -754,8 +767,11 @@ def _write(p: str, table: pa.Table, row_names, profile, compress, level, threads
         cols.append(col)
 
     table_attrs = plan["table_attrs"] if plan is not None else _table_blob(table, row_names)
-    spec = [(c.name, c.phys, c.logical, c.ordered, c.levels, c.tzone, c.attrs,
-             [a.__arrow_c_array__() for a in c.data]) for c in cols]
+    spec = []
+    for c in cols:
+        parts, add, bits = (c.data.chunks, c.data.add, c.data.bits) if isinstance(c.data, _Num) else (c.data, 0, False)
+        spec.append((c.name, c.phys, c.logical, c.ordered, c.levels, c.tzone, c.attrs,
+                     [a.__arrow_c_array__() for a in parts], add, bits))
     with _ENGINE_LOCK:
         _core.write(p, spec, table_attrs, table.num_rows, _CODECS[compress], level, threads or 0,
                     _PROFILES[profile], keep_pct, plan is not None)

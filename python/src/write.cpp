@@ -1,18 +1,25 @@
 // fstx Python binding: writing. MIT licence.
 // fstx/_write.py decides every type question with pyarrow and hands over, per column, the stored definition and
-// Arrow arrays that already are what the engine takes: one int32 or float64 array without nulls (R's NA values
-// filled in), or string / binary chunks, plain or dictionary-coded (int32 codes into one dictionary shared by all
-// chunks, so that equal strings reach the engine as one pointer, as R's string cache gives them; the engine's
-// string dictionary keys on pointers). This file only reads their buffers through the Arrow C data interface and
-// runs the engine with the GIL released. The string callback runs on engine worker threads and touches nothing
-// but those buffers.
+// Arrow arrays: the chunks of a number column as they are (int8 / int16 / int32 / uint8 / uint16 / int64 / bool /
+// date32 / float32 / float64, nulls still nulls), or string / binary chunks, plain or dictionary-coded (int32 codes
+// into one dictionary shared by all chunks, so that equal strings reach the engine as one pointer, as R's string
+// cache gives them; the engine's string dictionary keys on pointers). This file reads their buffers through the
+// Arrow C data interface and runs the engine with the GIL released. The engine takes one int32 / double pointer
+// per number column, so rows go to it a window of whole row groups at a time (the file is the same as from one
+// call): a number column whose window lies in one chunk that is already what the engine takes is passed in place,
+// any other is filled (widened, NA written for nulls) into a window buffer, in parallel. The string callback runs
+// on engine worker threads and touches nothing but the Arrow buffers.
 #include "binding.h"
 
 #include <nanobind/stl/string.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "arrow_abi.h"
@@ -39,9 +46,152 @@ struct StrChunk {
 struct StrSrc {
   std::vector<StrChunk> chunks;
   std::vector<uint64_t> first;  // first row of each chunk
+  uint64_t base = 0;            // row of the table where the current engine call starts
 };
 
 inline bool bit_off(const uint8_t* bits, int64_t b) { return bits && !((bits[b >> 3] >> (b & 7)) & 1); }
+
+// ---- number columns
+enum NumKind : uint8_t { N_I8, N_I16, N_I32, N_U8, N_U16, N_I64, N_BOOL, N_F32, N_F64 };
+
+struct NumChunk {
+  NumKind kind = N_I32;
+  const void* values = nullptr;    // the values buffer (bits for bool), at element 0 of the buffer
+  const uint8_t* valid = nullptr;  // validity bitmap or null (no missing values)
+  int64_t off = 0;                 // the chunk's first element in both buffers
+  uint64_t rows = 0;
+};
+
+struct NumSrc {
+  std::vector<NumChunk> chunks;
+  std::vector<uint64_t> first;  // first row of each chunk
+  int32_t add = 0;              // added to every value (int32 targets)
+  bool bits = false;            // int64 kept bit for bit in a double (integer64), NA = INT64_MIN
+};
+
+const int32_t kNaInt = INT32_MIN;
+const uint64_t kNaRealBits = 0x7FF00000000007A2ull;  // R's NA_real_
+const uint64_t kRowGroup = 1048576;                 // the engine's default row group, the one files are written with
+
+// The Arrow formats a number column is taken in, by target (the binding converts them itself).
+bool num_kind(const std::string& f, int phys, NumKind* k) {
+  static const struct {
+    const char* fmt;
+    NumKind kind;
+    bool to_int, to_dbl;
+  } tab[] = {{"c", N_I8, true, false},   {"s", N_I16, true, false},  {"i", N_I32, true, true},
+             {"C", N_U8, true, false},   {"S", N_U16, true, false},  {"l", N_I64, true, true},
+             {"b", N_BOOL, true, false}, {"tdD", N_I32, true, true}, {"f", N_F32, false, true},
+             {"g", N_F64, false, true}};
+  for (const auto& t : tab)
+    if (f == t.fmt && (phys == FSTX_FLOAT64 ? t.to_dbl : t.to_int)) {
+      *k = t.kind;
+      return true;
+    }
+  return false;
+}
+
+template <typename T>
+inline void widen_i32(const T* x, uint64_t n, int32_t add, int32_t* out) {
+  for (uint64_t i = 0; i < n; ++i) out[i] = (int32_t)x[i] + add;
+}
+template <typename T>
+inline void to_dbl(const T* x, uint64_t n, double* out) {
+  for (uint64_t i = 0; i < n; ++i) out[i] = (double)x[i];
+}
+
+// Rows [i0, i0 + n) of one chunk into out (int32 or double, by phys), NA where the chunk has a null.
+void fill_chunk(const NumChunk& c, uint64_t i0, uint64_t n, int phys, int32_t add, bool bits, void* out) {
+  const int64_t e0 = c.off + (int64_t)i0;  // element of the values buffer
+  if (phys != FSTX_FLOAT64) {
+    int32_t* o = (int32_t*)out;
+    switch (c.kind) {
+      case N_I8: widen_i32((const int8_t*)c.values + e0, n, add, o); break;
+      case N_I16: widen_i32((const int16_t*)c.values + e0, n, add, o); break;
+      case N_U8: widen_i32((const uint8_t*)c.values + e0, n, add, o); break;
+      case N_U16: widen_i32((const uint16_t*)c.values + e0, n, add, o); break;
+      case N_I64: widen_i32((const int64_t*)c.values + e0, n, add, o); break;  // _write.py checked the range
+      case N_I32:
+        if (add) widen_i32((const int32_t*)c.values + e0, n, add, o);
+        else std::memcpy(o, (const int32_t*)c.values + e0, n * 4);
+        break;
+      case N_BOOL: {
+        const uint8_t* b = (const uint8_t*)c.values;
+        for (uint64_t i = 0; i < n; ++i) {
+          const int64_t k = e0 + (int64_t)i;
+          o[i] = (b[k >> 3] >> (k & 7)) & 1;
+        }
+        break;
+      }
+      default: break;
+    }
+    if (c.valid)
+      for (uint64_t i = 0; i < n; ++i)
+        if (bit_off(c.valid, e0 + (int64_t)i)) o[i] = kNaInt;
+    return;
+  }
+  double* o = (double*)out;
+  switch (c.kind) {
+    case N_F64: std::memcpy(o, (const double*)c.values + e0, n * 8); break;
+    case N_F32: to_dbl((const float*)c.values + e0, n, o); break;
+    case N_I32: to_dbl((const int32_t*)c.values + e0, n, o); break;
+    case N_I64:
+      if (bits) std::memcpy(o, (const int64_t*)c.values + e0, n * 8);
+      else to_dbl((const int64_t*)c.values + e0, n, o);
+      break;
+    default: break;
+  }
+  if (c.valid) {
+    const uint64_t na = bits ? (uint64_t)INT64_MIN : kNaRealBits;
+    for (uint64_t i = 0; i < n; ++i)
+      if (bit_off(c.valid, e0 + (int64_t)i)) std::memcpy(o + i, &na, 8);
+  }
+}
+
+// Rows [r0, r0 + n) of a column into out.
+void fill_rows(const NumSrc& s, int phys, uint64_t r0, uint64_t n, void* out) {
+  const size_t w = phys == FSTX_FLOAT64 ? 8 : 4;
+  size_t k = (size_t)(std::upper_bound(s.first.begin(), s.first.end(), r0) - s.first.begin()) - 1;
+  uint64_t done = 0;
+  while (done < n) {
+    const NumChunk& c = s.chunks[k];
+    const uint64_t i0 = r0 + done - s.first[k];
+    const uint64_t m = std::min<uint64_t>(n - done, c.rows - i0);
+    fill_chunk(c, i0, m, phys, s.add, s.bits, (char*)out + done * w);
+    done += m;
+    ++k;
+  }
+}
+
+// The window's rows in place when one chunk holds them all as the engine takes them, else null.
+const void* in_place(const NumSrc& s, int phys, uint64_t r0, uint64_t n) {
+  if (s.chunks.empty() || s.add) return nullptr;
+  const size_t k = (size_t)(std::upper_bound(s.first.begin(), s.first.end(), r0) - s.first.begin()) - 1;
+  const NumChunk& c = s.chunks[k];
+  const uint64_t i0 = r0 - s.first[k];
+  if (c.valid || i0 + n > c.rows) return nullptr;
+  if (phys == FSTX_FLOAT64 ? !(c.kind == N_F64 || (c.kind == N_I64 && s.bits)) : c.kind != N_I32) return nullptr;
+  return (const char*)c.values + (size_t)(c.off + (int64_t)i0) * (phys == FSTX_FLOAT64 ? 8 : 4);
+}
+
+// Runs job(0 .. n-1) on up to `threads` threads (this one included).
+template <typename F>
+void run_parallel(size_t n, int threads, F job) {
+  const size_t t = std::min<size_t>(n, (size_t)std::max(threads, 1));
+  if (t <= 1) {
+    for (size_t i = 0; i < n; ++i) job(i);
+    return;
+  }
+  std::atomic<size_t> next(0);
+  auto work = [&]() {
+    for (size_t i; (i = next.fetch_add(1)) < n;) job(i);
+  };
+  std::vector<std::thread> pool;
+  pool.reserve(t - 1);
+  for (size_t i = 1; i < t; ++i) pool.emplace_back(work);
+  work();
+  for (std::thread& th : pool) th.join();
+}
 inline bool is_null(const StrChunk& c, uint64_t i) { return bit_off(c.valid, c.bit0 + (int64_t)i); }
 inline void span_of(const StrChunk& c, uint64_t i, int64_t* a, int64_t* b) {
   if (c.large) {
@@ -58,6 +208,7 @@ inline void span_of(const StrChunk& c, uint64_t i, int64_t* a, int64_t* b) {
 // Engine callback (worker threads): reads Arrow buffers only. Lengths were checked by check_strings.
 int get_strings(void* ctx, uint64_t row, uint32_t n, const char** ptrs, int32_t* lens) {
   const StrSrc* s = (const StrSrc*)ctx;
+  row += s->base;
   size_t k = (size_t)(std::upper_bound(s->first.begin(), s->first.end(), row) - s->first.begin()) - 1;
   uint64_t i = row - s->first[k];
   for (uint32_t j = 0; j < n; ++j) {
@@ -214,6 +365,8 @@ struct Col {
   std::string attrs;
   bool has_attrs = false, has_tz = false;
   StrSrc src;
+  NumSrc num;
+  std::vector<uint8_t> buf;  // the window's rows, when they are filled
 };
 
 std::string bytes_of(nb::handle h) {
@@ -223,8 +376,9 @@ std::string bytes_of(nb::handle h) {
   return std::string(p, (size_t)n);
 }
 
-// columns: [(name, phys, logical, ordered, levels | None, tzone | None, attrs | None, chunks)], chunks a list of
-// the (schema capsule, array capsule) pairs of pyarrow's Array.__arrow_c_array__(). The caller keeps them alive.
+// columns: [(name, phys, logical, ordered, levels | None, tzone | None, attrs | None, chunks, add, bits)], chunks a
+// list of the (schema capsule, array capsule) pairs of pyarrow's Array.__arrow_c_array__(); add and bits as
+// NumSrc (numbers only). The caller keeps them alive.
 void write(const std::string& path, nb::list columns, nb::object table_attrs, uint64_t nrow, int codec, int level,
            int threads, int profile, int keep_pct, bool append) {
   static const char dummy[8] = {0};
@@ -234,7 +388,7 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
   std::vector<fstx_column_data> data(nc);
   for (size_t j = 0; j < nc; ++j) {
     nb::tuple t = nb::cast<nb::tuple>(columns[j]);
-    if (nb::len(t) != 8) throw nb::value_error("fstx: internal error, bad column spec");
+    if (nb::len(t) != 10) throw nb::value_error("fstx: internal error, bad column spec");
     Col& c = cols[j];
     fstx_write_column& d = defs[j];
     std::memset(&d, 0, sizeof(d));
@@ -269,7 +423,8 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
     }
     nb::list chunks = nb::cast<nb::list>(t[7]);
     const size_t nk = nb::len(chunks);
-    const char want = d.phys == FSTX_FLOAT64 ? 'g' : 'i';
+    c.num.add = nb::cast<int32_t>(t[8]);
+    c.num.bits = nb::cast<bool>(t[9]);
     uint64_t rows = 0;
     for (size_t k = 0; k < nk; ++k) {
       nb::tuple pair = nb::cast<nb::tuple>(chunks[k]);
@@ -313,12 +468,18 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
           c.src.chunks.push_back(s);
         }
       } else {
-        if (fmt.size() != 1 || fmt[0] != want || nk != 1 || ar->n_buffers != 2 ||
-            (ar->null_count != 0 && ar->buffers[0]))
-          throw nb::value_error("fstx: internal error, a number column needs one array of its type without nulls");
-        const size_t w = d.phys == FSTX_FLOAT64 ? 8 : 4;
-        data[j].data = ar->length && ar->buffers[1] ? (const char*)ar->buffers[1] + (size_t)ar->offset * w
-                                                    : (const void*)dummy;
+        NumChunk n;
+        if (!num_kind(fmt, d.phys, &n.kind) || ar->n_buffers != 2)
+          throw nb::value_error("fstx: internal error, a number column of an Arrow type the binding does not take");
+        n.rows = (uint64_t)ar->length;
+        n.off = ar->offset;
+        n.valid = ar->null_count != 0 && ar->buffers[0] ? (const uint8_t*)ar->buffers[0] : nullptr;
+        n.values = ar->buffers[1];
+        if (n.rows) {
+          if (!n.values) throw nb::value_error("fstx: internal error, Arrow array without values");
+          c.num.first.push_back(rows);
+          c.num.chunks.push_back(n);
+        }
       }
       rows += (uint64_t)ar->length;
     }
@@ -326,8 +487,8 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
     if (d.phys == FSTX_STRING) {
       data[j].get_strings = get_strings;
       data[j].ctx = &c.src;
-    } else if (nk != 1) {
-      throw nb::value_error("fstx: internal error, a number column needs one array");
+    } else {
+      data[j].data = dummy;
     }
   }
   std::string ta;
@@ -341,6 +502,11 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
   opt.threads = threads;
   opt.profile = profile;
   opt.keep_pct = keep_pct;
+  // whole row groups per engine call: an append keeps the file's row group size, which is not known here, so it
+  // goes in one call
+  if (!append) opt.row_group_size = kRowGroup;
+  const uint64_t win = append ? std::max<uint64_t>(nrow, 1) : kRowGroup;
+  const int nthreads = threads > 0 ? threads : (int)fstx_hardware_threads();
 
   fstx_error err;
   std::memset(&err, 0, sizeof(err));
@@ -360,7 +526,42 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
       rc = append ? fstx_writer_open_append(path.c_str(), defs.data(), (uint32_t)nc, tap, ta.size(), &opt, &w, &err)
                   : fstx_writer_open(path.c_str(), defs.data(), (uint32_t)nc, tap, ta.size(), &opt, &w, &err);
       if (rc == FSTX_OK) {
-        rc = fstx_writer_append(w, data.data(), nrow, &err);
+        try {
+          for (uint64_t r0 = 0; r0 < nrow && rc == FSTX_OK; r0 += win) {
+            const uint64_t n = std::min(win, nrow - r0);
+            struct Piece {
+              size_t col;
+              uint64_t a, b;  // rows of the window
+            };
+            std::vector<Piece> pieces;
+            for (size_t j = 0; j < nc; ++j) {
+              Col& c = cols[j];
+              if (defs[j].phys == FSTX_STRING) {
+                c.src.base = r0;
+                continue;
+              }
+              if (const void* p = in_place(c.num, defs[j].phys, r0, n)) {
+                data[j].data = p;
+                continue;
+              }
+              const size_t wd = defs[j].phys == FSTX_FLOAT64 ? 8 : 4;
+              if (c.buf.size() < n * wd) c.buf.resize(std::min(win, nrow) * wd);
+              data[j].data = c.buf.data();
+              for (uint64_t a = 0; a < n; a += 65536) pieces.push_back({j, a, std::min(n, a + 65536)});
+            }
+            run_parallel(pieces.size(), nthreads, [&](size_t i) {
+              const Piece& q = pieces[i];
+              const int ph = defs[q.col].phys;
+              fill_rows(cols[q.col].num, ph, r0 + q.a, q.b - q.a,
+                        cols[q.col].buf.data() + q.a * (ph == FSTX_FLOAT64 ? 8 : 4));
+            });
+            rc = fstx_writer_append(w, data.data(), n, &err);
+          }
+        } catch (const std::exception& e) {  // no memory for a window buffer, or no thread
+          rc = FSTX_ERR_MEMORY;
+          std::snprintf(err.message, sizeof(err.message), "write_fstx: %s", e.what());
+          err.code = rc;
+        }
         if (rc != FSTX_OK) fstx_writer_abort(w);
         else rc = fstx_writer_close(w, &err);
       }
