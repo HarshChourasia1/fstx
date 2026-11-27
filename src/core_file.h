@@ -15,9 +15,14 @@ namespace fstx {
 struct ColSummary {
   uint64_t comp = 0, raw = 0, pages = 0;
 };
-inline int width_of(int phys) { return phys == FSTX_FLOAT64 ? 8 : (phys == FSTX_STRING ? 0 : 4); }
+// string and binary columns share the string pages (kinds 4 / 5 / 6); binary values may hold NUL
+inline bool is_str(int phys) { return phys == FSTX_STRING || phys == FSTX_BINARY; }
+inline int width_of(int phys) {
+  return (phys == FSTX_FLOAT64 || phys == FSTX_INT64) ? 8 : is_str(phys) ? 0 : 4;
+}
 inline int kind_of(int phys) {
-  return phys == FSTX_FLOAT64 ? enc::K_DBL : phys == FSTX_LOGICAL ? enc::K_LGL : phys == FSTX_INT32 ? enc::K_INT : enc::K_STR;
+  return phys == FSTX_FLOAT64 ? enc::K_DBL : phys == FSTX_LOGICAL ? enc::K_LGL : phys == FSTX_INT32 ? enc::K_INT
+       : phys == FSTX_INT64 ? enc::K_I64 : enc::K_STR;
 }
 }  // namespace fstx
 
@@ -60,6 +65,7 @@ void check_no_nul(const char* bytes, const int32_t* lens, uint32_t n);
 // Doubles count R's NA_real_ as the writer does: a NaN whose low word is 1954.
 void check_nulls(const fb::Page* p, const int32_t* x, uint32_t n, int32_t na);
 void check_nulls(const fb::Page* p, const double* x, uint32_t n);
+void check_nulls(const fb::Page* p, const int64_t* x, uint32_t n);  // int64 pages: INT64_MIN
 
 // Tests only: copies src to dst through compaction with fields overridden, to make files a newer fstx could
 // write (unknown feature bits, reserved numbers). -1 = keep the field. Page fields act on column 0's first page.

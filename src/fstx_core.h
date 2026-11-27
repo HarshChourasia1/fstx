@@ -33,7 +33,12 @@ typedef struct fstx_error {
 } fstx_error;
 
 /* ---- types ---- */
-enum { FSTX_INT32 = 0, FSTX_FLOAT64 = 1, FSTX_LOGICAL = 2, FSTX_STRING = 3 };
+enum { FSTX_INT32 = 0, FSTX_FLOAT64 = 1, FSTX_LOGICAL = 2, FSTX_STRING = 3,
+       FSTX_INT64 = 4,   /* fstx 1.2: two's-complement int64; FSTX_NA_INT64 = missing */
+       FSTX_BINARY = 5   /* fstx 1.2: byte strings, NUL allowed, never UTF-8 checked */ };
+#define FSTX_NA_INT64 INT64_MIN
+/* required feature bits fstx 1.2 knows and writes */
+enum { FSTX_FEAT_INT64 = 16, FSTX_FEAT_BINARY = 17 };
 enum { FSTX_LT_NONE = 0, FSTX_LT_FACTOR = 1, FSTX_LT_DATE = 2, FSTX_LT_POSIXCT = 3 };
 enum { FSTX_CODEC_NONE = 0, FSTX_CODEC_LZ4 = 1, FSTX_CODEC_ZSTD = 2 };
 enum { FSTX_PROFILE_FAST = 0, FSTX_PROFILE_BALANCED = 1, FSTX_PROFILE_SMALL = 2 };
@@ -52,12 +57,18 @@ typedef struct fstx_file_info {
   int profile;                /* FSTX_PROFILE_* the file was written with */
   const uint8_t* table_attrs; /* R-serialized blob, may be NULL */
   size_t table_attrs_len;
+  uint64_t required_features; /* footer required_features */
+  uint64_t optional_features; /* footer optional_features */
 } fstx_file_info;
+
+/* Feature bits this build reads (and the name of a bit; NULL when it has none). */
+uint64_t fstx_features_known(void);
+const char* fstx_feature_name(int bit);
 
 typedef struct fstx_column_info {
   const char* name;
   uint32_t name_len;
-  int phys;
+  int phys;    /* FSTX_INT32 .. FSTX_BINARY; FSTX_INT64 / FSTX_BINARY columns have logical FSTX_LT_NONE */
   int logical;
   int ordered;
   uint32_t n_levels;
@@ -99,6 +110,7 @@ typedef struct fstx_page_info {
 /* Fills up to cap entries (out may be NULL); returns the number of pages in the file. */
 int64_t fstx_pages_get(const fstx_file* f, fstx_page_info* out, uint64_t cap);
 const char* fstx_encoding_name(int tag); /* "" for unknown tags */
+/* "int", "double", "logical", "string", "codes", "dictionary", "int64" (kinds 1-7); "" for others */
 const char* fstx_kind_name(int kind);
 
 typedef struct fstx_plan fstx_plan;
@@ -109,7 +121,7 @@ int fstx_plan_create(const fstx_file* f, const uint32_t* cols, uint32_t n_cols, 
  * that hold requested rows are read; pages without a codec decode only the 1,024-row vectors needed. */
 int fstx_plan_create_rows(const fstx_file* f, const uint32_t* cols, uint32_t n_cols, const uint64_t* rows,
                           uint64_t n_rows, fstx_plan** out, fstx_error* err);
-/* Rows plans with rows in ascending order (repeats allowed): output column out_index, a string column, delivers
+/* Rows plans with rows in ascending order (repeats allowed): output column out_index, a string or binary column, delivers
  * its dictionary-coded pages as codes instead of strings: on_dict (the page's dictionary, when it differs from the
  * one sent before for this column), then on_codes for its rows. Pages without a dictionary still come as strings. */
 int fstx_plan_rows_codes(fstx_plan* p, uint32_t out_index, fstx_error* err);
@@ -119,8 +131,9 @@ uint64_t fstx_plan_rows(const fstx_plan* p);
 typedef struct fstx_read_host {
   void* ctx;
   /* Main thread, before any decoding starts. Return a pointer to n_rows values of the physical type
-   * (int32 for INT32 and LOGICAL, double for FLOAT64). For STRING columns the return value is not used
-   * (return any non-NULL value); the strings arrive through on_strings. NULL means failure. */
+   * (int32 for INT32 and LOGICAL, double for FLOAT64, int64_t for INT64, whose missing rows get FSTX_NA_INT64).
+   * For STRING and BINARY columns the return value is not used (return any non-NULL value); the values arrive
+   * through on_strings / on_dict / on_codes / on_strings_at (BINARY bytes may hold NUL). NULL means failure. */
   void* (*alloc_column)(void* ctx, uint32_t out_index, uint32_t col, int phys, uint64_t n_rows);
   /* Main thread, called in row order for each string column: n strings for output rows
    * [dest_row, dest_row + n). lens[i] == -1 marks NA; other strings follow each other in bytes.
@@ -148,17 +161,18 @@ enum { FSTX_VERIFY_HASH = 1, FSTX_VERIFY_NULLS = 2 };
 /* threads <= 0 means all cores. */
 int fstx_read(const fstx_plan* p, const fstx_read_host* host, int threads, int verify, fstx_error* err);
 
-/* Plain (non-dictionary) string rows a plan delivers, and the raw bytes of their pages (heap pre-sizing). */
+/* Plain (non-dictionary) string or binary rows a plan delivers, and the raw bytes of their pages (heap pre-sizing). */
 void fstx_plan_string_stats(const fstx_plan* p, uint64_t* plain_rows, uint64_t* plain_raw_bytes);
 
 /* ---- column sources: one column over a row range, decoded page by page on demand (lazy columns) or all
  * pages at once in parallel (deferred strings, factor codes). The file must stay open while a source that
- * is not detached uses it. Not thread-safe: one caller at a time per source. */
+ * is not detached uses it. Not thread-safe: one caller at a time per source. FSTX_INT64 columns are FSTX_SRC_FIXED
+ * sources of width 8; FSTX_BINARY columns FSTX_SRC_STRINGS sources (no NUL check). */
 typedef struct fstx_colsrc fstx_colsrc;
 enum { FSTX_SRC_FIXED = 0, FSTX_SRC_STRINGS = 1, FSTX_SRC_CODES = 2 };
 typedef struct fstx_colsrc_info {
   uint64_t rows;
-  int phys, logical, mode;
+  int phys, logical, mode; /* phys may be FSTX_INT64 / FSTX_BINARY (logical FSTX_LT_NONE) */
   uint32_t n_pages, n_dicts;
   int all_dict;        /* every page is dictionary-coded (string columns) */
   uint64_t null_count; /* 0 means no NA for sure (never 0 under FSTX_VERIFY_NULLS: pages are checked on decode) */
@@ -177,7 +191,8 @@ uint32_t fstx_colsrc_page_of(const fstx_colsrc* s, uint64_t row);
 void fstx_colsrc_page_span(const fstx_colsrc* s, uint32_t page, uint64_t* first, uint32_t* n);
 /* Dictionary d's n entries (decoded on first use). */
 int fstx_colsrc_dict(fstx_colsrc* s, uint32_t d, uint32_t* n, const int32_t** lens, const char** bytes, fstx_error* err);
-/* Turns an all-dictionary string source into factor codes: remap[d][k] is the 1-based level of entry k. */
+/* Turns an all-dictionary string source into factor codes: remap[d][k] is the 1-based level of entry k.
+ * String columns only (FSTX_BINARY sources give FSTX_ERR_ARG). */
 int fstx_colsrc_set_codes(fstx_colsrc* s, const int32_t* const* remap, fstx_error* err);
 /* Decoded values of a fixed / codes page (cached; the oldest pages are dropped past 64 MB per source). */
 int fstx_colsrc_fixed_page(fstx_colsrc* s, uint32_t page, const void** vals, fstx_error* err);
@@ -212,6 +227,15 @@ typedef struct fstx_pred {
   const char* const* strs;
   const int32_t* str_lens;
   uint64_t n_strs;
+  /* INT64 columns (fstx 1.2). has_i64 != 0: EQ..GE compare with i64, IN tests i64_set[0..n_i64_set) (plus NA rows
+   * when set_na); value / set are ignored. has_i64 == 0: value / set are compared with the int64 values as real
+   * numbers, exactly (x < 2.5 matches 2; x == 2^53 + 1 does not match 2^53). Pages are skipped by their rounded
+   * min / max only when no row can match. BINARY columns: EQ / NE / IN use strs / str_lens (byte compare, NUL
+   * allowed); LT..GE give FSTX_ERR_ARG. */
+  int has_i64;
+  int64_t i64;
+  const int64_t* i64_set;
+  uint64_t n_i64_set;
 } fstx_pred;
 typedef struct fstx_filter_stats {
   uint64_t pages_total;     /* data pages of the filter columns that overlap the row window */
@@ -238,8 +262,8 @@ typedef struct fstx_writer fstx_writer;
 typedef struct fstx_write_column {
   const char* name;
   uint32_t name_len;
-  int phys;
-  int logical;
+  int phys;    /* FSTX_INT32 .. FSTX_BINARY */
+  int logical; /* FSTX_LT_NONE for FSTX_INT64 / FSTX_BINARY (fstx_writer_open fails with FSTX_ERR_ARG otherwise) */
   int ordered;
   uint32_t n_levels;
   const char* const* levels; /* UTF-8 */
@@ -264,20 +288,23 @@ typedef struct fstx_write_options {
 } fstx_write_options;
 
 typedef struct fstx_column_data {
-  /* INT32 / LOGICAL: const int32_t*; FLOAT64: const double*; NULL for STRING. Read in place, never copied.
+  /* INT32 / LOGICAL: const int32_t*; FLOAT64: const double*; INT64: const int64_t* (FSTX_NA_INT64 marks missing
+   * rows); NULL for STRING and BINARY. Read in place, never copied.
    * NULL for a number column given through get_values instead. */
   const void* data;
-  /* STRING only. Called from worker threads: must only read memory, never allocate or call into the host
+  /* STRING and BINARY. Called from worker threads: must only read memory, never allocate or call into the host
    * runtime. Fill ptrs/lens for rows [row, row + n); lens[i] = -1 marks NA.
-   * Return 0, or 1 if a string is not UTF-8 / ASCII (the writer then fails with FSTX_ERR_TRANSLATE before
+   * STRING: return 0, or 1 if a string is not UTF-8 / ASCII (the writer then fails with FSTX_ERR_TRANSLATE before
    * writing any page), or 2 for strings that can never be converted (e.g. R "bytes" encoding).
+   * BINARY: any bytes (the writer checks neither UTF-8 nor NUL); return 0, any other value fails the write with
+   * FSTX_ERR_HOST.
    * The pointers must stay valid from one get_strings call to the next within one fstx_writer_append call (the
    * writer keeps them); it never uses them after fstx_writer_append returns. */
   int (*get_strings)(void* ctx, uint64_t row, uint32_t n, const char** ptrs, int32_t* lens);
   void* ctx;
-  /* INT32 / LOGICAL / FLOAT64 when data is NULL (optional: NULL when data is set). Called from worker threads
+  /* INT32 / LOGICAL / FLOAT64 / INT64 when data is NULL (optional: NULL when data is set). Called from worker threads
    * under the same rules as get_strings, one page's rows at a time: returns rows [row, row + n) as data would
-   * hold them (int32_t / double), either a pointer into host memory or buf after filling it (the writer's, room
+   * hold them (int32_t / double / int64_t), either a pointer into host memory or buf after filling it (the writer's, room
    * for n values, 8-byte aligned). The writer reads them before the thread's next call. NULL fails the write with
    * FSTX_ERR_HOST. Same file as with data. */
   const void* (*get_values)(void* ctx, uint64_t row, uint32_t n, void* buf);

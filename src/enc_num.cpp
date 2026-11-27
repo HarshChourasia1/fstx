@@ -47,6 +47,7 @@ const char* kind_name(int kind) {
     case K_STR: return "string";
     case K_CODES: return "codes";
     case K_DICT: return "dictionary";
+    case K_I64: return "int64";
     default: return "";
   }
 }
@@ -805,20 +806,21 @@ void na_apply_part(const Blk& b, int mode, uint32_t n, T* out, T na, const uint8
   }
 }
 
-// ---------------------------------------------------------------- top level for int32 pages
-uint32_t encode_top_int(const int32_t* x, uint32_t n, const EncCtx& cx0, Buf& out) {
+// ---------------------------------------------------------------- top level for int32 and int64 pages
+template <class T>
+uint32_t encode_top_int(const T* x, uint32_t n, const EncCtx& cx0, Buf& out) {
   FSTX_PROF_SCOPE(W_INT_TOP);
   EncCtx cx = cx0;
   cx.force = 0;
   const int f = cx0.force;
   if (f && n > 0) {
     if (f == T_CONST) {
-      if (is_const(x, n)) return encode_as<int32_t>(T_CONST, x, n, 0, cx, out);
+      if (is_const(x, n)) return encode_as<T>(T_CONST, x, n, 0, cx, out);
     } else if (f == T_FOR || f == T_DELTA || f == T_RLE || f == T_DICT || f == T_SPLIT || f == T_PLAIN) {
-      return encode_as<int32_t>(f, x, n, 0, cx, out);
+      return encode_as<T>(f, x, n, 0, cx, out);
     }
   }
-  Sample<int32_t> s;
+  Sample<T> s;
   Choice c;
   FSTX_PROF_BEGIN(prof_choose, W_CHOOSE);
   choose_int(x, n, 0, cx, s, c);
@@ -827,7 +829,7 @@ uint32_t encode_top_int(const int32_t* x, uint32_t n, const EncCtx& cx0, Buf& ou
     // weak lightweight result: would byte-split + codec do better? Estimate both with ZSTD -1 on the sample.
     Buf a;
     if (c.has_buf) a = std::move(c.buf);
-    else encode_as<int32_t>(tag, s.p, s.n, 0, cx, a);
+    else encode_as<T>(tag, s.p, s.n, 0, cx, a);
     const size_t za = zstd_est(cx, a.v.data(), a.size());
     Buf b;
     put_split(s.p, s.n, b);
@@ -835,7 +837,7 @@ uint32_t encode_top_int(const int32_t* x, uint32_t n, const EncCtx& cx0, Buf& ou
     if (zb < std::min(a.size(), za)) tag = T_SPLIT;
   }
   FSTX_PROF_END(prof_choose);
-  return encode_as<int32_t>(tag, x, n, 0, cx, out);
+  return encode_as<T>(tag, x, n, 0, cx, out);
 }
 
 // ---------------------------------------------------------------- doubles: ALP
@@ -1305,6 +1307,20 @@ bool any_nan(const double* x, uint32_t n) {
 
 #endif  // vector extensions
 
+// Is there any INT64_MIN (the int64 missing value)? 64 values between tests, no branch inside a block.
+bool any_i64_na(const int64_t* x, uint32_t n) {
+  const int64_t na = std::numeric_limits<int64_t>::min();
+  uint32_t i = 0;
+  for (; i + 64 <= n; i += 64) {
+    int acc = 0;
+    for (uint32_t k = 0; k < 64; ++k) acc |= x[i + k] == na;
+    if (acc) return true;
+  }
+  for (; i < n; ++i)
+    if (x[i] == na) return true;
+  return false;
+}
+
 void write_header(Buf& out, int kind, uint32_t n) {
   uint8_t* h = out.grow(8);
   h[0] = (uint8_t)kind;
@@ -1351,7 +1367,7 @@ uint32_t encode_int_page(const int32_t* x, uint32_t n, int kind, int32_t na_valu
   FSTX_PROF_END(prof_na);
   const int32_t* xs = na ? filled.data() : x;
   const size_t vstart = out.size();
-  uint32_t tags = encode_top_int(xs, n, cx, out);
+  uint32_t tags = encode_top_int<int32_t>(xs, n, cx, out);
   if (!cx.force && (tags & 255u) != T_PLAIN && out.size() - vstart > 8 + a8((size_t)n * 4)) {
     out.v.resize(vstart);  // never bigger than plain
     tags = put_plain(xs, n, out);
@@ -1446,6 +1462,56 @@ void decode_dbl_page_part(const uint8_t* body, size_t len, uint32_t chain, uint3
     std::memcpy(&nav, &kNaRealBits, 8);
     na_apply_part<double>(nb, na, n, out, nav, vm);
   }
+}
+
+// ---------------------------------------------------------------- int64 pages (fstx 1.2)
+uint32_t encode_i64_page(const int64_t* x, uint32_t n, const EncCtx& cx, Buf& out) {
+  out.clear();
+  out.v.reserve((size_t)n * 8 + 256);
+  write_header(out, K_I64, n);
+  uint32_t nna;
+  auto isna = [](int64_t v) { return v == std::numeric_limits<int64_t>::min(); };
+  FSTX_PROF_BEGIN(prof_na, W_NA);
+  const int na = any_i64_na(x, n) ? na_write(x, n, isna, out, nna) : NA_NONE;
+  out.v[1] = (uint8_t)na;
+  std::vector<int64_t> filled;
+  if (na) na_fill(x, n, isna, filled);  // missing slots repeat the previous value; all missing: 0
+  FSTX_PROF_END(prof_na);
+  const int64_t* xs = na ? filled.data() : x;
+  const size_t vstart = out.size();
+  uint32_t tags = encode_top_int<int64_t>(xs, n, cx, out);
+  if (!cx.force && (tags & 255u) != T_PLAIN && out.size() - vstart > 8 + (size_t)n * 8) {
+    out.v.resize(vstart);  // never bigger than plain
+    tags = put_plain(xs, n, out);
+  }
+  return make_chain(K_I64, na, tags);
+}
+
+void decode_i64_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, int64_t* out) {
+  FSTX_PROF_SCOPE(R_DEC_INT);
+  check_header(body, len, chain, n, K_I64);
+  Rd rd{body + 8, body + len};
+  Blk nb{};
+  const int na = body[1];
+  if (na) nb = rd.next();
+  if (rd.peek() != chain_tag(chain, 0)) corrupt("encoding does not match the page directory");
+  decode_blk<int64_t>(rd, out, n, 0);  // tags 1-7 only: ALP, ALPRD and FSST are corrupt here
+  if (!rd.done()) corrupt("trailing bytes");
+  if (na) na_apply<int64_t>(nb, na, n, out, std::numeric_limits<int64_t>::min(), nullptr);
+}
+
+void decode_i64_page_part(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, const uint8_t* vm,
+                          int64_t* out) {
+  if (!vm) return decode_i64_page(body, len, chain, n, out);
+  check_header(body, len, chain, n, K_I64);
+  Rd rd{body + 8, body + len};
+  Blk nb{};
+  const int na = body[1];
+  if (na) nb = rd.next();
+  if (rd.peek() != chain_tag(chain, 0)) corrupt("encoding does not match the page directory");
+  decode_blk_part<int64_t>(rd, out, n, 0, vm);
+  if (!rd.done()) corrupt("trailing bytes");
+  if (na) na_apply_part<int64_t>(nb, na, n, out, std::numeric_limits<int64_t>::min(), vm);
 }
 
 }  // namespace enc
