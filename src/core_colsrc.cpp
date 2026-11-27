@@ -51,6 +51,7 @@ struct fstx_bufpool {
   std::mutex m;
   std::vector<std::vector<uint8_t>> bytes;
   std::vector<std::vector<int32_t>> ints;
+  uint64_t kept = 0;  // the process's spare pool (spare_bufs): bytes held
 };
 
 struct fstx_colsrc {
@@ -142,16 +143,39 @@ const uint8_t* body_of(const fstx_colsrc& S, const fb::Page* p, CodecContext& cc
 
 int width_mode(const fstx_colsrc& S) { return S.mode == FSTX_SRC_CODES ? 4 : width_of(S.phys); }
 
-// String page buffers: from the source's pool when it has one (any contents, any size), else new.
+// Buffers and decode state kept from one stream for the next (a process's reads): string page buffers of freed
+// pools, up to kSpareBytes (buffers of up to kSpareBuf each), and up to kSpareSets workers' scratch sets. Without
+// them every read faults in its page buffers and sets up a ZSTD context per worker again.
+constexpr uint64_t kSpareBytes = 64ull << 20;
+constexpr size_t kSpareBuf = 8u << 20;
+constexpr size_t kSpareSets = 4;
+fstx_bufpool& spare_bufs() {
+  static fstx_bufpool* p = new fstx_bufpool();  // never freed: no order of destruction at exit
+  return *p;
+}
+
+// String page buffers: from the source's pool when it has one (any contents, any size), then from the process's
+// spare buffers, else new.
 template <typename T>
 std::vector<T> take_buf(fstx_bufpool* P, std::vector<std::vector<T>> fstx_bufpool::*which) {
   std::vector<T> v;
   if (P) {
-    std::lock_guard<std::mutex> g(P->m);
-    std::vector<std::vector<T>>& l = P->*which;
+    {
+      std::lock_guard<std::mutex> g(P->m);
+      std::vector<std::vector<T>>& l = P->*which;
+      if (!l.empty()) {
+        v.swap(l.back());
+        l.pop_back();
+        return v;
+      }
+    }
+    fstx_bufpool& sp = spare_bufs();
+    std::lock_guard<std::mutex> g(sp.m);
+    std::vector<std::vector<T>>& l = sp.*which;
     if (!l.empty()) {
       v.swap(l.back());
       l.pop_back();
+      sp.kept -= v.capacity() * sizeof(T);
     }
   }
   return v;
@@ -574,7 +598,27 @@ extern "C" void fstx_colsrc_free(fstx_colsrc* s) {
 }
 
 extern "C" fstx_bufpool* fstx_bufpool_new(void) { return new (std::nothrow) fstx_bufpool(); }
-extern "C" void fstx_bufpool_free(fstx_bufpool* p) { delete p; }
+namespace {
+template <typename T>
+void spare_some(fstx_bufpool& sp, std::vector<std::vector<T>>& from, std::vector<std::vector<T>> fstx_bufpool::*which) {
+  for (std::vector<T>& v : from) {
+    const uint64_t b = v.capacity() * sizeof(T);
+    if (b == 0 || b > kSpareBuf || sp.kept + b > kSpareBytes) continue;
+    (sp.*which).push_back(std::move(v));
+    sp.kept += b;
+  }
+}
+}  // namespace
+extern "C" void fstx_bufpool_free(fstx_bufpool* p) {
+  if (!p) return;
+  {
+    fstx_bufpool& sp = spare_bufs();
+    std::lock_guard<std::mutex> g(sp.m);
+    spare_some(sp, p->bytes, &fstx_bufpool::bytes);
+    spare_some(sp, p->ints, &fstx_bufpool::ints);
+  }
+  delete p;  // with the buffers that did not fit
+}
 extern "C" void fstx_colsrc_set_bufpool(fstx_colsrc* s, fstx_bufpool* p) { s->bufs = p; }
 extern "C" void fstx_colsrc_set_read(fstx_colsrc* s, int read) { s->read = read != 0; }
 
@@ -914,8 +958,40 @@ extern "C" void* fstx_scratch_buffer(fstx_scratch* w, size_t bytes) {
   }
 }
 
-extern "C" fstx_scratchset* fstx_scratchset_new(void) { return new (std::nothrow) fstx_scratchset(); }
-extern "C" void fstx_scratchset_free(fstx_scratchset* ss) { delete ss; }
+namespace {
+std::mutex g_sets_m;
+std::vector<fstx_scratchset*>& spare_sets() {
+  static std::vector<fstx_scratchset*>* v = new std::vector<fstx_scratchset*>();  // never freed (see spare_bufs)
+  return *v;
+}
+}  // namespace
+extern "C" fstx_scratchset* fstx_scratchset_new(void) {
+  {
+    std::lock_guard<std::mutex> g(g_sets_m);
+    std::vector<fstx_scratchset*>& v = spare_sets();
+    if (!v.empty()) {
+      fstx_scratchset* ss = v.back();
+      v.pop_back();
+      return ss;
+    }
+  }
+  return new (std::nothrow) fstx_scratchset();
+}
+extern "C" void fstx_scratchset_free(fstx_scratchset* ss) {
+  if (!ss) return;
+  for (auto* l : {&ss->a, &ss->b, &ss->host})
+    for (std::vector<uint8_t>& v : *l)
+      if (v.capacity() > kSpareBuf) std::vector<uint8_t>().swap(v);
+  {
+    std::lock_guard<std::mutex> g(g_sets_m);
+    std::vector<fstx_scratchset*>& v = spare_sets();
+    if (v.size() < kSpareSets) {
+      v.push_back(ss);
+      return;
+    }
+  }
+  delete ss;
+}
 
 extern "C" int fstx_colsrc_detach(fstx_colsrc* s, fstx_error* err) {
   set_error(err, FSTX_OK, "");

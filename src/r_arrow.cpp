@@ -760,7 +760,6 @@ void batch_range(const Stream& S, uint64_t a, uint64_t b, uint64_t n, ArrayHold*
     }
     if (C.c->out == O_UTF8) str_prep<int32_t>(C);
     else str_prep<int64_t>(C);
-    if (b >= S.to) fstx_colsrc_set_bufpool(C.s.get(), nullptr);  // last batch: its pages are freed as they go
     for (uint32_t q = 0; q < (uint32_t)C.pages.size(); ++q) tasks.push_back({j, q, 0});
   }
   const bool check = S.utf8_bad != nullptr;
