@@ -651,12 +651,15 @@ struct BinCtx {
   int k;     // index into t->idx
   int fail;  // tests: give a non-zero code
 };
+// tests: when set, binary values come from these per-row copies (equal values at distinct pointers, as R raw
+// vectors and Arrow binary arrays give them) instead of the shared t->tab entries
+static const std::vector<std::string>* g_bin_rows = nullptr;
 static int bin_get(void* ctx, uint64_t row, uint32_t n, const char** ptrs, int32_t* lens) {
   const BinCtx& c = *(const BinCtx*)ctx;
   if (c.fail) return 1;
   for (uint32_t i = 0; i < n; ++i) {
     const int32_t k = c.t->idx[(size_t)c.k][row + i];
-    ptrs[i] = k < 0 ? nullptr : c.t->tab[(size_t)k].data();
+    ptrs[i] = k < 0 ? nullptr : g_bin_rows ? (*g_bin_rows)[row + i].data() : c.t->tab[(size_t)k].data();
     lens[i] = k < 0 ? -1 : (int32_t)c.t->tab[(size_t)k].size();
   }
   return 0;
@@ -1199,6 +1202,44 @@ static int time_bin16(const std::string& dir, uint64_t n) {
   return 0;
 }
 
+// binary dictionaries are built by content: equal bytes behind distinct pointers give the same file as one shared
+// pointer per value (dictionary pages included), at 1 and 4 threads, forced and chosen
+static void test_dict_content(const std::string& dir) {
+  const T12 tb = make_bin(30000);
+  std::vector<std::string> rows(tb.n);
+  for (uint64_t i = 0; i < tb.n; ++i) {
+    const int32_t k = tb.idx[0][i];
+    rows[i] = k < 0 ? std::string() : tb.tab[(size_t)k];  // its own copy
+  }
+  for (int force : {0, 0x100, 0x100 | 0x200}) {
+    for (int threads : {1, 4}) {
+      const std::string lab = "binary dictionary by content, force " + std::to_string(force) + ", " +
+                              std::to_string(threads) + " threads";
+      const std::string a = dir + "/dc_shared.fstx", b = dir + "/dc_copies.fstx";
+      g_bin_rows = nullptr;
+      const int ra = write12(a, tb, FSTX_CODEC_ZSTD, threads, force);
+      g_bin_rows = &rows;
+      const int rb = write12(b, tb, FSTX_CODEC_ZSTD, threads, force);
+      g_bin_rows = nullptr;
+      if (!rc_ok(ra, fstx_error{}, lab + ": write shared") || !rc_ok(rb, fstx_error{}, lab + ": write copies")) continue;
+      int64_t dict_pages = 0;
+      fstx_file* f = nullptr;
+      fstx_error e;
+      if (rc_ok(fstx_open(b.c_str(), &f, &e), e, lab + ": open")) {
+        const int64_t np = fstx_pages_get(f, nullptr, 0);
+        std::vector<fstx_page_info> pi((size_t)np);
+        fstx_pages_get(f, pi.data(), (uint64_t)np);
+        for (const fstx_page_info& p : pi) dict_pages += p.column == 0 && p.is_dictionary;
+        fstx_close(f);
+      }
+      check(slurp(a) == slurp(b) && (force == 0 || dict_pages > 0), lab + ": same bytes as shared pointers");
+      check12(b, tb, lab);
+      std::remove(a.c_str());
+      std::remove(b.c_str());
+    }
+  }
+}
+
 static int open_code(const std::string& p) {
   fstx_error e;
   fstx_file* f = nullptr;
@@ -1540,6 +1581,7 @@ int main(int argc, char** argv) {
       ref12 = h12;
       test_rules12(dir);
       test_filter12(dir);
+      test_dict_content(dir);
       test_rand16(dir);
     } else {
       check(h12 == ref12, "1.2 files: same bytes as scalar under " + lab);

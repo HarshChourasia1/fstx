@@ -480,6 +480,7 @@ struct WriterImpl {
       uint64_t r0, r1;
       rows_of(t, r0, r1);
       enc::StrPrep& p = prep[(size_t)t];
+      cx.dict_by_content = cols[c].phys == FSTX_BINARY;  // binary values never share pointers: compare bytes
       const int rc = enc::plan_str_begin(data[c], r0, r1, cx, force_str, sch[(size_t)(t % nrg)][c], p);
       if (rc) p.done = true;  // nothing more is read from a chunk the host refused
       note(rc, c);

@@ -158,6 +158,7 @@ struct EncCtx {
   int codec = FSTX_CODEC_ZSTD;   // codec the page will get afterwards (NONE: never try SPLIT)
   CodecContext* cc = nullptr;    // for the ZSTD -1 estimates
   std::atomic<uint64_t>* str_cache = nullptr;  // plan_str_chunk: bytes left for StrChunk::cptr / clen (null: none)
+  bool dict_by_content = false;  // plan_str_*: dictionary entries are equal by their bytes (binary columns), not pointer
 };
 
 // Fixed-width pages. The return value is the page's chain. x is read in place, never changed.
