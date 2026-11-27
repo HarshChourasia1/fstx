@@ -5,6 +5,7 @@
 #include <limits>
 #include <memory>
 
+#include "arrow_abi.h"
 #include "core_file.h"
 
 namespace fb = fstx::fb;
@@ -63,7 +64,15 @@ struct fstx_colsrc {
   std::vector<std::vector<uint8_t>> pool;
   std::unique_ptr<fstx::CodecContext> cc{new fstx::CodecContext()};
   std::vector<uint8_t> scratch, scratch2;
+  std::mutex count_m;  // the counters above, when pages are loaded from several threads (fstx_colsrc_load_page)
   std::string name() const { return F ? F->col_name(col) : std::string("(in memory)"); }
+};
+
+// One worker's decode state for fstx_run_tasks / fstx_colsrc_load_page (arrow_abi.h).
+struct fstx_scratch {
+  fstx::CodecContext* cc;
+  std::vector<uint8_t>* a;
+  std::vector<uint8_t>* b;
 };
 
 namespace fstx {
@@ -540,6 +549,52 @@ extern "C" int fstx_colsrc_str_page(fstx_colsrc* s, uint32_t p, const int32_t** 
     *lens = s->data[p].lens.data();
     *bytes = s->data[p].bytes;
     *dict = s->pages[p].dict;
+    return FSTX_OK;
+  } catch (...) {
+    return to_error(err);
+  }
+}
+
+// Thread-safe for distinct pages of one source, once its dictionaries are decoded (fstx_colsrc_dict).
+extern "C" int fstx_colsrc_load_page(fstx_colsrc* s, uint32_t p, fstx_scratch* w, const int32_t** lens,
+                                     const char** bytes, int32_t* dict, fstx_error* err) {
+  set_error(err, FSTX_OK, "");
+  try {
+    if (p >= s->pages.size()) fail(FSTX_ERR_ARG, "page index out of range");
+    if (s->mode != FSTX_SRC_STRINGS) fail(FSTX_ERR_ARG, "not a string source");
+    const SrcPage& sp = s->pages[p];
+    if (sp.dict >= 0 && !s->dicts[(size_t)sp.dict].ready) fail(FSTX_ERR_INTERNAL, "dictionary is not decoded");
+    PageData& d = s->data[p];
+    if (!d.ready) {
+      if (w) {
+        decode_page(*s, p, d, nullptr, *w->cc, *w->a, *w->b);
+      } else {
+        CodecContext cc;
+        std::vector<uint8_t> a, b;
+        decode_page(*s, p, d, nullptr, cc, a, b);
+      }
+      std::lock_guard<std::mutex> g(s->count_m);
+      d.ready = true;
+      d.tick = ++s->tick;
+      ++s->ready_count;
+      s->cache_bytes += d.mem;
+    }
+    *lens = d.lens.data();
+    *bytes = d.bytes;
+    *dict = sp.dict;
+    return FSTX_OK;
+  } catch (...) {
+    return to_error(err);
+  }
+}
+
+extern "C" int fstx_run_tasks(int64_t n, int threads, fstx_task_fn fn, void* ctx, fstx_error* err) {
+  set_error(err, FSTX_OK, "");
+  try {
+    parallel_for(n, threads, [&](int64_t i, CodecContext& cc, std::vector<uint8_t>& a, std::vector<uint8_t>& b) {
+      fstx_scratch w{&cc, &a, &b};
+      if (fn(ctx, i, &w) != 0) fail(FSTX_ERR_INTERNAL, "a task failed");
+    });
     return FSTX_OK;
   } catch (...) {
     return to_error(err);

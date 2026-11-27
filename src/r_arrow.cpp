@@ -525,6 +525,319 @@ void string_column(const ColSpec& c, SrcPtr s, const uint64_t* sel, uint64_t n, 
   make_utf8(h->dict, dn, dl, db);
 }
 
+// Runs fn(i, w, threads) for i in [0, n): one task on this thread with all `threads` for its own decoding,
+// more on the engine's worker pool (one thread each). The first exception a task throws is rethrown here.
+template <typename Fn>
+void run_tasks(size_t n, int threads, Fn& fn) {
+  if (n <= 1) {
+    for (size_t i = 0; i < n; ++i) fn(i, (fstx_scratch*)nullptr, threads);
+    return;
+  }
+  struct Ctx {
+    Fn* fn;
+    std::mutex m;
+    std::exception_ptr ex;
+  };
+  Ctx ctx;
+  ctx.fn = &fn;
+  fstx_task_fn cb = [](void* p, int64_t i, fstx_scratch* w) -> int {
+    Ctx& x = *(Ctx*)p;
+    try {
+      (*x.fn)((size_t)i, w, 1);
+      return 0;
+    } catch (...) {
+      std::lock_guard<std::mutex> g(x.m);
+      if (!x.ex) x.ex = std::current_exception();
+      return 1;
+    }
+  };
+  fstx_error e;
+  const int rc = fstx_run_tasks((int64_t)n, threads, cb, &ctx, &e);
+  if (ctx.ex) std::rethrow_exception(ctx.ex);
+  check(rc, e);
+}
+
+// A string dictionary, with the byte offset of every entry (dictionary pages laid out as plain strings).
+struct DictTab {
+  uint32_t n = 0;
+  const int32_t* lens = nullptr;
+  const char* bytes = nullptr;
+  std::vector<uint64_t> off;
+};
+
+// A plain string column (utf8 / large_utf8) of a batch over file rows [a, b): its pages decode on the pool,
+// one task per page (str_decode, which also counts each page's bytes); a prefix sum over the pages places them
+// (str_prep); then every page writes its offsets, bytes and validity straight into the Arrow buffers, again one
+// task per page (str_write). Bitmap bytes shared by two pages are put together at the end (str_bits).
+struct StrPage {
+  const int32_t* lens = nullptr;  // per row: length (-1 = NA), or the dictionary code on a dictionary page
+  const char* bytes = nullptr;
+  int32_t dict = -1;
+  uint64_t first = 0;  // first output row
+  uint32_t n = 0;
+  uint32_t nulls = 0;
+  uint64_t tot = 0;            // bytes of text
+  uint64_t off = 0;            // where they start in the text buffer
+  uint8_t head = 0, tail = 0;  // validity bits of the first / last bitmap byte when another page shares it
+};
+
+struct StrCol {
+  const ColSpec* c = nullptr;
+  ArrowArray* out = nullptr;
+  uint64_t n = 0;
+  SrcPtr s;
+  std::vector<DictTab> dicts;
+  std::vector<StrPage> pages;
+  void* offs = nullptr;
+  char* data = nullptr;
+  uint8_t* bits = nullptr;
+};
+
+void str_open(const Stream& S, StrCol& C, uint64_t a, uint64_t b) {
+  C.s = open_src(S, *C.c, a, b);
+  fstx_colsrc_info si;
+  fstx_colsrc_info_get(C.s.get(), &si);
+  fstx_error e;
+  for (uint32_t d = 0; d < si.n_dicts; ++d) {  // dictionaries first (small): pages that use them may then decode
+    DictTab t;
+    check(fstx_colsrc_dict(C.s.get(), d, &t.n, &t.lens, &t.bytes, &e), e);
+    t.off.resize(t.n);
+    uint64_t o = 0;
+    for (uint32_t i = 0; i < t.n; ++i) {
+      t.off[i] = o;
+      o += (uint64_t)std::max(0, t.lens[i]);
+    }
+    C.dicts.push_back(std::move(t));
+  }
+  C.pages.resize(si.n_pages);
+}
+
+void str_decode(StrCol& C, uint32_t q, fstx_scratch* w) {
+  StrPage& P = C.pages[q];
+  fstx_error e;
+  check(fstx_colsrc_load_page(C.s.get(), q, w, &P.lens, &P.bytes, &P.dict, &e), e);
+  fstx_colsrc_page_span(C.s.get(), q, &P.first, &P.n);
+  uint64_t tot = 0;
+  uint32_t nulls = 0;
+  if (P.dict >= 0) {
+    const DictTab& D = C.dicts[(size_t)P.dict];
+    for (uint32_t i = 0; i < P.n; ++i) {
+      const int32_t k = P.lens[i];  // checked against the dictionary size by the decoder
+      if (k < 0) ++nulls;
+      else tot += (uint64_t)std::max(0, D.lens[k]);
+    }
+  } else {
+    for (uint32_t i = 0; i < P.n; ++i) {
+      const int32_t l = P.lens[i];
+      if (l < 0) ++nulls;
+      else tot += (uint64_t)l;
+    }
+  }
+  P.tot = tot;
+  P.nulls = nulls;
+}
+
+template <typename O>
+void str_prep(StrCol& C) {
+  uint64_t tot = 0, nulls = 0;
+  for (StrPage& P : C.pages) {
+    P.off = tot;
+    tot += P.tot;
+    nulls += P.nulls;
+  }
+  if (tot > (uint64_t)std::numeric_limits<O>::max())
+    throw Fail("column '" + C.c->name + "': a batch holds more than 2 GB of text; use a smaller batch_rows");
+  array_init(C.out, (int64_t)C.n, 3);
+  C.offs = array_buf(C.out, 1, (size_t)(C.n + 1) * sizeof(O));
+  ((O*)C.offs)[C.n] = (O)tot;
+  C.data = (char*)array_buf(C.out, 2, (size_t)tot);
+  if (nulls) C.bits = (uint8_t*)array_buf(C.out, 0, (size_t)((C.n + 7) / 8));
+  C.out->null_count = (int64_t)nulls;
+}
+
+inline bool full_byte(uint64_t B, uint64_t r0, uint64_t r1) { return B * 8 >= r0 && B * 8 + 8 <= r1; }
+
+template <typename O>
+void str_write(StrCol& C, uint32_t q) {
+  StrPage& P = C.pages[q];
+  O* o = (O*)C.offs + P.first;
+  uint64_t pos = P.off;
+  if (P.dict < 0) {  // the page's strings follow each other: one copy
+    for (uint32_t i = 0; i < P.n; ++i) {
+      o[i] = (O)pos;
+      if (P.lens[i] > 0) pos += (uint64_t)P.lens[i];
+    }
+    if (P.tot) std::memcpy(C.data + P.off, P.bytes, (size_t)P.tot);
+  } else {
+    const DictTab& D = C.dicts[(size_t)P.dict];
+    for (uint32_t i = 0; i < P.n; ++i) {
+      o[i] = (O)pos;
+      const int32_t k = P.lens[i];
+      if (k < 0 || D.lens[k] <= 0) continue;
+      std::memcpy(C.data + pos, D.bytes + D.off[(size_t)k], (size_t)D.lens[k]);
+      pos += (uint64_t)D.lens[k];
+    }
+  }
+  if (!C.bits || !P.n) return;
+  const uint64_t r0 = P.first, r1 = P.first + P.n;
+  for (uint64_t B = r0 >> 3; B <= (r1 - 1) >> 3; ++B) {
+    uint8_t v = 0;
+    const uint64_t lo = std::max(r0, B * 8), hi = std::min(r1, B * 8 + 8);
+    for (uint64_t r = lo; r < hi; ++r)
+      if (P.lens[r - r0] >= 0) v |= (uint8_t)(1u << (r & 7));
+    if (full_byte(B, r0, r1)) C.bits[B] = v;
+    else if (B == r0 >> 3) P.head = v;
+    else P.tail = v;
+  }
+}
+
+void str_bits(StrCol& C) {
+  if (!C.bits) return;
+  for (const StrPage& P : C.pages) {  // bytes no page owns alone: clear, then every page adds its bits
+    if (!P.n) continue;
+    const uint64_t r0 = P.first, r1 = P.first + P.n, h = r0 >> 3, t = (r1 - 1) >> 3;
+    if (!full_byte(h, r0, r1)) C.bits[h] = 0;
+    if (!full_byte(t, r0, r1)) C.bits[t] = 0;
+  }
+  for (const StrPage& P : C.pages) {
+    if (!P.n) continue;
+    const uint64_t r0 = P.first, r1 = P.first + P.n, h = r0 >> 3, t = (r1 - 1) >> 3;
+    if (!full_byte(h, r0, r1)) C.bits[h] |= P.head;
+    if (t != h && !full_byte(t, r0, r1)) C.bits[t] |= P.tail;
+  }
+}
+
+// A batch over file rows [a, b) (no row list). Phase 1: string pages decode and fixed-width columns decode
+// straight into their Arrow arrays (in row parts when there are fewer columns than threads), all as one set of
+// tasks on the pool. Phase 2: string columns are laid out page by page (dictionary output: one task a column).
+void batch_range(const Stream& S, uint64_t a, uint64_t b, uint64_t n, ArrayHold* h) {
+  const size_t nc = S.cols.size();
+  const int parts = nc && nc < (size_t)S.threads ? (int)(((size_t)S.threads + nc - 1) / nc) : 1;
+  std::vector<std::unique_ptr<FixedCol>> fx(nc);
+  std::vector<std::unique_ptr<StrCol>> sx(nc);
+  struct Task {
+    size_t j;
+    uint64_t i0, i1;  // fixed: output rows [i0, i1); strings: page i0 (phase 2: i1 = 1 for a dictionary column)
+  };
+  std::vector<Task> tasks;
+  for (size_t j = 0; j < nc; ++j) {
+    const ColSpec& c = S.cols[j];
+    if (c.phys == FSTX_STRING) {
+      sx[j].reset(new StrCol());
+      StrCol& C = *sx[j];
+      C.c = &c;
+      C.out = h->kids[j];
+      C.n = n;
+      str_open(S, C, a, b);
+      for (uint32_t q = 0; q < (uint32_t)C.pages.size(); ++q) tasks.push_back({j, q, 0});
+      continue;
+    }
+    fx[j].reset(new FixedCol());
+    FixedCol& F = *fx[j];
+    F.c = &c;
+    F.out = h->kids[j];
+    F.a = a;
+    F.n = n;
+    const std::vector<uint64_t> cut = fixed_prep(S, F, b, parts);
+    for (size_t q = 0; q + 1 < cut.size(); ++q) tasks.push_back({j, cut[q], cut[q + 1]});
+  }
+  auto decode = [&](size_t i, fstx_scratch* w, int threads) {
+    const Task& t = tasks[i];
+    if (fx[t.j]) fixed_part(S, *fx[t.j], t.i0, t.i1, threads);
+    else str_decode(*sx[t.j], (uint32_t)t.i0, w);
+  };
+  run_tasks(tasks.size(), S.threads, decode);
+  tasks.clear();
+  for (size_t j = 0; j < nc; ++j) {
+    if (!sx[j]) continue;
+    StrCol& C = *sx[j];
+    if (C.c->out == O_DICT_STR) {
+      tasks.push_back({j, 0, 1});
+      continue;
+    }
+    if (C.c->out == O_UTF8) str_prep<int32_t>(C);
+    else str_prep<int64_t>(C);
+    for (uint32_t q = 0; q < (uint32_t)C.pages.size(); ++q) tasks.push_back({j, q, 0});
+  }
+  auto layout = [&](size_t i, fstx_scratch*, int) {
+    const Task& t = tasks[i];
+    StrCol& C = *sx[t.j];
+    if (t.i1) string_column(*C.c, std::move(C.s), nullptr, n, C.out);
+    else if (C.c->out == O_UTF8) str_write<int32_t>(C, (uint32_t)t.i0);
+    else str_write<int64_t>(C, (uint32_t)t.i0);
+  };
+  run_tasks(tasks.size(), S.threads, layout);
+  for (size_t j = 0; j < nc; ++j) {
+    if (sx[j]) str_bits(*sx[j]);
+    else h->kids[j]->null_count = fx[j]->nulls.load();
+  }
+}
+
+// A batch of the rows in sel (relative to a) over file rows [a, b). String pages decode first, column by column,
+// each in parallel on the engine pool. Then the columns are laid out at once on own threads (no pool):
+// fixed-width columns decode there too, since their NA / bool / Date passes are single-threaded per column and
+// dominate a page-parallel decode. With fewer columns than threads, fixed-width columns are cut into row parts at
+// page edges (fixed_prep) so that every thread has work.
+void batch_rows(const Stream& S, uint64_t a, uint64_t b, uint64_t n, const uint64_t* sp, ArrayHold* h) {
+  const size_t nc = S.cols.size();
+  const int parts = nc && nc < (size_t)S.threads ? (int)(((size_t)S.threads + nc - 1) / nc) : 1;
+  std::vector<SrcPtr> loaded(nc);
+  std::vector<std::unique_ptr<FixedCol>> fx(nc);
+  struct Task {
+    size_t j;
+    uint64_t i0, i1;
+  };
+  std::vector<Task> tasks;
+  for (size_t j = 0; j < nc; ++j) {
+    const ColSpec& c = S.cols[j];
+    if (c.phys == FSTX_STRING) {
+      loaded[j] = string_load(S, c, a, b, S.threads);
+      tasks.push_back({j, 0, n});
+      continue;
+    }
+    fx[j].reset(new FixedCol());
+    FixedCol& F = *fx[j];
+    F.c = &c;
+    F.out = h->kids[j];
+    F.a = a;
+    F.n = n;
+    F.sel = sp;
+    const std::vector<uint64_t> cut = fixed_prep(S, F, b, parts);
+    for (size_t q = 0; q + 1 < cut.size(); ++q) tasks.push_back({j, cut[q], cut[q + 1]});
+  }
+  auto run = [&](const Task& t, int threads) {
+    if (fx[t.j]) fixed_part(S, *fx[t.j], t.i0, t.i1, threads);
+    else string_column(S.cols[t.j], std::move(loaded[t.j]), sp, n, h->kids[t.j]);
+  };
+  const size_t nt = tasks.size();
+  const int k = (int)std::min<size_t>((size_t)S.threads, nt);
+  if (k <= 1) {
+    for (const Task& t : tasks) run(t, S.threads);
+  } else {
+    std::atomic<size_t> nx{0};
+    std::vector<std::exception_ptr> ex((size_t)k);
+    auto work = [&](int id) {
+      try {
+        for (size_t i; (i = nx.fetch_add(1)) < nt;) run(tasks[i], 1);
+      } catch (...) {
+        ex[(size_t)id] = std::current_exception();
+        nx.store(nt);
+      }
+    };
+    std::vector<std::thread> ts;
+    try {
+      for (int i = 1; i < k; ++i) ts.emplace_back(work, i);
+    } catch (...) {  // no more threads: the ones started and this one share the work
+    }
+    work(0);
+    for (std::thread& t : ts) t.join();
+    for (std::exception_ptr& x : ex)
+      if (x) std::rethrow_exception(x);
+  }
+  for (size_t j = 0; j < nc; ++j)
+    if (fx[j]) h->kids[j]->null_count = fx[j]->nulls.load();
+}
+
 Stream* stream_of(ArrowArrayStream* st) { return (Stream*)st->private_data; }
 
 int fail_code(Stream& S, const char* what) {
@@ -606,68 +919,8 @@ int stream_get_next(ArrowArrayStream* st, ArrowArray* out) {
     for (size_t j = 0; j < S.cols.size(); ++j) h->kids.push_back(new_child());
     res.n_children = (int64_t)h->kids.size();
     res.children = h->kids.empty() ? nullptr : h->kids.data();
-    // String pages decode first, column by column, each in parallel on the engine pool. Then the columns are laid
-    // out at once on own threads (no pool): fixed-width columns decode there too, since their NA / bool / Date
-    // passes are single-threaded per column and dominate a page-parallel decode. With fewer columns than threads,
-    // fixed-width columns are cut into row parts at page edges (fixed_prep) so that every thread has work.
-    const uint64_t* sp = S.by_rows ? sel.data() : nullptr;
-    const size_t nc = S.cols.size();
-    const int parts = nc && nc < (size_t)S.threads ? (int)(((size_t)S.threads + nc - 1) / nc) : 1;
-    std::vector<SrcPtr> loaded(nc);
-    std::vector<std::unique_ptr<FixedCol>> fx(nc);
-    struct Task {
-      size_t j;
-      uint64_t i0, i1;
-    };
-    std::vector<Task> tasks;
-    for (size_t j = 0; j < nc; ++j) {
-      const ColSpec& c = S.cols[j];
-      if (c.phys == FSTX_STRING) {
-        loaded[j] = string_load(S, c, a, b, S.threads);
-        tasks.push_back({j, 0, n});
-        continue;
-      }
-      fx[j].reset(new FixedCol());
-      FixedCol& F = *fx[j];
-      F.c = &c;
-      F.out = h->kids[j];
-      F.a = a;
-      F.n = n;
-      F.sel = sp;
-      const std::vector<uint64_t> cut = fixed_prep(S, F, b, parts);
-      for (size_t q = 0; q + 1 < cut.size(); ++q) tasks.push_back({j, cut[q], cut[q + 1]});
-    }
-    auto run = [&](const Task& t, int threads) {
-      if (fx[t.j]) fixed_part(S, *fx[t.j], t.i0, t.i1, threads);
-      else string_column(S.cols[t.j], std::move(loaded[t.j]), sp, n, h->kids[t.j]);
-    };
-    const size_t nt = tasks.size();
-    const int k = (int)std::min<size_t>((size_t)S.threads, nt);
-    if (k <= 1) {
-      for (const Task& t : tasks) run(t, S.threads);
-    } else {
-      std::atomic<size_t> nx{0};
-      std::vector<std::exception_ptr> ex((size_t)k);
-      auto work = [&](int id) {
-        try {
-          for (size_t i; (i = nx.fetch_add(1)) < nt;) run(tasks[i], 1);
-        } catch (...) {
-          ex[(size_t)id] = std::current_exception();
-          nx.store(nt);
-        }
-      };
-      std::vector<std::thread> ts;
-      try {
-        for (int i = 1; i < k; ++i) ts.emplace_back(work, i);
-      } catch (...) {  // no more threads: the ones started and this one share the work
-      }
-      work(0);
-      for (std::thread& t : ts) t.join();
-      for (std::exception_ptr& x : ex)
-        if (x) std::rethrow_exception(x);
-    }
-    for (size_t j = 0; j < nc; ++j)
-      if (fx[j]) h->kids[j]->null_count = fx[j]->nulls.load();
+    if (S.by_rows) batch_rows(S, a, b, n, sel.data(), h);
+    else batch_range(S, a, b, n, h);
     S.pos = next;
     *out = res;
     return 0;

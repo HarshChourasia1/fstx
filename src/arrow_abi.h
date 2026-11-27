@@ -80,6 +80,17 @@ typedef struct fstx_arrow_args {
 int fstx_arrow_stream_open(const char* path_utf8, const fstx_arrow_args* args, struct ArrowArrayStream* out,
                            fstx_error* err);
 
+/* ---- engine helpers the stream uses (core_colsrc.cpp); not part of the public engine API */
+typedef struct fstx_scratch fstx_scratch; /* one worker's decode state */
+typedef int (*fstx_task_fn)(void* ctx, int64_t i, fstx_scratch* w); /* 0 = done, else stop the other tasks */
+/* Runs fn(ctx, i, w) for i in [0, n) on up to `threads` workers of the engine's pool (<= 0: all cores; on the
+ * calling thread when the pool is busy). fn must not throw. */
+int fstx_run_tasks(int64_t n, int threads, fstx_task_fn fn, void* ctx, fstx_error* err);
+/* Decodes page p of a string source (if not yet) and returns it as fstx_colsrc_str_page does. Thread-safe for
+ * distinct pages of one source once its dictionaries are decoded (fstx_colsrc_dict); w may be NULL. */
+int fstx_colsrc_load_page(fstx_colsrc* s, uint32_t page, fstx_scratch* w, const int32_t** lens, const char** bytes,
+                          int32_t* dict, fstx_error* err);
+
 #ifdef __cplusplus
 }
 #endif
