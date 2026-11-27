@@ -704,12 +704,52 @@ void open_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, 
   }
 }
 
+// One string's codes [in, end) to out, a symbol at a time with an 8-byte store each (out needs room for 8 bytes
+// per code): the page's strings are decoded in one loop instead of one fsst_decompress call each. 4 codes at a time
+// while none is the escape (255); a lone escape at the end was ruled out by the caller.
+inline uint8_t* fsst_codes(const fsst_decoder_t& dec, const uint8_t* in, const uint8_t* end, uint8_t* out) {
+  const unsigned long long* sym = dec.symbol;
+  const unsigned char* len = dec.len;
+  while (end - in >= 4) {
+    uint32_t w;
+    std::memcpy(&w, in, 4);
+    const uint32_t v = ~w;  // a byte of w is 255 where a byte of v is 0
+    if (((v - 0x01010101u) & ~v & 0x80808080u) == 0) {
+      for (int k = 0; k < 4; ++k) {
+        const uint32_t c = in[k];
+        std::memcpy(out, &sym[c], 8);
+        out += len[c];
+      }
+      in += 4;
+      continue;
+    }
+    const uint32_t c = *in++;
+    if (c != 255) {
+      std::memcpy(out, &sym[c], 8);
+      out += len[c];
+    } else {
+      *out++ = *in++;
+    }
+  }
+  while (in < end) {
+    const uint32_t c = *in++;
+    if (c != 255) {
+      std::memcpy(out, &sym[c], 8);
+      out += len[c];
+    } else {
+      *out++ = *in++;
+    }
+  }
+  return out;
+}
+
 void str_page_text(const StrPageView& v, int32_t* lens, char* dst, size_t slack) {
   if (!v.fsst) {
     if (v.total) std::memcpy(dst, v.src, (size_t)v.total);
     return;
   }
   fsst_decoder_t dec;
+  std::memset(&dec, 0, sizeof(dec));  // codes the table does not define decode to nothing
   if (fsst_import(&dec, v.table) == 0) corrupt("FSST symbol table");
   const unsigned char* src = v.src;
   const uint64_t total = v.total;
@@ -726,7 +766,12 @@ void str_page_text(const StrPageView& v, int32_t* lens, char* dst, size_t slack)
       while (esc < cl && src[cl - 1 - esc] == 255) ++esc;
       if (esc & 1) corrupt("FSST escape at the end of a string");
     }
-    const size_t got = fsst_decompress(&dec, cl, src, (size_t)(total - pos) + slack, out + pos);
+    const uint64_t room = total - pos + slack;
+    size_t got;
+    if (room >= 8 * (uint64_t)cl + 8)  // every code's 8-byte store fits
+      got = (size_t)(fsst_codes(dec, src, src + cl, out + pos) - (out + pos));
+    else  // the page's last strings: the library's decoder never writes past room
+      got = fsst_decompress(&dec, cl, src, (size_t)room, out + pos);
     if (got > total - pos) corrupt("FSST string longer than the page");
     lens[i] = (int32_t)got;
     pos += got;
