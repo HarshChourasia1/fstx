@@ -14,12 +14,21 @@
 
 namespace fstxpy {
 
-// The capsule owns the ArrowArrayStream struct. A consumer (pyarrow) moves the stream out and marks the
-// struct released; a capsule nobody consumed releases the stream (and with it the open file) here.
+// The capsule owns the ArrowArrayStream struct, and after it the UTF-8 flags the stream sets per batch (one byte a
+// column, FSTX_ARROW_CHECK_UTF8): keep the capsule while the stream is pulled. A consumer (pyarrow) moves the
+// stream out and marks the struct released; a capsule nobody consumed releases the stream (and with it the open
+// file) here.
+struct StreamBox {
+  ArrowArrayStream st;  // first: the capsule's pointer is &st
+  uint8_t* bad;
+  size_t n;
+};
+
 static void stream_capsule_free(void* p) noexcept {
-  ArrowArrayStream* st = (ArrowArrayStream*)p;
-  if (st->release) st->release(st);
-  delete st;
+  StreamBox* b = (StreamBox*)p;
+  if (b->st.release) b->st.release(&b->st);
+  delete[] b->bad;
+  delete b;
 }
 
 // rows: None for the range [from, to), or bytes holding uint64 row numbers (0-based, ascending, repeats
@@ -27,7 +36,7 @@ static void stream_capsule_free(void* p) noexcept {
 // it is released, so it does not depend on a File object.
 static nb::capsule stream_open(const std::string& path, const std::vector<uint32_t>& cols,
                                const std::vector<std::string>& names, uint64_t from, uint64_t to,
-                               nb::object rows, int threads, uint64_t batch_rows, int verify, bool raw) {
+                               nb::object rows, int threads, uint64_t batch_rows, int verify, bool raw, int flags) {
   if (cols.size() != names.size()) throw nb::value_error("cols and names differ in length");
   std::vector<const char*> np;
   for (const std::string& s : names) np.push_back(s.c_str());
@@ -53,20 +62,35 @@ static nb::capsule stream_open(const std::string& path, const std::vector<uint32
   A.batch_rows = batch_rows;
   A.verify = verify;
   A.raw = raw ? 1 : 0;
-  ArrowArrayStream* st = new ArrowArrayStream();
-  std::memset(st, 0, sizeof(*st));
+  A.flags = flags;
+  StreamBox* box = new StreamBox();
+  std::memset(&box->st, 0, sizeof(box->st));
+  box->n = cols.size();
+  box->bad = new uint8_t[box->n + 1]();
+  A.utf8_bad = box->bad;
   fstx_error err;
   std::memset(&err, 0, sizeof(err));
   int rc;
   {
     nb::gil_scoped_release nogil;  // opens and maps the file, checks header, footer and page directory
-    rc = fstx_arrow_stream_open(path.c_str(), &A, st, &err);
+    rc = fstx_arrow_stream_open(path.c_str(), &A, &box->st, &err);
   }
   if (rc != FSTX_OK) {
-    delete st;
+    delete[] box->bad;
+    delete box;
     raise_error(err);
   }
-  return nb::capsule(st, "arrow_array_stream", stream_capsule_free);
+  return nb::capsule(&box->st, "arrow_array_stream", stream_capsule_free);
+}
+
+// The columns (positions in the stream) whose text in the batch pulled last is not valid UTF-8.
+static nb::list stream_utf8_bad(nb::capsule c) {
+  const StreamBox* b = (const StreamBox*)c.data();
+  if (!b) throw nb::value_error("not an fstx stream capsule");
+  nb::list out;
+  for (size_t j = 0; j < b->n; ++j)
+    if (b->bad[j]) out.append(j);
+  return out;
 }
 
 // preds: one dict per condition (all must hold): col (index), op (FSTX_OP_*), value (float), set (list of
@@ -145,7 +169,11 @@ static nb::tuple file_filter(const File& F, nb::list preds, uint64_t from, uint6
 void init_read(nb::module_& m) {
   m.def("stream", &stream_open, nb::arg("path"), nb::arg("cols"), nb::arg("names"), nb::arg("start"),
         nb::arg("stop"), nb::arg("rows").none(), nb::arg("threads"), nb::arg("batch_rows"), nb::arg("verify"),
-        nb::arg("raw"), "An Arrow C stream over the file, as an 'arrow_array_stream' PyCapsule.");
+        nb::arg("raw"), nb::arg("flags") = 0, "An Arrow C stream over the file, as an 'arrow_array_stream' PyCapsule.");
+  m.def("stream_utf8_bad", &stream_utf8_bad, nb::arg("capsule"),
+        "Columns of the last batch of a stream opened with ARROW_CHECK_UTF8 whose text is not valid UTF-8.");
+  m.attr("ARROW_PLAIN_STRINGS") = (int)FSTX_ARROW_PLAIN_STRINGS;
+  m.attr("ARROW_CHECK_UTF8") = (int)FSTX_ARROW_CHECK_UTF8;
   m.def("filter", &file_filter, nb::arg("file"), nb::arg("preds"), nb::arg("start"), nb::arg("stop"),
         nb::arg("threads"), nb::arg("verify"), nb::arg("plan_only"),
         "Rows of [start, stop) that match every condition: (uint64 bytes, stats).");

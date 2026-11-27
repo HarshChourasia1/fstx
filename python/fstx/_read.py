@@ -1,10 +1,11 @@
 """Reading fstx files into Arrow (DESIGN.md sections 2 to 6).
 
 The engine's Arrow C stream (src/r_arrow.cpp) decodes the pages; pyarrow imports it and pulls the batches with
-the GIL released. This module chooses columns and rows, runs filters, and finishes each batch where the stream
-cannot know R's meaning: integer64 (the bits of a double column), factors, Dates and POSIXct that R stored as
-plain numbers with their class in the attribute blob, dictionary-coded strings (always returned as plain
-strings), the UTF-8 check, and the metadata that lets a writer store the table again the way R wrote it.
+the GIL released. The stream also lays out dictionary-coded strings as plain strings and checks that all text is
+valid UTF-8, on its own threads (ARROW_PLAIN_STRINGS, ARROW_CHECK_UTF8). This module chooses columns and rows,
+runs filters, and finishes each batch where the stream cannot know R's meaning: integer64 (the bits of a double
+column), factors, Dates and POSIXct that R stored as plain numbers with their class in the attribute blob,
+text that is not valid UTF-8, and the metadata that lets a writer store the table again the way R wrote it.
 
 Arrow metadata (DESIGN.md section 4; keys and helpers in ``_meta.py``):
 
@@ -328,7 +329,8 @@ def _replace_utf8(a: pa.Array) -> pa.Array:
     return pa.array([None if b is None else b.decode("utf-8", "replace") for b in raw.to_pylist()], a.type)
 
 
-def _strings(arr: pa.Array, j: int, col: _Col, mode: str, st: _State) -> pa.Array:
+def _strings(arr: pa.Array, j: int, col: _Col, mode: str, st: _State, bad: Optional[bool] = None) -> pa.Array:
+    """bad: the stream's UTF-8 check of this batch's column (None: not checked, check here)."""
     is_dict = pa.types.is_dictionary(arr.type)
     if not is_dict:
         st.plain.add(j)
@@ -336,7 +338,7 @@ def _strings(arr: pa.Array, j: int, col: _Col, mode: str, st: _State) -> pa.Arra
     want = col.field.type
     name = col.meta.name
     binary = pa.types.is_binary(want) or pa.types.is_large_binary(want)
-    if not _utf8_ok(vals):
+    if (not _utf8_ok(vals)) if bad is None else bad:
         st.bad.add(j)
         if mode == "error":
             raise ValueError("column '%s' holds strings that are not valid UTF-8 "
@@ -414,13 +416,15 @@ def _to_timestamp(arr: pa.Array, col: _Col) -> pa.Array:
     return us.cast(pa.int64()).view(col.field.type)
 
 
-def _finish(batch: pa.RecordBatch, plan: _Plan, schema: pa.Schema, st: _State) -> pa.RecordBatch:
+def _finish(batch: pa.RecordBatch, plan: _Plan, schema: pa.Schema, st: _State,
+            bad: Optional[List[int]] = None) -> pa.RecordBatch:
+    """bad: the stream's UTF-8 check of this batch (columns whose text is not valid), None when not checked."""
     out = []
     for j, col in enumerate(plan.cols):
         a = batch.column(j)
         k = col.kind
         if k == "string":
-            a = _strings(a, j, col, plan.invalid_utf8, st)
+            a = _strings(a, j, col, plan.invalid_utf8, st, None if bad is None else j in bad)
         elif k == "int64":
             a = _to_int64(a)
         elif k == "factor":
@@ -444,23 +448,27 @@ class _Stream:
 
 
 def _batches(plan: _Plan, schema: pa.Schema, sel: _Rows, threads: int, batch_rows: int, verify: int,
-             st: _State) -> Iterator[pa.RecordBatch]:
-    """The finished batches of a read (not called for an empty selection or for no columns)."""
+             st: _State, plain: bool = True) -> Iterator[pa.RecordBatch]:
+    """The finished batches of a read (not called for an empty selection or for no columns). plain: the stream
+    lays out dictionary-coded string columns as plain strings (else they come as dictionaries)."""
+    flags = _core.ARROW_CHECK_UTF8 | (_core.ARROW_PLAIN_STRINGS if plain else 0)
     # every engine call takes the engine lock (_engine.py); between batches other threads get their turn
     with _ENGINE_LOCK:
+        # the capsule also holds the stream's UTF-8 flags: it stays referenced here while the batches are pulled
         capsule = _core.stream(plan.meta.path, plan.index, [c.meta.name for c in plan.cols], sel.start, sel.stop,
-                               sel.sel, threads, batch_rows, verify, plan.raw)
+                               sel.sel, threads, batch_rows, verify, plan.raw, flags)
         reader = pa.RecordBatchReader.from_stream(_Stream(capsule))
     try:
         while True:
             try:
                 with _ENGINE_LOCK:
                     batch = reader.read_next_batch()  # decodes with the GIL released
+                    bad = _core.stream_utf8_bad(capsule)
             except StopIteration:
                 return
             except (pa.ArrowException, OSError) as e:  # the engine's message; the stream carries no error code
                 raise _error(str(e)) from None
-            yield _finish(batch, plan, schema, st)
+            yield _finish(batch, plan, schema, st, bad)
     finally:
         with _ENGINE_LOCK:
             reader.close()  # releases the stream and with it the file
@@ -510,7 +518,7 @@ def read(f: File, columns=None, rows=None, filters=None, *, threads=None, verify
         return _no_columns(sel.n, schema)
     st = _State()
     stream_n = sel.n if sel.take is None else len(sel.sel) // 8
-    batches = list(_batches(plan, schema, sel, nt, 0, vf, st)) if stream_n else []
+    batches = list(_batches(plan, schema, sel, nt, 0, vf, st, plain=not fac)) if stream_n else []
     if not batches:  # no rows: one empty batch, so that factors keep their levels
         batches = [_empty(plan, schema)]
     table = pa.Table.from_batches(batches, schema=schema)

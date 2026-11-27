@@ -72,13 +72,52 @@ typedef struct fstx_arrow_args {
   uint64_t batch_rows;       /* rows per batch at most; 0 = one batch per row group. Batches never span row groups */
   int verify;                /* FSTX_VERIFY_HASH / FSTX_VERIFY_NULLS bits (fstx_core.h) */
   int raw;                   /* != 0: Date and POSIXct columns come as stored (int32 / float64), not date32 / timestamp */
+  int flags;                 /* FSTX_ARROW_* bits below (0: dictionary-coded columns as dictionaries, no UTF-8 check) */
+  uint8_t* utf8_bad;         /* with FSTX_ARROW_CHECK_UTF8: n_cols bytes the stream sets after every batch it returns,
+                                1 where that batch's column holds text that is not valid UTF-8, else 0 */
 } fstx_arrow_args;
+
+enum {
+  FSTX_ARROW_PLAIN_STRINGS = 1, /* string columns always as utf8 / large_utf8 (dictionary pages laid out as text) */
+  FSTX_ARROW_CHECK_UTF8 = 2     /* check the text of every string column (needs utf8_bad) */
+};
 
 /* Opens path and fills *out (which must be released, i.e. out->release == NULL). The stream owns the open file
  * until its release callback runs. Its callbacks never call R and may run on any thread (one at a time per
  * stream). Returns FSTX_OK or an error code with err filled in; *out is untouched on error. */
 int fstx_arrow_stream_open(const char* path_utf8, const fstx_arrow_args* args, struct ArrowArrayStream* out,
                            fstx_error* err);
+
+/* ---- engine helpers the stream uses (core_colsrc.cpp); not part of the public engine API */
+typedef struct fstx_scratch fstx_scratch; /* one worker's decode state */
+typedef struct fstx_scratchset fstx_scratchset; /* decode state for every worker, kept from one call to the next */
+fstx_scratchset* fstx_scratchset_new(void); /* NULL when out of memory */
+void fstx_scratchset_free(fstx_scratchset* ss);
+typedef int (*fstx_task_fn)(void* ctx, int64_t i, fstx_scratch* w); /* 0 = done, else stop the other tasks */
+/* Runs fn(ctx, i, w) for i in [0, n) on up to `threads` workers of the engine's pool (<= 0: all cores; on the
+ * calling thread when the pool is busy). fn must not throw. ss: the workers' decode state (NULL: made for this
+ * call); one call at a time per scratch set. */
+int fstx_run_tasks(int64_t n, int threads, fstx_task_fn fn, void* ctx, fstx_scratchset* ss, fstx_error* err);
+/* A buffer of at least `bytes` for the task's own use, kept with the worker's state (contents undefined); valid
+ * until the next call on the same w. NULL when out of memory. */
+void* fstx_scratch_buffer(fstx_scratch* w, size_t bytes);
+/* fstx_colsrc_load on the calling thread, with a worker's decode state (inside a task of fstx_run_tasks). */
+int fstx_colsrc_load_with(fstx_colsrc* s, void* dst, fstx_scratch* w, fstx_error* err);
+/* Decodes page p of a string source (if not yet) and returns it as fstx_colsrc_str_page does. Thread-safe for
+ * distinct pages of one source once its dictionaries are decoded (fstx_colsrc_dict); w may be NULL. */
+int fstx_colsrc_load_page(fstx_colsrc* s, uint32_t page, fstx_scratch* w, const int32_t** lens, const char** bytes,
+                          int32_t* dict, fstx_error* err);
+/* Frees a loaded page's buffers (as fstx_colsrc_drop); thread-safe for distinct pages of one source. */
+void fstx_colsrc_drop_page(fstx_colsrc* s, uint32_t page);
+/* A pool of string page buffers: a source given one (before any page is loaded) takes its pages' buffers from it
+ * and gives them back when a page is dropped or the source freed. Thread-safe. The pool must outlive the source. */
+typedef struct fstx_bufpool fstx_bufpool;
+fstx_bufpool* fstx_bufpool_new(void); /* NULL when out of memory */
+void fstx_bufpool_free(fstx_bufpool* p);
+void fstx_colsrc_set_bufpool(fstx_colsrc* s, fstx_bufpool* p);
+/* read != 0: the source copies its pages out of the file with positional reads (no page faults on the mapping,
+ * which the OS serialises per process) instead of decoding them where they are mapped. Before any page loads. */
+void fstx_colsrc_set_read(fstx_colsrc* s, int read);
 
 #ifdef __cplusplus
 }
