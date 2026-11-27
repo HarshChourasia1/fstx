@@ -174,6 +174,7 @@ void init_read(nb::module_& m) {
         "Columns of the last batch of a stream opened with ARROW_CHECK_UTF8 whose text is not valid UTF-8.");
   m.attr("ARROW_PLAIN_STRINGS") = (int)FSTX_ARROW_PLAIN_STRINGS;
   m.attr("ARROW_CHECK_UTF8") = (int)FSTX_ARROW_CHECK_UTF8;
+  m.attr("ARROW_SPAN_GROUPS") = (int)FSTX_ARROW_SPAN_GROUPS;
   m.def("filter", &file_filter, nb::arg("file"), nb::arg("preds"), nb::arg("start"), nb::arg("stop"),
         nb::arg("threads"), nb::arg("verify"), nb::arg("plan_only"),
         "Rows of [start, stop) that match every condition: (uint64 bytes, stats).");
