@@ -4,11 +4,10 @@
 // date32 / float32 / float64, nulls still nulls), or string / binary chunks, plain or dictionary-coded (int32 codes
 // into one dictionary shared by all chunks, so that equal strings reach the engine as one pointer, as R's string
 // cache gives them; the engine's string dictionary keys on pointers). This file reads their buffers through the
-// Arrow C data interface and runs the engine with the GIL released. The engine takes one int32 / double pointer
-// per number column, so rows go to it a window of whole row groups at a time (the file is the same as from one
-// call): a number column whose window lies in one chunk that is already what the engine takes is passed in place,
-// any other is filled (widened, NA written for nulls) into a window buffer, in parallel. The string callback runs
-// on engine worker threads and touches nothing but the Arrow buffers.
+// Arrow C data interface and runs the engine with the GIL released, in one call. A number column that is one chunk
+// already as the engine takes it is passed in place; any other goes through get_values, which the engine's workers
+// call a page at a time: rows that lie in one such chunk are handed over in place, others are filled (widened, NA
+// written for nulls) into the worker's buffer. Both callbacks touch nothing but the Arrow buffers.
 #include "binding.h"
 
 #include <nanobind/stl/string.h>
@@ -54,7 +53,6 @@ struct StrChunk {
 struct StrSrc {
   std::vector<StrChunk> chunks;
   std::vector<uint64_t> first;  // first row of each chunk
-  uint64_t base = 0;            // row of the table where the current engine call starts
   std::vector<std::vector<const char*>> cptr;  // StrChunk::cptr / clen, one per dictionary
   std::vector<std::vector<int32_t>> clen;
 };
@@ -76,12 +74,12 @@ struct NumSrc {
   std::vector<NumChunk> chunks;
   std::vector<uint64_t> first;  // first row of each chunk
   int32_t add = 0;              // added to every value (int32 targets)
+  int phys = FSTX_INT32;        // FSTX_INT32 / FSTX_LOGICAL (int32 rows) or FSTX_FLOAT64
   bool bits = false;            // int64 kept bit for bit in a double (integer64), NA = INT64_MIN
 };
 
 const int32_t kNaInt = INT32_MIN;
 const uint64_t kNaRealBits = 0x7FF00000000007A2ull;  // R's NA_real_
-const uint64_t kRowGroup = 1048576;                 // the engine's default row group, the one files are written with
 
 // The Arrow formats a number column is taken in, by target (the binding converts them itself).
 bool num_kind(const std::string& f, int phys, NumKind* k) {
@@ -173,7 +171,7 @@ void fill_rows(const NumSrc& s, int phys, uint64_t r0, uint64_t n, void* out) {
   }
 }
 
-// The window's rows in place when one chunk holds them all as the engine takes them, else null.
+// Rows [r0, r0 + n) in place when one chunk holds them all as the engine takes them, else null.
 const void* in_place(const NumSrc& s, int phys, uint64_t r0, uint64_t n) {
   if (s.chunks.empty() || s.add) return nullptr;
   const size_t k = (size_t)(std::upper_bound(s.first.begin(), s.first.end(), r0) - s.first.begin()) - 1;
@@ -184,7 +182,15 @@ const void* in_place(const NumSrc& s, int phys, uint64_t r0, uint64_t n) {
   return (const char*)c.values + (size_t)(c.off + (int64_t)i0) * (phys == FSTX_FLOAT64 ? 8 : 4);
 }
 
-// The threads of one write, kept from one parallel step to the next (checks, window fills): run(n, job) runs
+// The engine's get_values (ctx: the column's NumSrc), on its worker threads, one page's rows at a time.
+const void* get_values(void* ctx, uint64_t row, uint32_t n, void* buf) {
+  const NumSrc& s = *(const NumSrc*)ctx;
+  if (const void* p = in_place(s, s.phys, row, n)) return p;
+  fill_rows(s, s.phys, row, n, buf);
+  return buf;
+}
+
+// The threads of one write, kept from one parallel step to the next (the checks): run(n, job) runs
 // job(0 .. n-1) on up to `threads` threads, the calling one included; threads are started when first needed.
 class Team {
  public:
@@ -281,7 +287,6 @@ inline void span_of(const StrChunk& c, uint64_t i, int64_t* a, int64_t* b) {
 // Engine callback (worker threads): reads Arrow buffers only. Lengths were checked by check_strings.
 int get_strings(void* ctx, uint64_t row, uint32_t n, const char** ptrs, int32_t* lens) {
   const StrSrc* s = (const StrSrc*)ctx;
-  row += s->base;
   size_t k = (size_t)(std::upper_bound(s->first.begin(), s->first.end(), row) - s->first.begin()) - 1;
   uint64_t i = row - s->first[k];
   for (uint32_t j = 0; j < n; ++j) {
@@ -331,7 +336,6 @@ struct Col {
   bool has_attrs = false, has_tz = false;
   StrSrc src;
   NumSrc num;
-  std::vector<uint8_t> buf;  // the window's rows, when they are filled
 };
 
 // Well-formed UTF-8 (no overlongs, surrogates or values past U+10FFFF) without NUL: 0 ok, 1 not UTF-8, 2 NUL.
@@ -808,7 +812,12 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
       data[j].get_strings = get_strings;
       data[j].ctx = &c.src;
     } else {
-      data[j].data = dummy;
+      c.num.phys = d.phys;
+      data[j].data = nrow ? in_place(c.num, d.phys, 0, nrow) : dummy;
+      if (!data[j].data) {
+        data[j].get_values = get_values;
+        data[j].ctx = &c.num;
+      }
     }
   }
   std::string ta;
@@ -826,17 +835,6 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
   // R a second walk over its CHARSXPs, but get_strings here only reads Arrow offsets, so pages read the strings
   // again as fast as from the cache, and the cache's up to 64 MB a call (12 bytes a string) stay free. Same bytes.
   opt.force_encoding = 0x800;
-  // Rows per engine call. One call when every number column can be passed in place (or for an append, which keeps
-  // the file's row group size, not known here). Else whole row groups per call, so the window buffers stay small:
-  // one row group, or two when there are string columns (a string chunk's prep has steps that read its rows in
-  // order, the dictionary attempt and the FSST choice; two row groups a call keep two of them side by side).
-  bool fills = false, strings = false;
-  for (size_t j = 0; j < nc; ++j) {
-    if (defs[j].phys == FSTX_STRING) strings = true;
-    else if (nrow && !in_place(cols[j].num, defs[j].phys, 0, nrow)) fills = true;
-  }
-  if (!append) opt.row_group_size = kRowGroup;
-  const uint64_t win = append || !fills ? std::max<uint64_t>(nrow, 1) : kRowGroup * (strings ? 2 : 1);
   const int nthreads = threads > 0 ? threads : (int)fstx_hardware_threads();
 
   fstx_error err;
@@ -868,42 +866,7 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
       rc = append ? fstx_writer_open_append(path.c_str(), defs.data(), (uint32_t)nc, tap, ta.size(), &opt, &w, &err)
                   : fstx_writer_open(path.c_str(), defs.data(), (uint32_t)nc, tap, ta.size(), &opt, &w, &err);
       if (rc == FSTX_OK) {
-        try {
-          for (uint64_t r0 = 0; r0 < nrow && rc == FSTX_OK; r0 += win) {
-            const uint64_t n = std::min(win, nrow - r0);
-            struct Piece {
-              size_t col;
-              uint64_t a, b;  // rows of the window
-            };
-            std::vector<Piece> pieces;
-            for (size_t j = 0; j < nc; ++j) {
-              Col& c = cols[j];
-              if (defs[j].phys == FSTX_STRING) {
-                c.src.base = r0;
-                continue;
-              }
-              if (const void* p = in_place(c.num, defs[j].phys, r0, n)) {
-                data[j].data = p;
-                continue;
-              }
-              const size_t wd = defs[j].phys == FSTX_FLOAT64 ? 8 : 4;
-              if (c.buf.size() < n * wd) c.buf.resize(std::min(win, nrow) * wd);
-              data[j].data = c.buf.data();
-              for (uint64_t a = 0; a < n; a += 65536) pieces.push_back({j, a, std::min(n, a + 65536)});
-            }
-            team.run(pieces.size(), [&](size_t i) {
-              const Piece& q = pieces[i];
-              const int ph = defs[q.col].phys;
-              fill_rows(cols[q.col].num, ph, r0 + q.a, q.b - q.a,
-                        cols[q.col].buf.data() + q.a * (ph == FSTX_FLOAT64 ? 8 : 4));
-            });
-            rc = fstx_writer_append(w, data.data(), n, &err);
-          }
-        } catch (const std::exception& e) {  // no memory for a window buffer, or no thread
-          rc = FSTX_ERR_MEMORY;
-          std::snprintf(err.message, sizeof(err.message), "write_fstx: %s", e.what());
-          err.code = rc;
-        }
+        rc = fstx_writer_append(w, data.data(), nrow, &err);
         if (rc != FSTX_OK) fstx_writer_abort(w);
         else rc = fstx_writer_close(w, &err);
       }

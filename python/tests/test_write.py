@@ -593,6 +593,35 @@ def test_refused_strings_checked_on_many_threads(tmp_path):
             assert not p.exists()
 
 
+def test_number_pages_in_place_and_filled(tmp_path):
+    # the engine asks for number rows a page at a time: pages inside one chunk of the stored type go in place,
+    # pages over a chunk edge, with nulls or of another type are filled; the file is the same as from one array
+    import numpy as np
+
+    n = 700_001
+    rng = np.random.default_rng(3)
+    vals = {
+        "i32": pa.array(rng.integers(-2**31 + 1, 2**31, n).astype("int32")),
+        "f64": pa.array(rng.standard_normal(n)),
+        "i16": pa.array(rng.integers(-3000, 3000, n).astype("int16")),
+    }
+    nulls = np.zeros(n, bool)
+    nulls[300_000:300_010] = True
+    vals["f64_na"] = pa.array(rng.standard_normal(n), mask=nulls)
+    one = pa.table(vals)
+    p = tmp_path / "one.fstx"
+    fstx.write_fstx(one, p, threads=1)
+    for size in (65_536, 40_000, 32_768, 1):
+        cuts = list(range(0, n, size if size > 1 else 99_999)) + [n]
+        many = pa.table({k: pa.chunked_array([v.slice(a, b - a) for a, b in zip(cuts, cuts[1:])], v.type)
+                         for k, v in vals.items()})
+        for threads in (1, None):
+            q = tmp_path / f"many_{size}_{threads}.fstx"
+            fstx.write_fstx(many, q, threads=threads)
+            assert p.read_bytes() == q.read_bytes(), (size, threads)
+    assert fstx.read_fstx(p).column("f64_na").null_count == 10
+
+
 def test_one_thread_team_for_every_step(tmp_path):
     # the checks and the window fills of one write share its threads (started once): any thread count gives the
     # same file over many windows, and a write refused on a worker leaves the next write working

@@ -121,6 +121,22 @@ static int get_strings(void* ctx, uint64_t row, uint32_t n, const char** ptrs, i
   return 0;
 }
 
+// get_values: mode 1 copies a page's rows into the writer's buffer, 2 hands them over in place, 3 fails after the
+// first page
+struct NumCtx {
+  const Table* t;
+  int c, mode;
+};
+static const void* get_values(void* ctx, uint64_t row, uint32_t n, void* buf) {
+  const NumCtx& x = *(const NumCtx*)ctx;
+  if (x.mode == 3 && row > 0) return nullptr;
+  const bool dbl = kPhys[x.c] == FSTX_FLOAT64;
+  const void* src = dbl ? (const void*)(x.t->f64[x.c].data() + row) : (const void*)(x.t->i32[x.c].data() + row);
+  if (x.mode == 2) return src;
+  std::memcpy(buf, src, (size_t)n * (dbl ? 8 : 4));
+  return buf;
+}
+
 static std::vector<fstx_write_column> col_defs(std::vector<uint32_t>& level_lens) {
   level_lens = {2, 3, 2};
   std::vector<fstx_write_column> d(NCOL);
@@ -141,18 +157,23 @@ static std::vector<fstx_write_column> col_defs(std::vector<uint32_t>& level_lens
 struct WriteArgs {
   int codec = FSTX_CODEC_ZSTD, level = 3, threads = 1, profile = FSTX_PROFILE_BALANCED, test_crash = 0;
   bool append = false;
+  int values = 0;            // number columns through get_values in this mode (0: data)
+  int* append_rc = nullptr;  // set: the append's code goes here, a failure is not a failed check
 };
 
 static bool write_table(const std::string& path, const Table& t, const WriteArgs& a) {
   std::vector<uint32_t> ll;
   std::vector<fstx_write_column> defs = col_defs(ll);
   std::vector<std::pair<const Table*, int>> ctx(NCOL);
+  std::vector<NumCtx> nctx(NCOL);
   std::vector<fstx_column_data> data(NCOL);
   for (int c = 0; c < NCOL; ++c) {
     std::memset(&data[c], 0, sizeof(fstx_column_data));
     ctx[c] = {&t, c};
-    if (kPhys[c] == FSTX_FLOAT64) data[c].data = t.f64[c].data();
-    else if (kPhys[c] == FSTX_STRING) data[c].get_strings = get_strings, data[c].ctx = &ctx[c];
+    nctx[c] = {&t, c, a.values};
+    if (kPhys[c] == FSTX_STRING) data[c].get_strings = get_strings, data[c].ctx = &ctx[c];
+    else if (a.values) data[c].get_values = get_values, data[c].ctx = &nctx[c];
+    else if (kPhys[c] == FSTX_FLOAT64) data[c].data = t.f64[c].data();
     else data[c].data = t.i32[c].data();
   }
   fstx_write_options o;
@@ -171,9 +192,10 @@ static bool write_table(const std::string& path, const Table& t, const WriteArgs
                     : fstx_writer_open(path.c_str(), defs.data(), NCOL, nullptr, 0, &o, &w, &e);
   if (!rc_ok(rc, e, "writer open " + path)) return false;
   rc = fstx_writer_append(w, data.data(), t.n, &e);
+  if (a.append_rc) *a.append_rc = rc;
   if (rc != FSTX_OK) {
     fstx_writer_abort(w);
-    return rc_ok(rc, e, "writer append " + path);
+    return a.append_rc ? false : rc_ok(rc, e, "writer append " + path);
   }
   return rc_ok(fstx_writer_close(w, &e), e, "writer close " + path);
 }
@@ -367,6 +389,35 @@ static std::vector<uint64_t> test_write_read(const std::string& dir, const Table
   return hs;
 }
 
+// number columns through get_values (copied into the writer's buffer, or handed over in place) give the same file
+// as data; a get_values failure fails the write with FSTX_ERR_HOST and leaves no file
+static void test_get_values(const std::string& dir, const Table& t) {
+  const std::string p0 = dir + "/gv_data.fstx", p = dir + "/gv.fstx";
+  WriteArgs a;
+  a.threads = 4;
+  if (!write_table(p0, t, a)) return;
+  const std::vector<uint8_t> b0 = slurp(p0);
+  std::remove(p0.c_str());
+  for (int mode : {1, 2})
+    for (int th : {1, 4}) {
+      a.values = mode;
+      a.threads = th;
+      if (write_table(p, t, a))
+        check(slurp(p) == b0, "get_values mode " + std::to_string(mode) + " threads " + std::to_string(th) +
+                                  ": same bytes as data");
+      std::remove(p.c_str());
+    }
+  int rc = FSTX_OK;
+  a.values = 3;
+  a.append_rc = &rc;
+  write_table(p, t, a);
+  check(rc == FSTX_ERR_HOST, "a failing get_values fails the write with FSTX_ERR_HOST");
+  FILE* f = std::fopen(p.c_str(), "rb");
+  check(!f, "a failed write leaves no file");
+  if (f) std::fclose(f);
+  std::remove(p.c_str());
+}
+
 static void test_rows_filter_colsrc(const std::string& path, const Table& t) {
   // row list: unsorted, with repeats, strings included
   std::vector<uint64_t> rows;
@@ -545,6 +596,7 @@ int main(int argc, char** argv) {
     const std::string lab = target_label();
     test_kernels();
     const std::vector<uint64_t> hs = test_write_read(dir, t);
+    if (m == 0) test_get_values(dir, t);
     const std::string p = dir + "/main.fstx";
     WriteArgs a;
     if (write_table(p, t, a)) test_rows_filter_colsrc(p, t);
