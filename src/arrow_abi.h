@@ -72,7 +72,15 @@ typedef struct fstx_arrow_args {
   uint64_t batch_rows;       /* rows per batch at most; 0 = one batch per row group. Batches never span row groups */
   int verify;                /* FSTX_VERIFY_HASH / FSTX_VERIFY_NULLS bits (fstx_core.h) */
   int raw;                   /* != 0: Date and POSIXct columns come as stored (int32 / float64), not date32 / timestamp */
+  int flags;                 /* FSTX_ARROW_* bits below (0: dictionary-coded columns as dictionaries, no UTF-8 check) */
+  uint8_t* utf8_bad;         /* with FSTX_ARROW_CHECK_UTF8: n_cols bytes the stream sets after every batch it returns,
+                                1 where that batch's column holds text that is not valid UTF-8, else 0 */
 } fstx_arrow_args;
+
+enum {
+  FSTX_ARROW_PLAIN_STRINGS = 1, /* string columns always as utf8 / large_utf8 (dictionary pages laid out as text) */
+  FSTX_ARROW_CHECK_UTF8 = 2     /* check the text of every string column (needs utf8_bad) */
+};
 
 /* Opens path and fills *out (which must be released, i.e. out->release == NULL). The stream owns the open file
  * until its release callback runs. Its callbacks never call R and may run on any thread (one at a time per

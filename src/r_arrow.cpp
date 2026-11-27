@@ -52,6 +52,13 @@ void* xalloc(size_t n) {
 bool valid_utf8(const uint8_t* s, size_t n) {
   size_t i = 0;
   while (i < n) {
+    for (; i + 16 <= n; i += 16) {  // ASCII runs, 16 bytes at a time
+      uint64_t x, y;
+      std::memcpy(&x, s + i, 8);
+      std::memcpy(&y, s + i + 8, 8);
+      if ((x | y) & 0x8080808080808080ull) break;
+    }
+    if (i >= n) break;
     const uint8_t c = s[i];
     if (c < 0x80) {
       ++i;
@@ -222,6 +229,8 @@ struct Stream : Live {
   int threads = 1;
   uint64_t batch_rows = 0;
   int verify = 1;
+  bool plain = false;              // FSTX_ARROW_PLAIN_STRINGS
+  uint8_t* utf8_bad = nullptr;     // FSTX_ARROW_CHECK_UTF8: the caller's flags, one per column
   std::string error;
   ~Stream() {
     if (f) fstx_close(f);
@@ -468,13 +477,40 @@ SrcPtr string_load(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b, in
   return s;
 }
 
+// A string dictionary, with the byte offset of every entry (dictionary pages laid out as plain strings).
+struct DictTab {
+  uint32_t n = 0;
+  const int32_t* lens = nullptr;
+  const char* bytes = nullptr;
+  std::vector<uint64_t> off;
+  uint64_t tot = 0;  // bytes of text
+  bool bad = false;  // not valid UTF-8 (checked only when asked)
+};
+
+DictTab dict_tab(fstx_colsrc* s, uint32_t d) {
+  DictTab t;
+  fstx_error e;
+  check(fstx_colsrc_dict(s, d, &t.n, &t.lens, &t.bytes, &e), e);
+  t.off.resize(t.n);
+  uint64_t o = 0;
+  for (uint32_t i = 0; i < t.n; ++i) {
+    t.off[i] = o;
+    o += (uint64_t)std::max(0, t.lens[i]);
+  }
+  t.tot = o;
+  return t;
+}
+
 void string_column(const ColSpec& c, SrcPtr s, const uint64_t* sel, uint64_t n, ArrowArray* out) {
   fstx_error e;
   fstx_colsrc_info si;
   fstx_colsrc_info_get(s.get(), &si);
   const bool dict = c.out == O_DICT_STR;
   if (dict && si.n_dicts != 1) throw Fail("internal error: a batch spans more than one dictionary");
-  // walk the pages in row order: ptrs / lens per output row (lens are codes for dictionary pages)
+  std::vector<DictTab> dt;  // plain output: dictionary pages take their strings from these
+  if (!dict)
+    for (uint32_t d = 0; d < si.n_dicts; ++d) dt.push_back(dict_tab(s.get(), d));
+  // walk the pages in row order: ptrs / lens per output row (lens are codes for dictionary output)
   std::vector<const char*> ptrs(dict ? 0 : (size_t)n);
   std::vector<int32_t> lens((size_t)n);
   uint32_t p = 0;
@@ -482,10 +518,12 @@ void string_column(const ColSpec& c, SrcPtr s, const uint64_t* sel, uint64_t n, 
   uint32_t k = 0, j = 0;
   const int32_t* pl = nullptr;
   const char* pb = nullptr;
+  const DictTab* pd = nullptr;  // the dictionary of a dictionary page (plain output)
   auto load_page = [&](uint32_t q) {
     int32_t d = -1;
     check(fstx_colsrc_str_page(s.get(), q, &pl, &pb, &d, &e), e);
-    if ((d >= 0) != dict) throw Fail("internal error: dictionary and plain pages mixed in column '" + c.name + "'");
+    if (dict && d < 0) throw Fail("internal error: dictionary and plain pages mixed in column '" + c.name + "'");
+    pd = !dict && d >= 0 ? &dt[(size_t)d] : nullptr;
     fstx_colsrc_page_span(s.get(), q, &first, &k);
     j = 0;
     pos = 0;
@@ -495,7 +533,13 @@ void string_column(const ColSpec& c, SrcPtr s, const uint64_t* sel, uint64_t n, 
     const uint64_t r = sel ? sel[i] : i;
     while (r >= first + k) load_page(++p);
     for (; first + j < r; ++j)
-      if (!dict) pos += (uint64_t)std::max(0, pl[j]);
+      if (!dict && !pd) pos += (uint64_t)std::max(0, pl[j]);
+    if (pd) {
+      const int32_t code = pl[j];
+      lens[(size_t)i] = code < 0 ? -1 : pd->lens[code];
+      ptrs[(size_t)i] = code < 0 ? nullptr : pd->bytes + pd->off[(size_t)code];
+      continue;
+    }
     lens[(size_t)i] = pl[j];
     if (!dict) ptrs[(size_t)i] = pb + pos;
   }
@@ -557,14 +601,6 @@ void run_tasks(size_t n, int threads, Fn& fn) {
   check(rc, e);
 }
 
-// A string dictionary, with the byte offset of every entry (dictionary pages laid out as plain strings).
-struct DictTab {
-  uint32_t n = 0;
-  const int32_t* lens = nullptr;
-  const char* bytes = nullptr;
-  std::vector<uint64_t> off;
-};
-
 // A plain string column (utf8 / large_utf8) of a batch over file rows [a, b): its pages decode on the pool,
 // one task per page (str_decode, which also counts each page's bytes); a prefix sum over the pages places them
 // (str_prep); then every page writes its offsets, bytes and validity straight into the Arrow buffers, again one
@@ -579,6 +615,7 @@ struct StrPage {
   uint64_t tot = 0;            // bytes of text
   uint64_t off = 0;            // where they start in the text buffer
   uint8_t head = 0, tail = 0;  // validity bits of the first / last bitmap byte when another page shares it
+  bool bad = false;            // its text is not valid UTF-8 (checked only when asked)
 };
 
 struct StrCol {
@@ -594,19 +631,13 @@ struct StrCol {
 };
 
 void str_open(const Stream& S, StrCol& C, uint64_t a, uint64_t b) {
+  const bool check = S.utf8_bad != nullptr;
   C.s = open_src(S, *C.c, a, b);
   fstx_colsrc_info si;
   fstx_colsrc_info_get(C.s.get(), &si);
-  fstx_error e;
   for (uint32_t d = 0; d < si.n_dicts; ++d) {  // dictionaries first (small): pages that use them may then decode
-    DictTab t;
-    check(fstx_colsrc_dict(C.s.get(), d, &t.n, &t.lens, &t.bytes, &e), e);
-    t.off.resize(t.n);
-    uint64_t o = 0;
-    for (uint32_t i = 0; i < t.n; ++i) {
-      t.off[i] = o;
-      o += (uint64_t)std::max(0, t.lens[i]);
-    }
+    DictTab t = dict_tab(C.s.get(), d);
+    t.bad = check && !valid_utf8((const uint8_t*)t.bytes, (size_t)t.tot);
     C.dicts.push_back(std::move(t));
   }
   C.pages.resize(si.n_pages);
@@ -658,7 +689,7 @@ void str_prep(StrCol& C) {
 inline bool full_byte(uint64_t B, uint64_t r0, uint64_t r1) { return B * 8 >= r0 && B * 8 + 8 <= r1; }
 
 template <typename O>
-void str_write(StrCol& C, uint32_t q) {
+void str_write(StrCol& C, uint32_t q, bool check) {
   StrPage& P = C.pages[q];
   O* o = (O*)C.offs + P.first;
   uint64_t pos = P.off;
@@ -668,7 +699,8 @@ void str_write(StrCol& C, uint32_t q) {
       if (P.lens[i] > 0) pos += (uint64_t)P.lens[i];
     }
     if (P.tot) std::memcpy(C.data + P.off, P.bytes, (size_t)P.tot);
-  } else {
+    P.bad = check && !valid_utf8((const uint8_t*)C.data + P.off, (size_t)P.tot);  // while the text is in cache
+  } else {  // its dictionary was checked in str_open
     const DictTab& D = C.dicts[(size_t)P.dict];
     for (uint32_t i = 0; i < P.n; ++i) {
       o[i] = (O)pos;
@@ -710,7 +742,7 @@ void str_bits(StrCol& C) {
 // A batch over file rows [a, b) (no row list). Phase 1: string pages decode and fixed-width columns decode
 // straight into their Arrow arrays (in row parts when there are fewer columns than threads), all as one set of
 // tasks on the pool. Phase 2: string columns are laid out page by page (dictionary output: one task a column).
-void batch_range(const Stream& S, uint64_t a, uint64_t b, uint64_t n, ArrayHold* h) {
+void batch_range(const Stream& S, uint64_t a, uint64_t b, uint64_t n, ArrayHold* h, std::vector<uint8_t>& bad) {
   const size_t nc = S.cols.size();
   const int parts = nc && nc < (size_t)S.threads ? (int)(((size_t)S.threads + nc - 1) / nc) : 1;
   std::vector<std::unique_ptr<FixedCol>> fx(nc);
@@ -759,18 +791,33 @@ void batch_range(const Stream& S, uint64_t a, uint64_t b, uint64_t n, ArrayHold*
     else str_prep<int64_t>(C);
     for (uint32_t q = 0; q < (uint32_t)C.pages.size(); ++q) tasks.push_back({j, q, 0});
   }
+  const bool check = S.utf8_bad != nullptr;
   auto layout = [&](size_t i, fstx_scratch*, int) {
     const Task& t = tasks[i];
     StrCol& C = *sx[t.j];
-    if (t.i1) string_column(*C.c, std::move(C.s), nullptr, n, C.out);
-    else if (C.c->out == O_UTF8) str_write<int32_t>(C, (uint32_t)t.i0);
-    else str_write<int64_t>(C, (uint32_t)t.i0);
+    if (t.i1) string_column(*C.c, std::move(C.s), nullptr, n, C.out);  // its dictionary was checked in str_open
+    else if (C.c->out == O_UTF8) str_write<int32_t>(C, (uint32_t)t.i0, check);
+    else str_write<int64_t>(C, (uint32_t)t.i0, check);
   };
   run_tasks(tasks.size(), S.threads, layout);
   for (size_t j = 0; j < nc; ++j) {
-    if (sx[j]) str_bits(*sx[j]);
-    else h->kids[j]->null_count = fx[j]->nulls.load();
+    if (!sx[j]) {
+      h->kids[j]->null_count = fx[j]->nulls.load();
+      continue;
+    }
+    str_bits(*sx[j]);
+    for (const DictTab& D : sx[j]->dicts) bad[j] |= D.bad ? 1 : 0;
+    for (const StrPage& P : sx[j]->pages) bad[j] |= P.bad ? 1 : 0;
   }
+}
+
+// The text of a string array (plain, or its dictionary) is valid UTF-8.
+bool array_utf8_ok(const ArrowArray* x, int out) {
+  if (out == O_DICT_STR) return array_utf8_ok(x->dictionary, O_UTF8);
+  const uint64_t n = (uint64_t)x->length;
+  const uint64_t end = out == O_LARGE_UTF8 ? (uint64_t)((const int64_t*)x->buffers[1])[n]
+                                           : (uint64_t)((const int32_t*)x->buffers[1])[n];
+  return valid_utf8((const uint8_t*)x->buffers[2], (size_t)end);
 }
 
 // A batch of the rows in sel (relative to a) over file rows [a, b). String pages decode first, column by column,
@@ -778,7 +825,8 @@ void batch_range(const Stream& S, uint64_t a, uint64_t b, uint64_t n, ArrayHold*
 // fixed-width columns decode there too, since their NA / bool / Date passes are single-threaded per column and
 // dominate a page-parallel decode. With fewer columns than threads, fixed-width columns are cut into row parts at
 // page edges (fixed_prep) so that every thread has work.
-void batch_rows(const Stream& S, uint64_t a, uint64_t b, uint64_t n, const uint64_t* sp, ArrayHold* h) {
+void batch_rows(const Stream& S, uint64_t a, uint64_t b, uint64_t n, const uint64_t* sp, ArrayHold* h,
+                std::vector<uint8_t>& bad) {
   const size_t nc = S.cols.size();
   const int parts = nc && nc < (size_t)S.threads ? (int)(((size_t)S.threads + nc - 1) / nc) : 1;
   std::vector<SrcPtr> loaded(nc);
@@ -807,7 +855,10 @@ void batch_rows(const Stream& S, uint64_t a, uint64_t b, uint64_t n, const uint6
   }
   auto run = [&](const Task& t, int threads) {
     if (fx[t.j]) fixed_part(S, *fx[t.j], t.i0, t.i1, threads);
-    else string_column(S.cols[t.j], std::move(loaded[t.j]), sp, n, h->kids[t.j]);
+    else {
+      string_column(S.cols[t.j], std::move(loaded[t.j]), sp, n, h->kids[t.j]);
+      if (S.utf8_bad && !array_utf8_ok(h->kids[t.j], S.cols[t.j].out)) bad[t.j] = 1;
+    }
   };
   const size_t nt = tasks.size();
   const int k = (int)std::min<size_t>((size_t)S.threads, nt);
@@ -919,8 +970,10 @@ int stream_get_next(ArrowArrayStream* st, ArrowArray* out) {
     for (size_t j = 0; j < S.cols.size(); ++j) h->kids.push_back(new_child());
     res.n_children = (int64_t)h->kids.size();
     res.children = h->kids.empty() ? nullptr : h->kids.data();
-    if (S.by_rows) batch_rows(S, a, b, n, sel.data(), h);
-    else batch_range(S, a, b, n, h);
+    std::vector<uint8_t> bad(S.cols.size(), 0);
+    if (S.by_rows) batch_rows(S, a, b, n, sel.data(), h, bad);
+    else batch_range(S, a, b, n, h, bad);
+    if (S.utf8_bad && !bad.empty()) std::memcpy(S.utf8_bad, bad.data(), bad.size());
     S.pos = next;
     *out = res;
     return 0;
@@ -980,6 +1033,12 @@ extern "C" int fstx_arrow_stream_open(const char* path, const fstx_arrow_args* A
     S->threads = A->threads > 0 && A->threads < hw ? A->threads : hw;
     S->batch_rows = A->batch_rows;
     S->verify = A->verify;
+    S->plain = (A->flags & FSTX_ARROW_PLAIN_STRINGS) != 0;
+    if (A->flags & FSTX_ARROW_CHECK_UTF8) {
+      if (!A->utf8_bad) return arg_fail("FSTX_ARROW_CHECK_UTF8 needs utf8_bad");
+      S->utf8_bad = A->utf8_bad;
+      std::memset(S->utf8_bad, 0, A->n_cols);
+    }
     // row-group ends from the page directory (row groups may differ in size after appends)
     const int64_t np = fstx_pages_get(S->f, nullptr, 0);
     std::vector<fstx_page_info> pi((size_t)std::max<int64_t>(np, 0));
@@ -1033,10 +1092,11 @@ extern "C" int fstx_arrow_stream_open(const char* path, const fstx_arrow_args* A
         c.out = O_BOOL;
       } else {
         // dictionary when every page in the rows read is dictionary-coded (the schema never changes between
-        // batches); large_utf8 when the column's decoded text could pass 2 GB in one batch (FSST expands at most
-        // 8x; shortcut: bounded by the whole column, so a big file can get large_utf8 with small batches)
+        // batches) and the caller did not ask for plain strings; large_utf8 when the column's decoded text could
+        // pass 2 GB in one batch (FSST expands at most 8x; shortcut: bounded by the whole column, so a big file can
+        // get large_utf8 with small batches)
         c.out = O_UTF8;
-        if (r1 > r0) {
+        if (r1 > r0 && !S->plain) {
           fstx_colsrc* s = nullptr;
           if (fstx_colsrc_open(S->f, c.col, r0, r1, 0, 0, &s, err) != FSTX_OK) return err->code;
           fstx_colsrc_info si;

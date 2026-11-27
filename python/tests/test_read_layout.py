@@ -1,10 +1,12 @@
 """The Arrow stream's string layout (src/r_arrow.cpp): pages decoded and written into the Arrow buffers in
-parallel, page by page. Strings with missing values at every position of the validity bytes, dictionary and
-plain pages, row windows that start and end inside a byte, batches of odd sizes, a file whose row groups mix
-dictionary and plain pages, and the same result on one thread and on all."""
+parallel, page by page; dictionary pages laid out as text; the UTF-8 check per batch. Strings with missing values
+at every position of the validity bytes, dictionary and plain pages, row windows that start and end inside a
+byte, batches of odd sizes, a file whose row groups mix dictionary and plain pages, row lists, and the same result
+on one thread and on all."""
 import random
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 
 import fstx
@@ -70,3 +72,38 @@ def test_row_groups_with_dictionary_and_plain_pages(tmp_path):
     assert fstx.read_fstx(p, rows=slice(4_990, 5_011)).equals(want.slice(4_990, 21))
     with fstx.open(p) as f:
         assert pa.Table.from_batches(f.to_batches()).equals(want)
+
+
+def test_row_lists_lay_out_dictionary_pages_as_text(written):
+    t, p = written
+    rows = [5, 3, 3, 100_000, N - 1, 0]
+    got = fstx.read_fstx(p, rows=rows)
+    assert got.column("few").type == pa.string() and got.equals(t.take(rows))
+    assert fstx.read_fstx(p, filters=[("few", "==", "red")]).equals(t.filter(pc.equal(t["few"], "red")))
+
+
+def test_dictionary_columns_with_and_without_as_factor(written):
+    t, p = written
+    fa = fstx.read_fstx(p, as_factor=["plain"])  # the other columns come from the stream as dictionaries here
+    assert fa.column("few").type == pa.string() and fa.column("few").equals(t.column("few"))
+    assert fa.column("plain").to_pylist() == t.column("plain").to_pylist()
+
+
+def test_utf8_check_is_per_batch_and_per_path():
+    from conftest import GOLDEN
+    p = GOLDEN / "strings_invalid_utf8.fstx"  # rows 1 and 2 are not valid UTF-8
+    assert fstx.read_fstx(p, rows=[0, 3, 4], invalid_utf8="error").column("s").to_pylist() == ["ok", "café", None]
+    assert fstx.read_fstx(p, rows=slice(3, 5), invalid_utf8="error").num_rows == 2
+    with pytest.raises(ValueError, match="not valid UTF-8"):
+        fstx.read_fstx(p, rows=[2], invalid_utf8="error")
+    with pytest.raises(ValueError, match="not valid UTF-8"):
+        fstx.read_fstx(p, rows=slice(1, 2), invalid_utf8="error")
+    with fstx.open(p) as f:
+        with pytest.warns(fstx.FstxWarning) as rec:
+            got = [b.column("s").to_pylist() for b in f.to_batches(batch_rows=1)]
+        assert len(rec) == 1
+        assert got == [["ok"], ["bad�byte"], ["�"], ["café"], [None]]
+        raw = [b.column("s").to_pylist() for b in f.to_batches(batch_rows=2, invalid_utf8="binary")]
+        assert raw == [[b"ok", bytes.fromhex("626164ff62797465")], [bytes.fromhex("e0a4"), "café".encode()], [None]]
+    b = fstx.read_fstx(p, rows=[3, 1], invalid_utf8="binary")
+    assert b.column("s").type == pa.binary() and b.column("s").to_pylist() == ["café".encode(), b"bad\xffbyte"]
