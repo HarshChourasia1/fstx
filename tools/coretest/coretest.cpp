@@ -670,7 +670,7 @@ static int sub_of(const T12& t, size_t j) {
 
 // returns the append's code (FSTX_OK when written)
 static int write12(const std::string& path, const T12& t, int codec, int threads, int force, int fail_bin = 0,
-                   int logical0 = 0, int values = 0) {
+                   int logical0 = 0, int values = 0, bool append = false) {
   const size_t nc = t.names.size();
   std::vector<fstx_write_column> defs(nc);
   std::vector<fstx_column_data> data(nc);
@@ -709,7 +709,8 @@ static int write12(const std::string& path, const T12& t, int codec, int threads
   o.force_encoding = force;
   fstx_error e;
   fstx_writer* w = nullptr;
-  int rc = fstx_writer_open(path.c_str(), defs.data(), (uint32_t)nc, nullptr, 0, &o, &w, &e);
+  int rc = append ? fstx_writer_open_append(path.c_str(), defs.data(), (uint32_t)nc, nullptr, 0, &o, &w, &e)
+                  : fstx_writer_open(path.c_str(), defs.data(), (uint32_t)nc, nullptr, 0, &o, &w, &e);
   if (rc != FSTX_OK) return rc;
   rc = fstx_writer_append(w, data.data(), t.n, &e);
   if (rc != FSTX_OK) {
@@ -1113,6 +1114,21 @@ static void test_rules12(const std::string& dir) {
     h.req = 3ull << 16;
     h.names = {"int64", "binary"};
     check(forge(p, q, h) && read_all_same(q, small, 2), "bits 16 and 17 without such columns: reads");
+  }
+
+  // append (the bits stay, the rows add up) and page-copy compaction (the feature fields are kept)
+  T12 tb2 = make_bin(7000);
+  if (write12(p, tb, FSTX_CODEC_ZSTD, 2, 0) == FSTX_OK && write12(p, tb2, FSTX_CODEC_LZ4, 2, 0, 0, 0, 0, true) == FSTX_OK) {
+    T12 all = tb;
+    all.n += tb2.n;
+    all.idx[0].insert(all.idx[0].end(), tb2.idx[0].begin(), tb2.idx[0].end());
+    all.i64[0].insert(all.i64[0].end(), tb2.i64[0].begin(), tb2.i64[0].end());
+    check12(p, all, "binary + int64 appended");
+    check_pages12(p, all, 0, "binary + int64 appended");
+    fstx_error e;
+    check(rc_ok(fstx_compact_copy(p.c_str(), q.c_str(), &e), e, "compact 1.2 file"), "compact 1.2 file");
+    check12(q, all, "binary + int64 compacted");
+    check_pages12(q, all, 0, "binary + int64 compacted");
   }
   std::remove(p.c_str());
   std::remove(q.c_str());
