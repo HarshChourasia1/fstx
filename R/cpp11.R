@@ -71,3 +71,7 @@ fstx_features_impl <- function(args) {
 fstx_arrow_stream_impl <- function(args) {
   .Call(`_fstx_fstx_arrow_stream_impl`, args)
 }
+
+fstx_i64_double_impl <- function(x) {
+  .Call(`_fstx_fstx_i64_double_impl`, x)
+}
