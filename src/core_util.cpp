@@ -148,6 +148,7 @@ MappedFile::~MappedFile() {
   if (data_) UnmapViewOfFile(data_);
   if (mapping_) CloseHandle((HANDLE)mapping_);
   if (rfile_) CloseHandle((HANDLE)rfile_);
+  for (void* e : ev_free_) CloseHandle((HANDLE)e);
   if (file_ && file_ != INVALID_HANDLE_VALUE) CloseHandle((HANDLE)file_);
 }
 
@@ -180,25 +181,37 @@ void MappedFile::release(uint64_t off, uint64_t n) const {
   VirtualUnlock((LPVOID)(data_ + a), (SIZE_T)(e - a));  // not locked: this just trims the working set
 }
 
-namespace {
-struct ReadEvent {  // one event per thread for overlapped reads
-  HANDLE h = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  ~ReadEvent() {
-    if (h) CloseHandle(h);
-  }
-};
-}  // namespace
-
 void MappedFile::read_at(uint64_t off, void* dst, size_t n) const {
   if (off > size_ || n > size_ - off) fail(FSTX_ERR_INTERNAL, "read outside the file");
-  static thread_local ReadEvent ev;
   uint8_t* d = (uint8_t*)dst;
-  while (n && rfile_ && ev.h) {
+  HANDLE ev = nullptr;  // an event of this file's pool (taken here, given back below)
+  if (n && rfile_) {
+    std::lock_guard<std::mutex> g(ev_m_);
+    if (!ev_free_.empty()) {
+      ev = (HANDLE)ev_free_.back();
+      ev_free_.pop_back();
+    }
+  }
+  if (n && rfile_ && !ev) ev = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  struct GiveBack {
+    const MappedFile& f;
+    HANDLE e;
+    ~GiveBack() {
+      if (!e) return;
+      std::lock_guard<std::mutex> g(f.ev_m_);
+      try {
+        f.ev_free_.push_back(e);
+      } catch (...) {
+        CloseHandle(e);
+      }
+    }
+  } give_back{*this, ev};
+  while (n && rfile_ && ev) {
     OVERLAPPED o;
     std::memset(&o, 0, sizeof(o));
     o.Offset = (DWORD)(off & 0xFFFFFFFFull);
     o.OffsetHigh = (DWORD)(off >> 32);
-    o.hEvent = ev.h;
+    o.hEvent = ev;
     const DWORD want = (DWORD)std::min<size_t>(n, (size_t)1 << 30);
     DWORD got = 0;
     if (!ReadFile((HANDLE)rfile_, d, want, &got, &o)) {

@@ -447,12 +447,11 @@ const uint8_t* page_body(const fstx_file& F, uint32_t col, const fb::Page* p, bo
 // As page_body, but the stored bytes are copied out of the file with a positional read (MappedFile::read_at)
 // instead of being touched in the mapping: page faults on a mapped file are serialised per process, so a read of
 // scattered rows that decodes many pages on many threads spends most of its time there. The body lands in buf (no
-// codec) or the stored bytes in a per-thread buffer and the body in buf (codec). Used by rows plans and filters.
-// The codec context is per thread too and outlives the call (a ZSTD context is some 100 KB to set up).
-const uint8_t* page_body_read(const fstx_file& F, uint32_t col, const fb::Page* p, bool verify, CodecContext&,
-                              std::vector<uint8_t>& buf) {
-  static thread_local std::vector<uint8_t> stored;
-  static thread_local CodecContext cc;
+// codec) or the stored bytes in `stored` and the body in buf (codec). Used by rows plans and filters. Only the
+// caller's buffers and codec context, no thread_local: these run on threads that may end (a stream pulled from a
+// thread that is not R's), and in the MinGW build a thread_local with a destructor crashed such a thread at its end.
+const uint8_t* page_body_read(const fstx_file& F, uint32_t col, const fb::Page* p, bool verify, CodecContext& cc,
+                              std::vector<uint8_t>& buf, std::vector<uint8_t>& stored) {
   const size_t cl = (size_t)p->comp_len();
   const bool none = p->codec() == fb::Codec::None;
   std::vector<uint8_t>& in = none ? buf : stored;
@@ -479,7 +478,6 @@ const uint8_t* page_body_read(const fstx_file& F, uint32_t col, const fb::Page* 
     FSTX_PROF_SCOPE(R_DECOMP);
     decompress_page(cc, (int)p->codec(), in.data(), cl, buf.data(), raw);
   }
-  if (stored.capacity() > (4u << 20)) std::vector<uint8_t>().swap(stored);  // keep at most 4 MB per thread
   return buf.data();
 }
 
@@ -541,32 +539,25 @@ struct StrSlot {
   std::vector<uint8_t> vm;
 };
 
-// Rows plans: a worker's scratch for decoding a page, kept by the thread between pages and between reads (a read of
-// scattered rows runs one plan per batch: buffers made and freed per batch were page faults on every thread), up
-// to kKeepRowsScratch bytes per buffer.
-constexpr size_t kKeepRowsScratch = 4u << 20;
-struct RowsScratch {
-  std::vector<uint8_t> buf, fbuf, vals, vm;
+// One worker's decode state for a read: its codec context and, for rows plans, its page buffers. Leased from
+// Kept<Work> for the read (kept between reads by the process, not by a thread: see Kept in core_internal.h).
+struct Work {
+  CodecContext cc;
+  std::vector<uint8_t> buf, fbuf, vals, vm, stored;
   std::vector<int32_t> lv;
   std::vector<uint64_t> off;
   std::vector<uint32_t> idx;
-  template <typename V>
-  static void trim(V& v) {
-    if (v.capacity() * sizeof(typename V::value_type) > kKeepRowsScratch) V().swap(v);
-  }
-  void done() {
-    trim(buf);
-    trim(fbuf);
-    trim(vals);
-    trim(lv);
-    trim(off);
-    trim(idx);
+  void trim() {
+    trim_kept(buf);
+    trim_kept(fbuf);
+    trim_kept(vals);
+    trim_kept(vm);
+    trim_kept(stored);
+    trim_kept(lv);
+    trim_kept(off);
+    trim_kept(idx);
   }
 };
-RowsScratch& rows_scratch() {
-  static thread_local RowsScratch s;
-  return s;
-}
 
 // A string dictionary decoded once for a rows plan.
 struct DictData {
@@ -605,8 +596,7 @@ struct Reader {
     return need < nv;
   }
 
-  void run_fixed_rows(const ReadTask& t, CodecContext& cc) {
-    RowsScratch& T = rows_scratch();
+  void run_fixed_rows(const ReadTask& t, Work& T) {
     std::vector<uint8_t>& vals = T.vals;
     const OutCol& oc = P.outs[t.out];
     const size_t w = (size_t)width_of(oc.phys);
@@ -614,7 +604,7 @@ struct Reader {
     const uint64_t fr = t.page->first_row();
     const uint8_t* vmp = (!nulls && vector_mask(t, T.vm)) ? T.vm.data() : nullptr;  // null counts need the whole page
     try {
-      const uint8_t* b = body(t, cc, T.buf);
+      const uint8_t* b = body(t, T, T.buf);
       if (vals.size() < (size_t)n * w) vals.resize((size_t)n * w);
       if (oc.phys == FSTX_FLOAT64)
         enc::decode_dbl_page_part(b, t.page->raw_len(), t.page->chain(), n, vmp, (double*)vals.data());
@@ -646,15 +636,14 @@ struct Reader {
         d[ident ? e : P.pos[e]] = x;
       }
     }
-    T.done();
   }
 
-  void load_dict(uint32_t i, CodecContext& cc) {
+  void load_dict(uint32_t i, Work& w) {
     DictData& D = dicts[i];
     const fb::Page* p = P.dicts[i];
     const uint32_t col = P.dict_cols[i];
     try {
-      const uint8_t* b = page_body_read(F, col, p, verify, cc, D.buf);
+      const uint8_t* b = page_body_read(F, col, p, verify, w.cc, D.buf, w.stored);
       enc::decode_str_page(b, p->raw_len(), p->chain(), p->row_count(), enc::K_DICT, D.lens, D.fbuf, &D.bytes);
       D.n = p->row_count();
       check_no_nul(D.bytes, D.lens.data(), D.n);
@@ -666,13 +655,12 @@ struct Reader {
     }
   }
 
-  void run_string_rows(const ReadTask& t, CodecContext& cc, StrSlot& s) {
-    RowsScratch& T = rows_scratch();
+  void run_string_rows(const ReadTask& t, Work& T, StrSlot& s) {
     const uint32_t n = t.page->row_count();
     const uint64_t fr = t.page->first_row();
     const uint64_t cnt = t.e1 - t.e0;
     try {
-      const uint8_t* b = body(t, cc, T.buf);
+      const uint8_t* b = body(t, T, T.buf);
       const size_t len = t.page->raw_len();
       s.olens.resize(cnt);
       s.obytes.clear();
@@ -689,7 +677,6 @@ struct Reader {
             if (k < -1 || k >= nd) enc::corrupt("dictionary code out of range");
             s.olens[e - t.e0] = k;
           }
-          T.done();
           s.kind = enc::K_CODES;
           s.lens = s.olens.data();
           s.bytes = nullptr;
@@ -727,28 +714,27 @@ struct Reader {
     } catch (...) {
       rethrow_in(t);
     }
-    T.done();
     s.kind = enc::K_STR;
     s.lens = s.olens.data();
     s.bytes = s.obytes.data();
   }
 
   // the page body with the codec removed (the mapped file itself when there is no codec)
-  const uint8_t* body(const ReadTask& t, CodecContext& cc, std::vector<uint8_t>& buf) {
-    if (P.rows_mode) return page_body_read(F, t.col, t.page, verify, cc, buf);
-    return page_body(F, t.col, t.page, verify, cc, buf);
+  const uint8_t* body(const ReadTask& t, Work& w, std::vector<uint8_t>& buf) {
+    if (P.rows_mode) return page_body_read(F, t.col, t.page, verify, w.cc, buf, w.stored);
+    return page_body(F, t.col, t.page, verify, w.cc, buf);
   }
 
   [[noreturn]] void rethrow_in(const ReadTask& t) { rethrow_for_page(F, t.col, t.page); }
 
-  void run_fixed(const ReadTask& t, CodecContext& cc, std::vector<uint8_t>& scratch, std::vector<uint8_t>& vals) {
-    if (P.rows_mode) return run_fixed_rows(t, cc);
+  void run_fixed(const ReadTask& t, Work& wk, std::vector<uint8_t>& scratch, std::vector<uint8_t>& vals) {
+    if (P.rows_mode) return run_fixed_rows(t, wk);
     const OutCol& oc = P.outs[t.out];
     const size_t w = (size_t)width_of(oc.phys);
     uint8_t* dst = dest[t.out] + t.dest * w;
     const uint32_t n = t.page->row_count();
     try {
-      const uint8_t* b = body(t, cc, scratch);
+      const uint8_t* b = body(t, wk, scratch);
       const bool whole = t.skip == 0 && t.take == n;
       uint8_t* to = dst;
       if (!whole) {
@@ -784,11 +770,11 @@ struct Reader {
     }
   }
 
-  void run_string(const ReadTask& t, CodecContext& cc, StrSlot& s) {
-    if (P.rows_mode) return run_string_rows(t, cc, s);
+  void run_string(const ReadTask& t, Work& w, StrSlot& s) {
+    if (P.rows_mode) return run_string_rows(t, w, s);
     const uint32_t n = t.page->row_count();
     try {
-      const uint8_t* b = body(t, cc, s.buf);
+      const uint8_t* b = body(t, w, s.buf);
       const size_t len = t.page->raw_len();
       const uint32_t chain = t.page->chain();
       if (t.what == 1) {
@@ -871,15 +857,14 @@ struct Reader {
     // Strings are built on this thread: keep a core free for it when the workers would fill the machine.
     const int hw = (int)fstx_hardware_threads();   // cores this process may use
     if (NS > 0 && k > 1 && k >= hw) k = hw - 1;
-    std::vector<std::unique_ptr<CodecContext>> ctxs;
-    for (int i = 0; i < std::max(k, 1); ++i) ctxs.emplace_back(new CodecContext());
+    Lease<Work> ctxs((size_t)std::max(k, 1));
 
     if (!P.dicts.empty()) {  // rows plans: decode each needed string dictionary once, in parallel
       dicts.resize(P.dicts.size());
       const uint32_t nd = (uint32_t)P.dicts.size();
       const int kd = (int)std::min<int64_t>(std::max(k, 1), nd);
       if (kd <= 1) {
-        for (uint32_t i = 0; i < nd; ++i) load_dict(i, *ctxs[0]);
+        for (uint32_t i = 0; i < nd; ++i) load_dict(i, ctxs[0]);
       } else {
         std::atomic<uint32_t> next(0);
         std::mutex dm;
@@ -889,7 +874,7 @@ struct Reader {
             const uint32_t i = next.fetch_add(1);
             if (i >= nd) return;
             try {
-              load_dict(i, *ctxs[(size_t)id]);
+              load_dict(i, ctxs[(size_t)id]);
             } catch (...) {
               std::lock_guard<std::mutex> g(dm);
               if (!derr) derr = std::current_exception();
@@ -905,10 +890,10 @@ struct Reader {
 
     if (k <= 1 || NF + NS <= 1) {
       std::vector<uint8_t> scratch, vals;
-      for (const ReadTask& t : P.fixed) run_fixed(t, *ctxs[0], scratch, vals);
+      for (const ReadTask& t : P.fixed) run_fixed(t, ctxs[0], scratch, vals);
       StrSlot s;
       for (const ReadTask& t : P.strings) {
-        run_string(t, *ctxs[0], s);
+        run_string(t, ctxs[0], s);
         deliver(t, s);
       }
       return;
@@ -924,7 +909,7 @@ struct Reader {
     std::exception_ptr err;
 
     auto job = [&](int id) {
-      CodecContext& cc = *ctxs[(size_t)id];
+      Work& cc = ctxs[(size_t)id];
       std::vector<uint8_t> scratch, vals;
       for (;;) {
         bool is_str = false;

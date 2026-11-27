@@ -21,7 +21,7 @@ struct fstx_selection {
 namespace fstx {
 // core_reader.cpp: a page body copied out of the file instead of touched in the mapping
 const uint8_t* page_body_read(const fstx_file& F, uint32_t col, const fb::Page* p, bool verify, CodecContext& cc,
-                              std::vector<uint8_t>& buf);
+                              std::vector<uint8_t>& buf, std::vector<uint8_t>& stored);
 
 namespace {
 
@@ -185,11 +185,11 @@ struct Filter {
       : F(f), from(a), to(b), threads(t), verify((v & FSTX_VERIFY_HASH) != 0), nulls((v & FSTX_VERIFY_NULLS) != 0) {}
 
   void load_dict(const Pred& q, uint32_t col, const fb::Page* p, CodecContext& cc, DictMatch& d) {
-    std::vector<uint8_t> buf, fbuf;
+    std::vector<uint8_t> buf, fbuf, stored;
     std::vector<int32_t> lens;
     const char* bytes = nullptr;
     try {
-      const uint8_t* b = page_body_read(F, col, p, verify, cc, buf);
+      const uint8_t* b = page_body_read(F, col, p, verify, cc, buf, stored);
       enc::decode_str_page(b, p->raw_len(), p->chain(), p->row_count(), enc::K_DICT, lens, fbuf, &bytes);
     } catch (...) {
       rethrow_for_page(F, col, p);
@@ -282,28 +282,22 @@ struct Filter {
     return false;
   }
 
-  // a worker's scratch, kept by the thread between pages and between calls (freed and made again per call, the
-  // buffers were page faults on every thread), up to 4 MB per buffer
+  // a worker's scratch, leased from Kept<Scratch> for the call (kept between calls by the process, not by a
+  // thread: see Kept in core_internal.h)
   struct Scratch {
     CodecContext cc;
-    std::vector<uint8_t> buf, fbuf, vals;
+    std::vector<uint8_t> buf, fbuf, vals, stored;
     std::vector<int32_t> lens;
     std::vector<uint64_t> words;
-    template <typename V>
-    static void trim(V& v) {
-      if (v.capacity() * sizeof(typename V::value_type) > (4u << 20)) V().swap(v);
-    }
-    void done() {
-      trim(buf);
-      trim(fbuf);
-      trim(vals);
-      trim(lens);
+    void trim() {
+      trim_kept(buf);
+      trim_kept(fbuf);
+      trim_kept(vals);
+      trim_kept(stored);
+      trim_kept(lens);
+      trim_kept(words);
     }
   };
-  static Scratch& scratch() {
-    static thread_local Scratch s;
-    return s;
-  }
 
   // decodes one page of predicate q and ANDs its result into the bitmap
   void eval_page(const Pred& q, const PageRef& r, Scratch& S) {
@@ -317,7 +311,7 @@ struct Filter {
       S.words[row / 64 - w0] &= ~(1ull << (row & 63));
     };
     try {
-      const uint8_t* b = page_body_read(F, q.col, p, verify, S.cc, S.buf);
+      const uint8_t* b = page_body_read(F, q.col, p, verify, S.cc, S.buf, S.stored);
       const size_t len = p->raw_len();
       if (q.phys == FSTX_FLOAT64) {
         if (S.vals.size() < (size_t)n * 8) S.vals.resize((size_t)n * 8);
@@ -367,6 +361,7 @@ struct Filter {
 
   void eval_pass() {
     const int hw = resolve_threads(threads);
+    Lease<Scratch> scr((size_t)std::max(hw, 1));
     for (size_t i = 0; i < preds.size(); ++i) {
       const Pred& q = preds[i];
       std::vector<const PageRef*> tasks;
@@ -385,20 +380,14 @@ struct Filter {
       if (tasks.empty()) continue;
       const int k = (int)std::min<size_t>((size_t)std::max(hw, 1), tasks.size());
       if (k <= 1) {
-        Scratch& S = scratch();
-        for (const PageRef* r : tasks) eval_page(q, *r, S);
-        S.done();
+        for (const PageRef* r : tasks) eval_page(q, *r, scr[0]);
         continue;
       }
       std::atomic<size_t> next(0);
       std::mutex m;
       std::exception_ptr err;
-      ThreadPool::instance().start(k, [&](int) {
-        Scratch& S = scratch();
-        struct Done {
-          Scratch& s;
-          ~Done() { s.done(); }
-        } done{S};
+      ThreadPool::instance().start(k, [&](int id) {
+        Scratch& S = scr[(size_t)id];
         for (;;) {
           const size_t t = next.fetch_add(1);
           if (t >= tasks.size()) return;
