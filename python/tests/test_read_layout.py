@@ -74,6 +74,25 @@ def test_row_groups_with_dictionary_and_plain_pages(tmp_path):
         assert pa.Table.from_batches(f.to_batches()).equals(want)
 
 
+def test_dictionary_row_group_then_a_short_plain_one(tmp_path):
+    # released 1.0.2 raised "dictionary and plain pages mixed in column 's'": one write whose last row group is too
+    # short for a dictionary. Full read, one column, windows across the last group, batches, row lists, filters.
+    n = 1_048_581
+    t = pa.table({"s": [f"s{i % 5000}" for i in range(n)], "i": pa.array(range(n), pa.int32())})
+    p = tmp_path / "tail.fstx"
+    fstx.write_fstx(t, p)
+    for th in (1, None):
+        assert fstx.read_fstx(p, threads=th).equals(t)
+    assert fstx.read_fstx(p, columns=["s"]).column(0).equals(t.column("s"))
+    assert fstx.read_fstx(p, rows=slice(n - 9, n)).equals(t.slice(n - 9, 9))
+    with fstx.open(p) as f:
+        assert pa.Table.from_batches(f.to_batches(batch_rows=100_003)).equals(t)
+    rows = [n - 1, 3, n - 5, 1_048_575, 1_048_576]
+    assert fstx.read_fstx(p, rows=rows).equals(t.take(rows))
+    assert fstx.read_fstx(p, filters=[("i", ">=", n - 7)]).equals(t.slice(n - 7, 7))
+    assert fstx.read_fstx(p, filters=[("s", "==", "s5")]).equals(t.filter(pc.equal(t["s"], "s5")))
+
+
 def test_row_lists_lay_out_dictionary_pages_as_text(written):
     t, p = written
     rows = [5, 3, 3, 100_000, N - 1, 0]
