@@ -84,17 +84,19 @@ struct fstx_scratch {
   fstx::CodecContext* cc;
   std::vector<uint8_t>* a;
   std::vector<uint8_t>* b;
+  std::vector<uint8_t>* host;  // the caller's buffer (fstx_scratch_buffer): kept with a scratch set, else per task
 };
 
 // Decode state per worker kept between fstx_run_tasks calls (a stream's batches): codec contexts and the page
 // buffers they decompress into are made once, not once per batch.
 struct fstx_scratchset {
   std::vector<std::unique_ptr<fstx::CodecContext>> cc;
-  std::vector<std::vector<uint8_t>> a, b;
+  std::vector<std::vector<uint8_t>> a, b, host;
   void ensure(size_t k) {  // before the workers start
     while (cc.size() < k) cc.emplace_back(new fstx::CodecContext());
     if (a.size() < k) a.resize(k);
     if (b.size() < k) b.resize(k);
+    if (host.size() < k) host.resize(k);
   }
 };
 
@@ -701,7 +703,12 @@ extern "C" int fstx_run_tasks(int64_t n, int threads, fstx_task_fn fn, void* ctx
     parallel_for(
         n, threads,
         [&](int64_t i, CodecContext& cc, std::vector<uint8_t>& a, std::vector<uint8_t>& b) {
-          fstx_scratch w{&cc, &a, &b};
+          // the worker's own buffer from the scratch set (a is that worker's slot), else one for this task
+          std::vector<uint8_t> own;
+          std::vector<uint8_t>* host = &own;
+          if (ss && !ss->a.empty() && &a >= ss->a.data() && &a < ss->a.data() + ss->a.size())
+            host = &ss->host[(size_t)(&a - ss->a.data())];
+          fstx_scratch w{&cc, &a, &b, host};
           if (fn(ctx, i, &w) != 0) fail(FSTX_ERR_INTERNAL, "a task failed");
         },
         ss);
@@ -782,6 +789,15 @@ extern "C" int fstx_colsrc_load(fstx_colsrc* s, void* dst, int threads, fstx_err
 
 extern "C" int fstx_colsrc_load_with(fstx_colsrc* s, void* dst, fstx_scratch* w, fstx_error* err) {
   return colsrc_load(s, dst, 1, w, err);
+}
+
+extern "C" void* fstx_scratch_buffer(fstx_scratch* w, size_t bytes) {
+  try {
+    if (w->host->size() < bytes) w->host->resize(bytes);
+    return w->host->data();
+  } catch (...) {
+    return nullptr;
+  }
 }
 
 extern "C" fstx_scratchset* fstx_scratchset_new(void) { return new (std::nothrow) fstx_scratchset(); }

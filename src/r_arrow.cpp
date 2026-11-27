@@ -370,12 +370,20 @@ void fixed_part(const Stream& S, FixedCol& F, uint64_t i0, uint64_t i1, int thre
     F.nulls += nulls;
     return;
   }
-  std::vector<uint8_t> tmp((size_t)(hi - lo) * w);
-  load(tmp.data());
+  std::vector<uint8_t> own;  // the values as stored, in the worker's kept buffer when there is one
+  uint8_t* tmp;
+  if (ws) {
+    tmp = (uint8_t*)fstx_scratch_buffer(ws, (size_t)(hi - lo) * w);
+    if (!tmp) throw std::bad_alloc();
+  } else {
+    own.resize((size_t)(hi - lo) * w);
+    tmp = own.data();
+  }
+  load(tmp);
   s.reset();
   auto at = [&](uint64_t i) { return (sel ? sel[i] : i) - lo; };
   if (c.phys == FSTX_FLOAT64) {
-    const double* x = (const double*)tmp.data();
+    const double* x = (const double*)tmp;
     auto is_na = [](double d) {
       uint64_t u;
       std::memcpy(&u, &d, 8);
@@ -415,7 +423,7 @@ void fixed_part(const Stream& S, FixedCol& F, uint64_t i0, uint64_t i1, int thre
       }
     }
   } else {
-    const int32_t* x = (const int32_t*)tmp.data();
+    const int32_t* x = (const int32_t*)tmp;
     const int32_t na = std::numeric_limits<int32_t>::min();
     if (c.out == O_BOOL) {
       uint8_t* o = (uint8_t*)F.vals;

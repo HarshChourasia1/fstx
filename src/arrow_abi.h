@@ -98,6 +98,9 @@ typedef int (*fstx_task_fn)(void* ctx, int64_t i, fstx_scratch* w); /* 0 = done,
  * calling thread when the pool is busy). fn must not throw. ss: the workers' decode state (NULL: made for this
  * call); one call at a time per scratch set. */
 int fstx_run_tasks(int64_t n, int threads, fstx_task_fn fn, void* ctx, fstx_scratchset* ss, fstx_error* err);
+/* A buffer of at least `bytes` for the task's own use, kept with the worker's state (contents undefined); valid
+ * until the next call on the same w. NULL when out of memory. */
+void* fstx_scratch_buffer(fstx_scratch* w, size_t bytes);
 /* fstx_colsrc_load on the calling thread, with a worker's decode state (inside a task of fstx_run_tasks). */
 int fstx_colsrc_load_with(fstx_colsrc* s, void* dst, fstx_scratch* w, fstx_error* err);
 /* Decodes page p of a string source (if not yet) and returns it as fstx_colsrc_str_page does. Thread-safe for
