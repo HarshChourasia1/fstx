@@ -266,6 +266,7 @@ SrcPtr open_src(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b) {
   fstx_colsrc* s = nullptr;
   fstx_error e;
   check(fstx_colsrc_open(S.f, c.col, a, b, S.verify, 0, &s, &e), e);
+  fstx_colsrc_set_read(s, 1);  // pages are copied out of the file: no faults on the mapping
   return SrcPtr(s);
 }
 

@@ -141,3 +141,20 @@ def test_decode_state_kept_between_batches(tmp_path):
             assert got.drop_columns(["f"]).equals(t.drop_columns(["f"]))
             assert got.column("f").to_pylist() == t.column("f").to_pylist()
     assert fstx.read_fstx(p, columns=["d"], threads=2).column(0).equals(t.column("d"))
+
+
+@pytest.mark.parametrize("compress", ["none", "lz4", "zstd"])
+def test_pages_copied_out_of_the_file(tmp_path, compress):
+    # the stream reads every page with a positional read instead of from the mapping: every codec, plain strings
+    # stored without a codec (they used to be read in place), a dictionary column, numbers with missing values
+    n = 70_001
+    t = pa.table({"s": pa.array([None if k % 9 == 0 else "s%07d" % k for k in range(n)]),
+                  "c": pa.array(["x", "yy", "zzz"] * (n // 3) + ["x"] * (n % 3)),
+                  "i": pa.array([None if k % 31 == 0 else k for k in range(n)], pa.int32()),
+                  "d": pa.array([k * 0.25 for k in range(n)], pa.float64())})
+    p = tmp_path / ("c_%s.fstx" % compress)
+    fstx.write_fstx(t, p, compress=compress)
+    assert fstx.read_fstx(p).equals(t)
+    assert fstx.read_fstx(p, rows=slice(12_345, 54_321)).equals(t.slice(12_345, 54_321 - 12_345))
+    with fstx.open(p) as f:
+        assert pa.Table.from_batches(f.to_batches(batch_rows=9_000)).equals(t)

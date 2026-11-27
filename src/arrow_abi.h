@@ -115,6 +115,9 @@ typedef struct fstx_bufpool fstx_bufpool;
 fstx_bufpool* fstx_bufpool_new(void); /* NULL when out of memory */
 void fstx_bufpool_free(fstx_bufpool* p);
 void fstx_colsrc_set_bufpool(fstx_colsrc* s, fstx_bufpool* p);
+/* read != 0: the source copies its pages out of the file with positional reads (no page faults on the mapping,
+ * which the OS serialises per process) instead of decoding them where they are mapped. Before any page loads. */
+void fstx_colsrc_set_read(fstx_colsrc* s, int read);
 
 #ifdef __cplusplus
 }
