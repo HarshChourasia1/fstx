@@ -38,6 +38,10 @@ struct PageData {
   const char* bytes = nullptr;
   uint64_t mem = 0;
   uint64_t tick = 0;
+  // fstx_colsrc_open_page: the page is read and checked, its text not yet decoded (own holds the body unless it is
+  // in the mapping; lens the stored lengths)
+  bool opened = false;
+  fstx::enc::StrPageView view;
 };
 }  // namespace
 
@@ -47,6 +51,7 @@ struct fstx_bufpool {
   std::mutex m;
   std::vector<std::vector<uint8_t>> bytes;
   std::vector<std::vector<int32_t>> ints;
+  uint64_t kept = 0;  // the process's spare pool (spare_bufs): bytes held
 };
 
 struct fstx_colsrc {
@@ -138,16 +143,39 @@ const uint8_t* body_of(const fstx_colsrc& S, const fb::Page* p, CodecContext& cc
 
 int width_mode(const fstx_colsrc& S) { return S.mode == FSTX_SRC_CODES ? 4 : width_of(S.phys); }
 
-// String page buffers: from the source's pool when it has one (any contents, any size), else new.
+// Buffers and decode state kept from one stream for the next (a process's reads): string page buffers of freed
+// pools, up to kSpareBytes (buffers of up to kSpareBuf each), and up to kSpareSets workers' scratch sets. Without
+// them every read faults in its page buffers and sets up a ZSTD context per worker again.
+constexpr uint64_t kSpareBytes = 64ull << 20;
+constexpr size_t kSpareBuf = 8u << 20;
+constexpr size_t kSpareSets = 4;
+fstx_bufpool& spare_bufs() {
+  static fstx_bufpool* p = new fstx_bufpool();  // never freed: no order of destruction at exit
+  return *p;
+}
+
+// String page buffers: from the source's pool when it has one (any contents, any size), then from the process's
+// spare buffers, else new.
 template <typename T>
 std::vector<T> take_buf(fstx_bufpool* P, std::vector<std::vector<T>> fstx_bufpool::*which) {
   std::vector<T> v;
   if (P) {
-    std::lock_guard<std::mutex> g(P->m);
-    std::vector<std::vector<T>>& l = P->*which;
+    {
+      std::lock_guard<std::mutex> g(P->m);
+      std::vector<std::vector<T>>& l = P->*which;
+      if (!l.empty()) {
+        v.swap(l.back());
+        l.pop_back();
+        return v;
+      }
+    }
+    fstx_bufpool& sp = spare_bufs();
+    std::lock_guard<std::mutex> g(sp.m);
+    std::vector<std::vector<T>>& l = sp.*which;
     if (!l.empty()) {
       v.swap(l.back());
       l.pop_back();
+      sp.kept -= v.capacity() * sizeof(T);
     }
   }
   return v;
@@ -177,6 +205,7 @@ void free_page(fstx_colsrc& S, uint32_t p) {
   d.bytes = nullptr;
   d.mem = 0;
   d.ready = false;
+  d.opened = false;
   --S.ready_count;
 }
 
@@ -353,6 +382,7 @@ void trim_cache(fstx_colsrc& S, uint32_t keep_lo, uint32_t keep_hi) {
 
 void make_ready(fstx_colsrc& S, uint32_t p) {
   PageData& d = S.data[p];
+  if (d.opened) fail(FSTX_ERR_INTERNAL, "page was opened for fstx_colsrc_page_text");
   if (d.ready) {
     d.tick = ++S.tick;
     return;
@@ -568,7 +598,27 @@ extern "C" void fstx_colsrc_free(fstx_colsrc* s) {
 }
 
 extern "C" fstx_bufpool* fstx_bufpool_new(void) { return new (std::nothrow) fstx_bufpool(); }
-extern "C" void fstx_bufpool_free(fstx_bufpool* p) { delete p; }
+namespace {
+template <typename T>
+void spare_some(fstx_bufpool& sp, std::vector<std::vector<T>>& from, std::vector<std::vector<T>> fstx_bufpool::*which) {
+  for (std::vector<T>& v : from) {
+    const uint64_t b = v.capacity() * sizeof(T);
+    if (b == 0 || b > kSpareBuf || sp.kept + b > kSpareBytes) continue;
+    (sp.*which).push_back(std::move(v));
+    sp.kept += b;
+  }
+}
+}  // namespace
+extern "C" void fstx_bufpool_free(fstx_bufpool* p) {
+  if (!p) return;
+  {
+    fstx_bufpool& sp = spare_bufs();
+    std::lock_guard<std::mutex> g(sp.m);
+    spare_some(sp, p->bytes, &fstx_bufpool::bytes);
+    spare_some(sp, p->ints, &fstx_bufpool::ints);
+  }
+  delete p;  // with the buffers that did not fit
+}
 extern "C" void fstx_colsrc_set_bufpool(fstx_colsrc* s, fstx_bufpool* p) { s->bufs = p; }
 extern "C" void fstx_colsrc_set_read(fstx_colsrc* s, int read) { s->read = read != 0; }
 
@@ -687,6 +737,7 @@ extern "C" int fstx_colsrc_load_page(fstx_colsrc* s, uint32_t p, fstx_scratch* w
     const SrcPage& sp = s->pages[p];
     if (sp.dict >= 0 && !s->dicts[(size_t)sp.dict].ready) fail(FSTX_ERR_INTERNAL, "dictionary is not decoded");
     PageData& d = s->data[p];
+    if (d.opened) fail(FSTX_ERR_INTERNAL, "page was opened for fstx_colsrc_page_text");
     if (!d.ready) {
       if (w) {
         decode_page(*s, p, d, nullptr, *w->cc, *w->a, *w->b);
@@ -725,10 +776,82 @@ extern "C" void fstx_colsrc_drop_page(fstx_colsrc* s, uint32_t p) {
   const uint64_t mem = d.mem;
   d.bytes = nullptr;
   d.mem = 0;
+  d.opened = false;
   std::lock_guard<std::mutex> g(s->count_m);
   d.ready = false;
   s->cache_bytes -= mem;
   --s->ready_count;
+}
+
+extern "C" int fstx_colsrc_open_page(fstx_colsrc* s, uint32_t p, fstx_scratch* w, int* direct, uint64_t* text,
+                                     uint32_t* nas, fstx_error* err) {
+  set_error(err, FSTX_OK, "");
+  *direct = 0;
+  *text = 0;
+  *nas = 0;
+  try {
+    if (p >= s->pages.size()) fail(FSTX_ERR_ARG, "page index out of range");
+    if (s->mode != FSTX_SRC_STRINGS) fail(FSTX_ERR_ARG, "not a string source");
+    const SrcPage& sp = s->pages[p];
+    PageData& d = s->data[p];
+    if (sp.dict >= 0 || sp.skip != 0 || sp.take != sp.n || !s->F || !sp.page || d.ready) return FSTX_OK;
+    const fb::Page* pg = sp.page;
+    const uint32_t n = sp.n;
+    std::vector<uint8_t> body = take_buf(s->bufs, &fstx_bufpool::bytes);
+    std::vector<int32_t> lens = take_buf(s->bufs, &fstx_bufpool::ints);
+    CodecContext cc0;
+    std::vector<uint8_t> in0;
+    CodecContext& cc = w ? *w->cc : cc0;
+    std::vector<uint8_t>& in = w ? *w->b : in0;
+    try {
+      const uint8_t* b = body_of(*s, pg, cc, body, in);
+      lens.resize(n);
+      enc::open_str_page(b, pg->raw_len(), pg->chain(), n, enc::K_STR, lens.data(), d.view);
+      if (s->nulls) check_nulls(pg, lens.data(), n, -1);
+    } catch (...) {
+      rethrow_for_page(*s->F, s->col, pg);
+    }
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < n; ++i) k += lens[i] < 0;
+    d.own.swap(body);  // the buffer moves, the view's pointers into it stay valid
+    d.lens.swap(lens);
+    give_buf(s->bufs, &fstx_bufpool::bytes, body);
+    give_buf(s->bufs, &fstx_bufpool::ints, lens);
+    d.opened = true;
+    d.mem = d.lens.size() * 4 + d.own.size();
+    *direct = 1;
+    *text = d.view.total;
+    *nas = k;
+    std::lock_guard<std::mutex> g(s->count_m);
+    d.ready = true;
+    d.tick = ++s->tick;
+    ++s->ready_count;
+    s->cache_bytes += d.mem;
+    return FSTX_OK;
+  } catch (...) {
+    return to_error(err);
+  }
+}
+
+extern "C" int fstx_colsrc_page_text(fstx_colsrc* s, uint32_t p, char* dst, size_t slack, const int32_t** lens,
+                                     fstx_error* err) {
+  set_error(err, FSTX_OK, "");
+  try {
+    if (p >= s->pages.size() || !s->data[p].opened) fail(FSTX_ERR_INTERNAL, "page is not opened");
+    PageData& d = s->data[p];
+    const fb::Page* pg = s->pages[p].page;
+    try {
+      enc::str_page_text(d.view, d.lens.data(), dst, slack);
+      check_no_nul(dst, d.lens.data(), d.view.n);
+    } catch (...) {
+      rethrow_for_page(*s->F, s->col, pg);
+    }
+    if (!s->read) s->F->map.release(pg->offset(), pg->comp_len());
+    *lens = d.lens.data();
+    return FSTX_OK;
+  } catch (...) {
+    return to_error(err);
+  }
 }
 
 extern "C" int fstx_run_tasks(int64_t n, int threads, fstx_task_fn fn, void* ctx, fstx_scratchset* ss,
@@ -835,8 +958,40 @@ extern "C" void* fstx_scratch_buffer(fstx_scratch* w, size_t bytes) {
   }
 }
 
-extern "C" fstx_scratchset* fstx_scratchset_new(void) { return new (std::nothrow) fstx_scratchset(); }
-extern "C" void fstx_scratchset_free(fstx_scratchset* ss) { delete ss; }
+namespace {
+std::mutex g_sets_m;
+std::vector<fstx_scratchset*>& spare_sets() {
+  static std::vector<fstx_scratchset*>* v = new std::vector<fstx_scratchset*>();  // never freed (see spare_bufs)
+  return *v;
+}
+}  // namespace
+extern "C" fstx_scratchset* fstx_scratchset_new(void) {
+  {
+    std::lock_guard<std::mutex> g(g_sets_m);
+    std::vector<fstx_scratchset*>& v = spare_sets();
+    if (!v.empty()) {
+      fstx_scratchset* ss = v.back();
+      v.pop_back();
+      return ss;
+    }
+  }
+  return new (std::nothrow) fstx_scratchset();
+}
+extern "C" void fstx_scratchset_free(fstx_scratchset* ss) {
+  if (!ss) return;
+  for (auto* l : {&ss->a, &ss->b, &ss->host})
+    for (std::vector<uint8_t>& v : *l)
+      if (v.capacity() > kSpareBuf) std::vector<uint8_t>().swap(v);
+  {
+    std::lock_guard<std::mutex> g(g_sets_m);
+    std::vector<fstx_scratchset*>& v = spare_sets();
+    if (v.size() < kSpareSets) {
+      v.push_back(ss);
+      return;
+    }
+  }
+  delete ss;
+}
 
 extern "C" int fstx_colsrc_detach(fstx_colsrc* s, fstx_error* err) {
   set_error(err, FSTX_OK, "");

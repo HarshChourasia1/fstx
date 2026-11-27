@@ -4,6 +4,7 @@ at every position of the validity bytes, dictionary and plain pages, row windows
 byte, batches of odd sizes, a file whose row groups mix dictionary and plain pages, row lists, and the same result
 on one thread and on all."""
 import random
+import threading
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -177,3 +178,30 @@ def test_pages_copied_out_of_the_file(tmp_path, compress):
     assert fstx.read_fstx(p, rows=slice(12_345, 54_321)).equals(t.slice(12_345, 54_321 - 12_345))
     with fstx.open(p) as f:
         assert pa.Table.from_batches(f.to_batches(batch_rows=9_000)).equals(t)
+
+
+def test_buffers_kept_between_reads(tmp_path):
+    # string page buffers and workers' decode state go from one read to the next (any sizes, any contents): reads of
+    # two files with different pages, one after the other and from two threads at once, give each file's table
+    a = _table(60_001, 11)
+    b = pa.table({"s": pa.array(["%d" % k * (k % 7) for k in range(90_003)]), "i": pa.array(range(90_003), pa.int32())})
+    pa_, pb = tmp_path / "a.fstx", tmp_path / "b.fstx"
+    fstx.write_fstx(a, pa_)
+    fstx.write_fstx(b, pb, compress="zstd")
+    for _ in range(3):
+        assert fstx.read_fstx(pa_).equals(a)
+        assert fstx.read_fstx(pb, threads=2).equals(b)
+        assert fstx.read_fstx(pa_, rows=slice(777, 5_000)).equals(a.slice(777, 5_000 - 777))
+    bad = []
+
+    def work(p, t):
+        for _ in range(4):
+            if not fstx.read_fstx(p).equals(t):
+                bad.append(p)
+
+    ts = [threading.Thread(target=work, args=(p, t)) for p, t in ((pa_, a), (pb, b))]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert not bad

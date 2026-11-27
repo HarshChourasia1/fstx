@@ -242,6 +242,22 @@ uint32_t encode_str_page(int kind, const char* const* ptrs, const int32_t* lens,
 // another (into the body itself for plain pages, into buf for FSST pages).
 void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, int kind,
                      std::vector<int32_t>& lens, std::vector<uint8_t>& buf, const char** bytes);
+// decode_str_page in two steps, so that the text can be decoded straight into a caller's buffer whose size must be
+// known first: open_str_page checks the page and its lengths and gives the text's size (total); str_page_text
+// then writes the text into dst. Between the two, lens holds the stored lengths (FSST: of the codes), -1 = NA;
+// after, the text lengths. The view points into body, which must stay put.
+struct StrPageView {
+  uint32_t n = 0;
+  bool fsst = false;
+  const uint8_t* src = nullptr;    // plain: the text; FSST: the codes, string after string
+  const uint8_t* table = nullptr;  // FSST: the symbol table (checked)
+  uint64_t total = 0;              // bytes of text of the whole page
+};
+void open_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, int kind, int32_t* lens,
+                   StrPageView& v);
+// Writes the page's text (v.total bytes) to dst, which has room for v.total + slack bytes (writes stay below
+// that; slack >= 32 lets the FSST decoder use its fast path up to the last string).
+void str_page_text(const StrPageView& v, int32_t* lens, char* dst, size_t slack);
 // Only the strings at positions idx[0..cnt) of a K_STR page (ascending, repeats allowed): lens gets cnt entries
 // (-1 = NA), out the strings back to back. all is scratch for the page's n lengths. (Rows plans, enc_str.cpp.)
 void decode_str_page_rows(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, const uint32_t* idx,
