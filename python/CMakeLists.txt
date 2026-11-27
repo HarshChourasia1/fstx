@@ -108,6 +108,10 @@ if(FSTX_IS_MSVC_CL)
 elseif(FSTX_IS_CLANG_CL)
   target_compile_options(fstx_engine PRIVATE /clang:-ffp-contract=off)
   target_compile_options(fstx_engine PUBLIC /utf-8)
+  # vendor/fsst/fsst.h sets __ORDER_LITTLE_ENDIAN__ for every _MSC_VER compiler; clang already has it (the value
+  # only feeds the byte-order test there, little-endian either way)
+  set_source_files_properties(${V}/fsst/libfsst.cpp ${V}/fsst/fsst_nosimd.cpp ${FSTX_CORE_DIR}/enc_str.cpp
+                              PROPERTIES COMPILE_OPTIONS "-Wno-macro-redefined")
   target_compile_definitions(fstx_engine PUBLIC _CRT_SECURE_NO_WARNINGS)
 else()
   check_cxx_compiler_flag("-ffp-contract=off" FSTX_HAS_FP_CONTRACT_OFF)
