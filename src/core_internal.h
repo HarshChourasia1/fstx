@@ -140,6 +140,8 @@ class MappedFile {
   void* file_ = nullptr;
   void* mapping_ = nullptr;
   void* rfile_ = nullptr;  // the same file reopened for overlapped (positional, concurrent) reads; null: none
+  mutable std::mutex ev_m_;            // read_at's wait events, one per concurrent read, made on demand and kept
+  mutable std::vector<void*> ev_free_;  // here (not thread_local: a thread may end, see page_body_read)
 #else
   int fd_ = -1;
 #endif
