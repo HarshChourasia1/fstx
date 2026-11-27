@@ -30,37 +30,47 @@ struct RowsHost {
   std::string error;
 };
 
+// Sets up child array R.out for n string rows (offsets, validity on the first NA); bytes come later.
+void rows_str_init(const ColSpec& c, RowsCol& R, uint64_t n) {
+  array_init(R.out, (int64_t)n, 3);
+  R.big = c.out == O_LARGE_UTF8;
+  R.off = array_buf(R.out, 1, (size_t)(n + 1) * (R.big ? 8 : 4));
+  if (R.big) ((int64_t*)R.off)[0] = 0;
+  else ((int32_t*)R.off)[0] = 0;
+  R.v.reset(new Validity{R.out, n});
+}
+
+// Sets up child array R.out for n fixed-width rows; returns where the n stored values (width of phys) go.
+void* rows_fixed_init(const ColSpec& c, RowsCol& R, uint64_t n) {
+  array_init(R.out, (int64_t)n, 2);
+  const size_t w = c.phys == FSTX_FLOAT64 ? 8 : 4;
+  // the Arrow buffer takes the stored values as they are (int32, double, int Date, factor codes shifted in place,
+  // POSIXct seconds converted in place to microseconds); logical and double Dates change width: a scratch buffer
+  if (c.out == O_BOOL || (c.out == O_DATE && c.phys == FSTX_FLOAT64)) {
+    R.tmp.resize((size_t)n * w);
+    R.vals = R.tmp.data();
+  } else {
+    R.vals = array_buf(R.out, 1, (size_t)n * w);
+  }
+  if (c.out == O_FACTOR) {
+    ArrayHold* hh = (ArrayHold*)R.out->private_data;
+    hh->dict = new_child();
+    R.out->dictionary = hh->dict;
+    make_utf8(hh->dict, c.lev_lens.size(), c.lev_lens.data(), c.lev_bytes.data());
+  }
+  return R.vals;
+}
+
 void* rows_alloc(void* ctx, uint32_t k, uint32_t, int phys, uint64_t n) {
   RowsHost& H = *(RowsHost*)ctx;
   RowsCol& R = (*H.cols)[k];
   const ColSpec& c = H.S->cols[R.j];
   try {
     if (phys == FSTX_STRING) {
-      array_init(R.out, (int64_t)n, 3);
-      R.big = c.out == O_LARGE_UTF8;
-      R.off = array_buf(R.out, 1, (size_t)(n + 1) * (R.big ? 8 : 4));
-      if (R.big) ((int64_t*)R.off)[0] = 0;
-      else ((int32_t*)R.off)[0] = 0;
-      R.v.reset(new Validity{R.out, n});
+      rows_str_init(c, R, n);
       return R.off;
     }
-    array_init(R.out, (int64_t)n, 2);
-    const size_t w = phys == FSTX_FLOAT64 ? 8 : 4;
-    // the Arrow buffer takes the stored values as they are (int32, double, int Date, factor codes shifted in place,
-    // POSIXct seconds converted in place to microseconds); logical and double Dates change width: a scratch buffer
-    if (c.out == O_BOOL || (c.out == O_DATE && phys == FSTX_FLOAT64)) {
-      R.tmp.resize((size_t)n * w);
-      R.vals = R.tmp.data();
-    } else {
-      R.vals = array_buf(R.out, 1, (size_t)n * w);
-    }
-    if (c.out == O_FACTOR) {
-      ArrayHold* hh = (ArrayHold*)R.out->private_data;
-      hh->dict = new_child();
-      R.out->dictionary = hh->dict;
-      make_utf8(hh->dict, c.lev_lens.size(), c.lev_lens.data(), c.lev_bytes.data());
-    }
-    return R.vals;
+    return rows_fixed_init(c, R, n);
   } catch (const std::exception& x) {
     H.error = x.what();
     return nullptr;
@@ -226,10 +236,152 @@ void rows_dict_column(const Stream& S, const ColSpec& c, uint64_t a, uint64_t b,
   make_utf8(h->dict, dn, dl, db);
 }
 
+// A selection that spans several batches but is not big (kRowsAllMax rows at most) is decoded by one rows plan for
+// all of its rows when the first batch is asked for, and the batches are then cut from it: one parallel decode
+// instead of one per row group (each with its own start, tail and wait). Dictionary columns stay per batch (their
+// dictionaries are per row group).
+constexpr uint64_t kRowsAllMax = 1u << 20;
+
+struct StageCol {
+  size_t j = 0;
+  bool str = false;
+  std::vector<uint8_t> vals;  // fixed width: stored values
+  std::vector<uint64_t> off;  // strings: n + 1 offsets into bytes
+  std::vector<uint8_t> na;
+  std::vector<char> bytes;
+};
+struct RowsStage {
+  std::vector<StageCol> cols;  // in plan order
+  std::string error;
+};
+
+void* stage_alloc(void* ctx, uint32_t k, uint32_t, int phys, uint64_t n) {
+  RowsStage& G = *(RowsStage*)ctx;
+  StageCol& C = G.cols[k];
+  try {
+    if (phys == FSTX_STRING) {
+      C.str = true;
+      C.off.assign((size_t)n + 1, 0);
+      C.na.assign((size_t)n, 0);
+      return C.off.data();
+    }
+    C.vals.resize((size_t)n * (phys == FSTX_FLOAT64 ? 8 : 4));
+    return C.vals.data();
+  } catch (const std::exception& x) {
+    G.error = x.what();
+    return nullptr;
+  }
+}
+
+int stage_strings(void* ctx, uint32_t k, uint64_t dest, uint32_t cnt, const int32_t* lens, const char* bytes) {
+  RowsStage& G = *(RowsStage*)ctx;
+  StageCol& C = G.cols[k];
+  try {
+    uint64_t add = 0;
+    for (uint32_t i = 0; i < cnt; ++i) {
+      const int32_t l = lens[i];
+      C.na[dest + i] = l < 0;
+      if (l > 0) add += (uint64_t)l;
+      C.off[dest + i + 1] = C.off[dest] + add;
+    }
+    if (add) C.bytes.insert(C.bytes.end(), bytes, bytes + add);
+    return 0;
+  } catch (const std::exception& x) {
+    G.error = x.what();
+    return 1;
+  }
+}
+
+// Runs one rows plan for the stream columns that are not dictionaries, over file rows `rows`, with `host`.
+void rows_read(const Stream& S, const std::vector<uint32_t>& pcols, const uint64_t* rows, uint64_t n,
+               fstx_read_host& host, const std::string& host_error) {
+  fstx_plan* plan = nullptr;
+  fstx_error e;
+  check(fstx_plan_create_rows(S.f, pcols.data(), (uint32_t)pcols.size(), rows, n, &plan, &e), e);
+  std::unique_ptr<fstx_plan, void (*)(fstx_plan*)> pg(plan, fstx_plan_free);
+  host.on_dict = rows_no_dict;
+  host.on_codes = rows_no_codes;
+  host.on_strings_at = rows_no_at;
+  if (fstx_read(plan, &host, S.threads, S.verify, &e) != FSTX_OK) {
+    if (!host_error.empty()) throw Fail(host_error);
+    throw Fail(e.message);
+  }
+}
+
+RowsStage* rows_stage(Stream& S) {
+  std::unique_ptr<RowsStage> G(new RowsStage());
+  std::vector<uint32_t> pcols;
+  for (size_t j = 0; j < S.cols.size(); ++j) {
+    if (S.cols[j].out == O_DICT_STR) continue;
+    StageCol C;
+    C.j = j;
+    G->cols.push_back(std::move(C));
+    pcols.push_back(S.cols[j].col);
+  }
+  if (!pcols.empty()) {
+    fstx_read_host host;
+    std::memset(&host, 0, sizeof(host));
+    host.ctx = G.get();
+    host.alloc_column = stage_alloc;
+    host.on_strings = stage_strings;
+    rows_read(S, pcols, S.rows.data(), S.rows.size(), host, G->error);
+  }
+  RowsStage* g = G.release();
+  S.rows_all = std::shared_ptr<void>(g, [](void* p) { delete (RowsStage*)p; });
+  return g;
+}
+
+// The batch's rows [i0, i0 + n) of the staged selection, into child array R.out.
+void rows_from_stage(const ColSpec& c, const StageCol& C, uint64_t i0, uint64_t n, RowsCol& R) {
+  if (!C.str) {
+    const size_t w = c.phys == FSTX_FLOAT64 ? 8 : 4;
+    void* d = rows_fixed_init(c, R, n);
+    if (n) std::memcpy(d, C.vals.data() + (size_t)i0 * w, (size_t)n * w);
+    rows_finish_fixed(c, R, n);
+    return;
+  }
+  rows_str_init(c, R, n);
+  const uint64_t base = C.off[(size_t)i0];
+  for (uint64_t i = 0; i < n; ++i) {
+    if (C.na[(size_t)(i0 + i)]) R.v->null_at(i);
+    const uint64_t t = C.off[(size_t)(i0 + i + 1)] - base;
+    if (R.big) {
+      ((int64_t*)R.off)[i + 1] = (int64_t)t;
+    } else {
+      if (t > (uint64_t)INT32_MAX)
+        throw Fail("column '" + c.name + "': a batch holds more than 2 GB of text; use a smaller batch_rows");
+      ((int32_t*)R.off)[i + 1] = (int32_t)t;
+    }
+  }
+  R.tot = C.off[(size_t)(i0 + n)] - base;
+  char* d = (char*)array_buf(R.out, 2, (size_t)R.tot);
+  if (R.tot) std::memcpy(d, C.bytes.data() + base, (size_t)R.tot);
+  R.v->done();
+}
+
 // One batch of rows: file rows a + sel[i] for i in [0, n) (sel ascending, repeats allowed, sel[n - 1] = b - a - 1),
-// all inside one row group. h is the batch's struct array with one child per column.
+// all inside one row group; they are S.rows[S.pos, S.pos + n). h is the batch's struct array with one child per
+// column.
 void rows_batch(Stream& S, ArrayHold* h, uint64_t a, uint64_t b, const uint64_t* sel, uint64_t n) {
   const size_t nc = S.cols.size();
+  const uint64_t i0 = S.pos;
+  RowsStage* G = (RowsStage*)S.rows_all.get();
+  if (!G && i0 == 0 && n < S.rows.size() && S.rows.size() <= kRowsAllMax) G = rows_stage(S);
+  if (G) {
+    size_t k = 0;
+    for (size_t j = 0; j < nc; ++j) {
+      if (S.cols[j].out == O_DICT_STR) {
+        rows_dict_column(S, S.cols[j], a, b, sel, n, h->kids[j]);
+        continue;
+      }
+      RowsCol R;
+      R.j = j;
+      R.out = h->kids[j];
+      rows_from_stage(S.cols[j], G->cols[k++], i0, n, R);
+    }
+    if (i0 + n >= S.rows.size()) S.rows_all.reset();  // the last batch: the staged rows go
+    return;
+  }
   std::vector<RowsCol> rc;
   std::vector<uint32_t> pcols;
   for (size_t j = 0; j < nc; ++j) {
@@ -246,10 +398,6 @@ void rows_batch(Stream& S, ArrayHold* h, uint64_t a, uint64_t b, const uint64_t*
   if (rc.empty()) return;
   std::vector<uint64_t> rows((size_t)n);
   for (uint64_t i = 0; i < n; ++i) rows[(size_t)i] = a + sel[i];
-  fstx_plan* plan = nullptr;
-  fstx_error e;
-  check(fstx_plan_create_rows(S.f, pcols.data(), (uint32_t)pcols.size(), rows.data(), n, &plan, &e), e);
-  std::unique_ptr<fstx_plan, void (*)(fstx_plan*)> pg(plan, fstx_plan_free);
   RowsHost H;
   H.S = &S;
   H.n = n;
@@ -259,13 +407,7 @@ void rows_batch(Stream& S, ArrayHold* h, uint64_t a, uint64_t b, const uint64_t*
   host.ctx = &H;
   host.alloc_column = rows_alloc;
   host.on_strings = rows_strings;
-  host.on_dict = rows_no_dict;
-  host.on_codes = rows_no_codes;
-  host.on_strings_at = rows_no_at;
-  if (fstx_read(plan, &host, S.threads, S.verify, &e) != FSTX_OK) {
-    if (!H.error.empty()) throw Fail(H.error);
-    throw Fail(e.message);
-  }
+  rows_read(S, pcols, rows.data(), n, host, H.error);
   for (RowsCol& R : rc) {
     const ColSpec& c = S.cols[R.j];
     if (c.phys == FSTX_STRING) rows_finish_strings(R);

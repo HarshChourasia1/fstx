@@ -142,3 +142,25 @@ def test_reads_one_after_another_do_not_mix(two_groups, tmp_path):
         for p, full in ((two_groups, fa), (other, fb)):
             got = fstx.read_fstx(p, filters=[("i", ">", 500)])
             assert same(got, _mask(full, pc.greater(full.column("i"), 500)))
+
+
+@pytest.mark.parametrize("batch_rows", [None, 777])
+def test_batches_of_a_selection_keep_their_row_groups(two_groups, batch_rows):
+    # a selection that spans row groups is decoded once and cut into the same batches as before: one per row group
+    # (or batch_rows at most), never across a row-group edge
+    full = fstx.read_fstx(two_groups)
+    m = pc.less(full.column("i"), -500)
+    want = _mask(full, m)
+    n1 = pc.sum(pc.fill_null(m.slice(0, N1), False).cast(pa.int64())).as_py()
+    with fstx.open(two_groups) as f:
+        bs = list(f.to_batches(batch_rows=batch_rows, filters=[("i", "<", -500)]))
+    sizes = [b.num_rows for b in bs]
+    if batch_rows is None:
+        assert sizes == [n1, want.num_rows - n1]
+    else:
+        assert max(sizes) <= batch_rows
+        edge = 0
+        for k in sizes:
+            assert not (edge < n1 < edge + k)  # no batch holds rows of both row groups
+            edge += k
+    assert same(pa.Table.from_batches(bs), want)

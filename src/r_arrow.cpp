@@ -223,6 +223,7 @@ struct Stream : Live {
   uint64_t batch_rows = 0;
   int verify = 1;
   std::string error;
+  std::shared_ptr<void> rows_all;  // arrow_rows.h: a selection decoded once for all its batches
   ~Stream() {
     if (f) fstx_close(f);
   }
