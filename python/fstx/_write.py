@@ -154,8 +154,9 @@ def _text_chunks(col: pa.ChunkedArray, threads: int = 0) -> List[pa.Array]:
     n = len(col)
     if n < 2 or col.null_count >= n - 1:
         return list(col.chunks)
-    head = col.slice(0, _DICT_SAMPLE)
-    if n > _DICT_SAMPLE and pc.count_distinct(head).as_py() * 2 > len(head):
+    # (count_distinct(head) * 2 > len(head), answered by the binding as soon as it is known)
+    if n > _DICT_SAMPLE and _core.over_half_distinct([c.__arrow_c_array__()
+                                                      for c in col.slice(0, _DICT_SAMPLE).chunks]):
         return list(col.chunks)
     parts = min(threads or os.cpu_count() or 1, n // _DICT_SAMPLE)
     if parts > 1:  # pyarrow codes on one thread: code slices in parallel, then give them one dictionary

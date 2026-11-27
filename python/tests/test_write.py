@@ -503,6 +503,34 @@ def test_refused_string_in_a_repeated_column(chunks, row, match, tmp_path):
     assert not p.exists()
 
 
+@pytest.mark.parametrize("case", ["distinct", "same", "half", "half_plus_one", "nulls", "empty_strings", "large",
+                                  "binary", "sliced_chunks", "all_null", "long_values"])
+def test_over_half_distinct_is_count_distinct(case):
+    # write_fstx's dictionary choice for a string column: the binding's answer is pyarrow's count_distinct
+    from fstx import _core
+    import pyarrow.compute as pc
+
+    n = 65_536
+    vals = {
+        "distinct": [f"d{i}" for i in range(n)],
+        "same": ["x"] * n,
+        "half": [f"h{i % (n // 2)}" for i in range(n)],
+        "half_plus_one": [f"h{i % (n // 2)}" for i in range(n - 1)] + ["new"],
+        "nulls": [None if i % 3 else f"n{i}" for i in range(n)],
+        "empty_strings": ["" if i % 2 else f"e{i}" for i in range(n)],
+        "large": [f"l{i % 40_000}" for i in range(n)],
+        "binary": [f"b{i % 30_000}" for i in range(n)],
+        "sliced_chunks": [f"s{i % 33_000}" for i in range(n)],
+        "all_null": [None] * n,
+        "long_values": [("v" * 50) + str(i % 32_769) for i in range(n)],
+    }[case]
+    a = pa.array(vals, pa.large_string() if case == "large" else pa.binary() if case == "binary" else pa.string())
+    col = pa.chunked_array([a.slice(0, 7), a.slice(7, 30_000), a.slice(30_007)]) if case == "sliced_chunks" \
+        else pa.chunked_array([a])
+    want = pc.count_distinct(col).as_py() * 2 > len(col)
+    assert _core.over_half_distinct([c.__arrow_c_array__() for c in col.chunks]) == want
+
+
 def test_refused_int32_na_value_anywhere(tmp_path):
     # R's NA_integer_ as a value is looked for in every chunk, on all threads, before the file is touched; under
     # a missing value it does not count

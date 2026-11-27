@@ -480,6 +480,78 @@ std::string bytes_of(nb::handle h) {
   return std::string(p, (size_t)n);
 }
 
+inline uint64_t hash_bytes(const unsigned char* p, size_t n) {
+  uint64_t h = 0x9E3779B97F4A7C15ull ^ (uint64_t)n;
+  for (; n >= 8; p += 8, n -= 8) {
+    uint64_t w;
+    std::memcpy(&w, p, 8);
+    h = (h ^ w) * 0xBF58476D1CE4E5B9ull;
+    h ^= h >> 31;
+  }
+  uint64_t w = 0;
+  std::memcpy(&w, p, n);
+  h = (h ^ w) * 0x94D049BB133111EBull;
+  return h ^ (h >> 29);
+}
+
+// Whether more than half of the rows of these string / binary chunks are distinct values (missing values not
+// counted as values): pyarrow's count_distinct(chunks) * 2 > rows, stopping as soon as the answer is known.
+// chunks: (schema capsule, array capsule) pairs.
+bool over_half_distinct(nb::list chunks) {
+  std::vector<StrChunk> cs;
+  uint64_t total = 0;
+  for (nb::handle h : chunks) {
+    nb::tuple pair = nb::cast<nb::tuple>(h);
+    const ArrowSchema* sc = (const ArrowSchema*)capsule(pair[0], "arrow_schema");
+    const ArrowArray* ar = (const ArrowArray*)capsule(pair[1], "arrow_array");
+    const std::string f = sc->format ? sc->format : "";
+    if ((f != "u" && f != "U" && f != "z" && f != "Z") || ar->n_buffers != 3 || ar->length < 0 || ar->offset < 0)
+      throw nb::value_error("fstx: internal error, string chunks expected");
+    StrChunk c;
+    c.rows = (uint64_t)ar->length;
+    c.large = f == "U" || f == "Z";
+    c.valid = ar->null_count != 0 ? (const uint8_t*)ar->buffers[0] : nullptr;
+    c.bit0 = ar->offset;
+    total += c.rows;
+    if (!c.rows) continue;
+    if (!ar->buffers[1]) throw nb::value_error("fstx: internal error, Arrow string array without offsets");
+    c.offsets = c.large ? (const void*)((const int64_t*)ar->buffers[1] + ar->offset)
+                        : (const void*)((const int32_t*)ar->buffers[1] + ar->offset);
+    static const char none[1] = {0};
+    c.bytes = ar->buffers[2] ? (const char*)ar->buffers[2] : none;
+    cs.push_back(c);
+  }
+  nb::gil_scoped_release nogil;
+  size_t cap = 16;
+  while (cap < 2 * total) cap <<= 1;
+  std::vector<int64_t> slot(cap, -1);  // index into vals
+  std::vector<uint64_t> hv;
+  std::vector<std::pair<const unsigned char*, int64_t>> vals;
+  for (const StrChunk& c : cs)
+    for (uint64_t i = 0; i < c.rows; ++i) {
+      if (is_null(c, i)) continue;
+      int64_t a, b;
+      span_of(c, i, &a, &b);
+      const unsigned char* p = (const unsigned char*)c.bytes + a;
+      const int64_t len = b - a;
+      const uint64_t hh = hash_bytes(p, (size_t)len);
+      size_t k = (size_t)(hh & (cap - 1));
+      for (;; k = (k + 1) & (cap - 1)) {
+        const int64_t e = slot[k];
+        if (e < 0) {
+          slot[k] = (int64_t)vals.size();
+          vals.push_back({p, len});
+          hv.push_back(hh);
+          if (2 * vals.size() > total) return true;
+          break;
+        }
+        if (hv[(size_t)e] == hh && vals[(size_t)e].second == len && std::memcmp(vals[(size_t)e].first, p, (size_t)len) == 0)
+          break;
+      }
+    }
+  return 2 * vals.size() > total;
+}
+
 // columns: [(name, phys, logical, ordered, levels | None, tzone | None, attrs | None, chunks, add, bits)], chunks a
 // list of the (schema capsule, array capsule) pairs of pyarrow's Array.__arrow_c_array__(); add and bits as
 // NumSrc (numbers only). The caller keeps them alive.
@@ -708,6 +780,8 @@ void init_write(nb::module_& m) {
         nb::arg("codec"), nb::arg("level"), nb::arg("threads"), nb::arg("profile"), nb::arg("keep_pct"),
         nb::arg("append"),
         "Writes prepared columns (private: use fstx.write_fstx).");
+  m.def("over_half_distinct", &over_half_distinct, nb::arg("chunks"),
+        "Whether count_distinct(chunks) * 2 > rows (private: write_fstx's dictionary choice).");
 }
 
 }  // namespace fstxpy
