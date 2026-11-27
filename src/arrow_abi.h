@@ -107,6 +107,15 @@ int fstx_colsrc_load_with(fstx_colsrc* s, void* dst, fstx_scratch* w, fstx_error
  * distinct pages of one source once its dictionaries are decoded (fstx_colsrc_dict); w may be NULL. */
 int fstx_colsrc_load_page(fstx_colsrc* s, uint32_t page, fstx_scratch* w, const int32_t** lens, const char** bytes,
                           int32_t* dict, fstx_error* err);
+/* Text straight into a caller's buffer (whole plain / FSST pages of a string source): fstx_colsrc_open_page reads
+ * and checks page p and gives its bytes of text and its NA count without decoding the text; *direct = 0 when the
+ * page must go through fstx_colsrc_load_page instead (dictionary pages, pages cut by the source's row range).
+ * fstx_colsrc_page_text then writes the text to dst (room for text + slack bytes; writes stay below that) and gives
+ * the rows' lengths (-1 = NA). Thread-safe for distinct pages; free with fstx_colsrc_drop_page. */
+int fstx_colsrc_open_page(fstx_colsrc* s, uint32_t page, fstx_scratch* w, int* direct, uint64_t* text, uint32_t* nas,
+                          fstx_error* err);
+int fstx_colsrc_page_text(fstx_colsrc* s, uint32_t page, char* dst, size_t slack, const int32_t** lens,
+                          fstx_error* err);
 /* Frees a loaded page's buffers (as fstx_colsrc_drop); thread-safe for distinct pages of one source. */
 void fstx_colsrc_drop_page(fstx_colsrc* s, uint32_t page);
 /* A pool of string page buffers: a source given one (before any page is loaded) takes its pages' buffers from it

@@ -650,8 +650,8 @@ uint32_t encode_str_page(int kind, const char* const* ptrs, const int32_t* lens,
   return make_chain(kind, na, tags);
 }
 
-void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, int kind,
-                     std::vector<int32_t>& lens, std::vector<uint8_t>& buf, const char** bytes) {
+void open_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, int kind, int32_t* lens,
+                   StrPageView& v) {
   check_str_header(body, len, chain, n, kind);
   Rd rd{body + 8, body + len};
   Blk nb{};
@@ -660,11 +660,12 @@ void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n
   if (rd.peek() != chain_tag(chain, 0)) corrupt("encoding does not match the page directory");
   Blk vb = rd.next();
   if (!rd.done()) corrupt("trailing bytes");
-  lens.resize(n);
+  v = StrPageView();
+  v.n = n;
   if (vb.tag == T_PLAIN) {
     Cur c(vb);
     Rd in = c.rest();
-    decode_int32_blk(in, lens.data(), n, 1);
+    decode_int32_blk(in, lens, n, 1);
     Blk bb = in.next();
     if (bb.tag != T_PLAIN) corrupt("string bytes");
     uint64_t tot = 0;
@@ -673,55 +674,79 @@ void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n
       tot += (uint64_t)lens[i];
     }
     if (tot != bb.len) corrupt("string lengths do not match the bytes");
-    *bytes = (const char*)bb.p;
+    v.src = bb.p;
+    v.total = tot;
   } else if (vb.tag == T_FSST) {
     Cur c(vb);
     const uint64_t total = get_u64(c.take(8));
     Rd in = c.rest();
     Blk tb = in.next();
     if (tb.tag != T_PLAIN || !fsst_table_ok(tb.p, tb.len)) corrupt("FSST symbol table");
-    fsst_decoder_t dec;
-    if (fsst_import(&dec, tb.p) == 0) corrupt("FSST symbol table");
     Blk bb = in.next();
     if (bb.tag != T_PLAIN) corrupt("FSST bytes");
-    decode_int32_blk(in, lens.data(), n, 1);
+    decode_int32_blk(in, lens, n, 1);
     uint64_t csum = 0;
     for (uint32_t i = 0; i < n; ++i) {
       if (lens[i] < 0) corrupt("FSST length");
       csum += (uint64_t)lens[i];
     }
     if (csum != bb.len || total > 8 * csum || total > kMaxRawPage) corrupt("FSST sizes");
-    if (buf.size() < total + 64) buf.resize((size_t)total + 64);
-    const unsigned char* src = bb.p;
-    uint64_t pos = 0;
-    for (uint32_t i = 0; i < n; ++i) {
-      const size_t cl = (size_t)lens[i];
-      size_t got = 0;
-      if (cl) {
-        // A code string never ends in a lone escape (255): the decoder would read symbol[255], past its table.
-        // Only a string ending in 255 is looked at: the trailing run of 255s starts at a code boundary, so an odd
-        // run means a lone escape.
-        if (src[cl - 1] == 255) {
-          size_t esc = 1;
-          while (esc < cl && src[cl - 1 - esc] == 255) ++esc;
-          if (esc & 1) corrupt("FSST escape at the end of a string");
-        }
-        got = fsst_decompress(&dec, cl, src, (size_t)(total - pos) + 32, buf.data() + pos);
-        if (got > total - pos) corrupt("FSST string longer than the page");
-      }
-      lens[i] = (int32_t)got;
-      pos += got;
-      src += cl;
-    }
-    if (pos != total) corrupt("FSST total length");
-    *bytes = (const char*)buf.data();
+    v.fsst = true;
+    v.src = bb.p;
+    v.table = tb.p;
+    v.total = total;
   } else {
     corrupt("unknown string encoding");
   }
   if (na) {
     const int32_t zero = 0;
-    na_apply_i32(nb, na, n, lens.data(), -1, &zero);
+    na_apply_i32(nb, na, n, lens, -1, &zero);
   }
+}
+
+void str_page_text(const StrPageView& v, int32_t* lens, char* dst, size_t slack) {
+  if (!v.fsst) {
+    if (v.total) std::memcpy(dst, v.src, (size_t)v.total);
+    return;
+  }
+  fsst_decoder_t dec;
+  if (fsst_import(&dec, v.table) == 0) corrupt("FSST symbol table");
+  const unsigned char* src = v.src;
+  const uint64_t total = v.total;
+  unsigned char* out = (unsigned char*)dst;
+  uint64_t pos = 0;
+  for (uint32_t i = 0; i < v.n; ++i) {
+    if (lens[i] <= 0) continue;  // NA (-1) or empty: no codes
+    const size_t cl = (size_t)lens[i];
+    // A code string never ends in a lone escape (255): the decoder would read symbol[255], past its table.
+    // Only a string ending in 255 is looked at: the trailing run of 255s starts at a code boundary, so an odd
+    // run means a lone escape.
+    if (src[cl - 1] == 255) {
+      size_t esc = 1;
+      while (esc < cl && src[cl - 1 - esc] == 255) ++esc;
+      if (esc & 1) corrupt("FSST escape at the end of a string");
+    }
+    const size_t got = fsst_decompress(&dec, cl, src, (size_t)(total - pos) + slack, out + pos);
+    if (got > total - pos) corrupt("FSST string longer than the page");
+    lens[i] = (int32_t)got;
+    pos += got;
+    src += cl;
+  }
+  if (pos != total) corrupt("FSST total length");
+}
+
+void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, int kind,
+                     std::vector<int32_t>& lens, std::vector<uint8_t>& buf, const char** bytes) {
+  lens.resize(n);
+  StrPageView v;
+  open_str_page(body, len, chain, n, kind, lens.data(), v);
+  if (!v.fsst) {
+    *bytes = (const char*)v.src;
+    return;
+  }
+  if (buf.size() < v.total + 64) buf.resize((size_t)v.total + 64);
+  str_page_text(v, lens.data(), (char*)buf.data(), 32);
+  *bytes = (const char*)buf.data();
 }
 
 // Rows plans (reads of scattered rows): only the strings at positions idx[0..cnt) of a K_STR page (ascending,

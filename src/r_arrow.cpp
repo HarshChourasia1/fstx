@@ -543,10 +543,13 @@ void run_tasks(size_t n, int threads, Fn& fn, fstx_scratchset* ss = nullptr) {
   check(rc, e);
 }
 
-// A plain string column (utf8 / large_utf8) of a batch over file rows [a, b): its pages decode on the pool,
+// A plain string column (utf8 / large_utf8) of a batch over file rows [a, b): its pages are read on the pool,
 // one task per page (str_decode, which also counts each page's bytes); a prefix sum over the pages places them
-// (str_prep); then every page writes its offsets, bytes and validity straight into the Arrow buffers, again one
-// task per page (str_write). Bitmap bytes shared by two pages are put together at the end (str_bits).
+// (str_prep); then every page writes its offsets, text and validity straight into the Arrow buffers, again one
+// task per page (str_write). Bitmap bytes shared by two pages are put together at the end (str_bits). Whole plain
+// and FSST pages are only read and checked in str_decode (fstx_colsrc_open_page: the size of their text is known
+// without decoding it) and decode their text into the Arrow buffer in str_write (fstx_colsrc_page_text); other
+// pages (dictionary pages, pages cut by the batch's rows) decode in str_decode and are copied in str_write.
 struct StrPage {
   const int32_t* lens = nullptr;  // per row: length (-1 = NA), or the dictionary code on a dictionary page
   const char* bytes = nullptr;
@@ -558,6 +561,7 @@ struct StrPage {
   uint64_t off = 0;            // where they start in the text buffer
   uint8_t head = 0, tail = 0;  // validity bits of the first / last bitmap byte when another page shares it
   bool bad = false;            // its text is not valid UTF-8 (checked only when asked)
+  bool direct = false;         // opened only: the text is decoded in str_write (lens are set then)
 };
 
 struct StrCol {
@@ -589,8 +593,14 @@ void str_open(const Stream& S, StrCol& C, size_t j, uint64_t a, uint64_t b) {
 void str_decode(StrCol& C, uint32_t q, fstx_scratch* w) {
   StrPage& P = C.pages[q];
   fstx_error e;
-  check(fstx_colsrc_load_page(C.s.get(), q, w, &P.lens, &P.bytes, &P.dict, &e), e);
   fstx_colsrc_page_span(C.s.get(), q, &P.first, &P.n);
+  int direct = 0;
+  check(fstx_colsrc_open_page(C.s.get(), q, w, &direct, &P.tot, &P.nulls, &e), e);
+  if (direct) {
+    P.direct = true;
+    return;
+  }
+  check(fstx_colsrc_load_page(C.s.get(), q, w, &P.lens, &P.bytes, &P.dict, &e), e);
   uint64_t tot = 0;
   uint32_t nulls = 0;
   if (P.dict >= 0) {
@@ -634,17 +644,21 @@ inline bool full_byte(uint64_t B, uint64_t r0, uint64_t r1) { return B * 8 >= r0
 void str_page_bits(StrCol& C, StrPage& P);
 
 template <typename O>
-void str_write(StrCol& C, uint32_t q, bool check) {
+void str_write(StrCol& C, uint32_t q, bool check_utf8) {
   StrPage& P = C.pages[q];
   O* o = (O*)C.offs + P.first;
   uint64_t pos = P.off;
-  if (P.dict < 0) {  // the page's strings follow each other: one copy
+  if (P.direct) {  // the text decodes into its place (no room past it: the next page's text is written meanwhile)
+    fstx_error e;
+    check(fstx_colsrc_page_text(C.s.get(), q, C.data + P.off, 0, &P.lens, &e), e);
+  }
+  if (P.dict < 0) {  // the page's strings follow each other: one copy (none for a direct page)
     for (uint32_t i = 0; i < P.n; ++i) {
       o[i] = (O)pos;
       if (P.lens[i] > 0) pos += (uint64_t)P.lens[i];
     }
-    if (P.tot) std::memcpy(C.data + P.off, P.bytes, (size_t)P.tot);
-    P.bad = check && !valid_utf8((const uint8_t*)C.data + P.off, (size_t)P.tot);  // while the text is in cache
+    if (P.tot && !P.direct) std::memcpy(C.data + P.off, P.bytes, (size_t)P.tot);
+    P.bad = check_utf8 && !valid_utf8((const uint8_t*)C.data + P.off, (size_t)P.tot);  // while the text is in cache
   } else {  // its dictionary was checked in str_open
     const DictTab& D = C.dicts[(size_t)P.dict];
     for (uint32_t i = 0; i < P.n; ++i) {

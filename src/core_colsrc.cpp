@@ -38,6 +38,10 @@ struct PageData {
   const char* bytes = nullptr;
   uint64_t mem = 0;
   uint64_t tick = 0;
+  // fstx_colsrc_open_page: the page is read and checked, its text not yet decoded (own holds the body unless it is
+  // in the mapping; lens the stored lengths)
+  bool opened = false;
+  fstx::enc::StrPageView view;
 };
 }  // namespace
 
@@ -177,6 +181,7 @@ void free_page(fstx_colsrc& S, uint32_t p) {
   d.bytes = nullptr;
   d.mem = 0;
   d.ready = false;
+  d.opened = false;
   --S.ready_count;
 }
 
@@ -353,6 +358,7 @@ void trim_cache(fstx_colsrc& S, uint32_t keep_lo, uint32_t keep_hi) {
 
 void make_ready(fstx_colsrc& S, uint32_t p) {
   PageData& d = S.data[p];
+  if (d.opened) fail(FSTX_ERR_INTERNAL, "page was opened for fstx_colsrc_page_text");
   if (d.ready) {
     d.tick = ++S.tick;
     return;
@@ -687,6 +693,7 @@ extern "C" int fstx_colsrc_load_page(fstx_colsrc* s, uint32_t p, fstx_scratch* w
     const SrcPage& sp = s->pages[p];
     if (sp.dict >= 0 && !s->dicts[(size_t)sp.dict].ready) fail(FSTX_ERR_INTERNAL, "dictionary is not decoded");
     PageData& d = s->data[p];
+    if (d.opened) fail(FSTX_ERR_INTERNAL, "page was opened for fstx_colsrc_page_text");
     if (!d.ready) {
       if (w) {
         decode_page(*s, p, d, nullptr, *w->cc, *w->a, *w->b);
@@ -725,10 +732,82 @@ extern "C" void fstx_colsrc_drop_page(fstx_colsrc* s, uint32_t p) {
   const uint64_t mem = d.mem;
   d.bytes = nullptr;
   d.mem = 0;
+  d.opened = false;
   std::lock_guard<std::mutex> g(s->count_m);
   d.ready = false;
   s->cache_bytes -= mem;
   --s->ready_count;
+}
+
+extern "C" int fstx_colsrc_open_page(fstx_colsrc* s, uint32_t p, fstx_scratch* w, int* direct, uint64_t* text,
+                                     uint32_t* nas, fstx_error* err) {
+  set_error(err, FSTX_OK, "");
+  *direct = 0;
+  *text = 0;
+  *nas = 0;
+  try {
+    if (p >= s->pages.size()) fail(FSTX_ERR_ARG, "page index out of range");
+    if (s->mode != FSTX_SRC_STRINGS) fail(FSTX_ERR_ARG, "not a string source");
+    const SrcPage& sp = s->pages[p];
+    PageData& d = s->data[p];
+    if (sp.dict >= 0 || sp.skip != 0 || sp.take != sp.n || !s->F || !sp.page || d.ready) return FSTX_OK;
+    const fb::Page* pg = sp.page;
+    const uint32_t n = sp.n;
+    std::vector<uint8_t> body = take_buf(s->bufs, &fstx_bufpool::bytes);
+    std::vector<int32_t> lens = take_buf(s->bufs, &fstx_bufpool::ints);
+    CodecContext cc0;
+    std::vector<uint8_t> in0;
+    CodecContext& cc = w ? *w->cc : cc0;
+    std::vector<uint8_t>& in = w ? *w->b : in0;
+    try {
+      const uint8_t* b = body_of(*s, pg, cc, body, in);
+      lens.resize(n);
+      enc::open_str_page(b, pg->raw_len(), pg->chain(), n, enc::K_STR, lens.data(), d.view);
+      if (s->nulls) check_nulls(pg, lens.data(), n, -1);
+    } catch (...) {
+      rethrow_for_page(*s->F, s->col, pg);
+    }
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < n; ++i) k += lens[i] < 0;
+    d.own.swap(body);  // the buffer moves, the view's pointers into it stay valid
+    d.lens.swap(lens);
+    give_buf(s->bufs, &fstx_bufpool::bytes, body);
+    give_buf(s->bufs, &fstx_bufpool::ints, lens);
+    d.opened = true;
+    d.mem = d.lens.size() * 4 + d.own.size();
+    *direct = 1;
+    *text = d.view.total;
+    *nas = k;
+    std::lock_guard<std::mutex> g(s->count_m);
+    d.ready = true;
+    d.tick = ++s->tick;
+    ++s->ready_count;
+    s->cache_bytes += d.mem;
+    return FSTX_OK;
+  } catch (...) {
+    return to_error(err);
+  }
+}
+
+extern "C" int fstx_colsrc_page_text(fstx_colsrc* s, uint32_t p, char* dst, size_t slack, const int32_t** lens,
+                                     fstx_error* err) {
+  set_error(err, FSTX_OK, "");
+  try {
+    if (p >= s->pages.size() || !s->data[p].opened) fail(FSTX_ERR_INTERNAL, "page is not opened");
+    PageData& d = s->data[p];
+    const fb::Page* pg = s->pages[p].page;
+    try {
+      enc::str_page_text(d.view, d.lens.data(), dst, slack);
+      check_no_nul(dst, d.lens.data(), d.view.n);
+    } catch (...) {
+      rethrow_for_page(*s->F, s->col, pg);
+    }
+    if (!s->read) s->F->map.release(pg->offset(), pg->comp_len());
+    *lens = d.lens.data();
+    return FSTX_OK;
+  } catch (...) {
+    return to_error(err);
+  }
 }
 
 extern "C" int fstx_run_tasks(int64_t n, int threads, fstx_task_fn fn, void* ctx, fstx_scratchset* ss,
