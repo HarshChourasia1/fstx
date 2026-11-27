@@ -466,3 +466,11 @@ What changed (DESIGN.md section 10; the plan is `release-1.2/DESIGN-1.2.md` sect
 - `drop2` marker: tests that read int64 / binary through the engine's Arrow stream, or filter int64 exactly, are
   skipped until the engine has drop 2 (`conftest.py` looks for `FSTX_BINARY` in `src/r_arrow.cpp` and `has_i64` in
   `src/core_filter.cpp`; `FSTX_TEST_DROP2=1` / `0` overrides). Remove the marker once drop 2 is merged.
+
+Tested 27 Nov 2026 on the desk (Windows x64, Python 3.12, pyarrow / pandas / polars of `v1\py-read\venv`), tree
+41abf32 (= r12-drop1 merged), each wheel from an empty build folder: cl (MSVC 19.44) wheel 947 passed, 46 skipped;
+clang-cl wheel 947 passed, 46 skipped. The skips are the `drop2` tests, the three golden / R-match parameter sets
+whose R files do not exist yet (`make_golden.R --v12`, `make_rmatch.R --v12`), and three polars round trips that
+write an int64 column and read it back. Build warnings: one under cl, C4267 in `<numeric>` from
+`vendor/fsst/libfsst.cpp` (as before); none under clang-cl. Not run: Python 3.10 (not installed on the desk), the
+R scripts, drop 2.
