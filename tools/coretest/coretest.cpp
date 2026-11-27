@@ -939,6 +939,125 @@ static void check_pages12(const std::string& p, const T12& t, int force, const s
 
 static const char* kTagNames[] = {"", "plain", "const", "for", "delta", "rle", "dict", "split"};
 
+// Every kind-7 mix and every binary mix of spec section 7 (int64: tags 1-7 x missing-value modes 0-2 x codecs 0-2 =
+// 63; binary: kind 4 tags 1 / 10 x modes x codecs = 18, kind 5 tags 1-7 x modes x codecs = 63, kind 6 tags 1 / 10 x
+// codecs = 6). Each tag is forced with the codec kept on every page; the mixes the pages show are collected with
+// fstx_pages_get and must be all of them. Every file is read back (check12). Returns one hash per kind family over
+// all its files, so the SIMD targets compare them.
+static T12 make_i64_mix(uint64_t n) {
+  T12 t;
+  t.n = n;
+  t.names = {"a", "b", "c", "k0", "k1", "k2"};  // modes 1, 2, 0 on wide values; constant columns with modes 0, 1, 2
+  t.phys.assign(6, FSTX_INT64);
+  t.i64.assign(6, std::vector<int64_t>(n));
+  const std::vector<int64_t> w = wide_values();
+  const int64_t k = 4611686018427387911LL;
+  for (uint64_t i = 0; i < n; ++i) {
+    t.i64[0][i] = i % 3 == 1 ? NA_I64 : w[(i / 3) % 50];
+    t.i64[1][i] = (i % 8192 >= 100 && i % 8192 < 600) ? NA_I64 : w[(i / 3) % 50];
+    t.i64[2][i] = w[(i / 7) % 50];
+    t.i64[3][i] = k;
+    t.i64[4][i] = i % 3 == 1 ? NA_I64 : k;
+    t.i64[5][i] = i % 1000 < 10 ? NA_I64 : k;
+  }
+  return t;
+}
+
+static T12 make_bin_mix(uint64_t n) {
+  T12 t = make_bin(n);  // its value table (NUL, empty, not UTF-8)
+  t.names = {"v0", "v1", "v2", "c0", "c1", "c2"};
+  t.phys.assign(6, FSTX_BINARY);
+  t.i64.clear();
+  t.idx.assign(6, std::vector<int32_t>(n));
+  uint64_t s = 99;
+  const int32_t nt = (int32_t)t.tab.size();
+  for (uint64_t i = 0; i < n; ++i) {
+    const int32_t v = (int32_t)((splitmix(s) >> 8) % (uint64_t)nt);
+    const bool na1 = i % 17 == 4, na2 = i % 8192 >= 100 && i % 8192 < 600, na2c = i % 1000 < 10;
+    t.idx[0][i] = v;
+    t.idx[1][i] = na1 ? -1 : v;
+    t.idx[2][i] = na2 ? -1 : v;
+    t.idx[3][i] = 5;
+    t.idx[4][i] = i % 3 == 1 ? -1 : 5;
+    t.idx[5][i] = na2c ? -1 : 5;
+  }
+  return t;
+}
+
+static void test_mixes12(const std::string& dir, uint64_t& h_i64, uint64_t& h_bin) {
+  std::vector<uint8_t> seen_i64(8 * 3 * 3, 0), seen_bin(16 * 7 * 3 * 3, 0);  // [tag][na][codec], [kind][tag][na][codec]
+  auto collect = [&](const std::string& p) {
+    fstx_file* f = nullptr;
+    fstx_error e;
+    if (!rc_ok(fstx_open(p.c_str(), &f, &e), e, "mix open")) return;
+    std::vector<fstx_page_info> pi((size_t)fstx_pages_get(f, nullptr, 0));
+    fstx_pages_get(f, pi.data(), pi.size());
+    for (const fstx_page_info& q : pi) {
+      const int tag = q.enc[0], na = q.na_mode, cd = q.codec;
+      if (na < 0 || na > 2 || cd < 0 || cd > 2) continue;
+      if (q.kind == 7 && tag >= 1 && tag <= 7) seen_i64[(size_t)((tag * 3 + na) * 3 + cd)] = 1;
+      const int bt = tag == 10 ? 0 : tag;  // 0 stands for FSST
+      if ((q.kind == 4 || q.kind == 5 || q.kind == 6) && bt >= 0 && bt <= 7)
+        seen_bin[(size_t)(((q.kind * 8 + bt) * 3 + na) * 3 + cd)] = 1;
+    }
+    fstx_close(f);
+  };
+  std::vector<uint8_t> all_i64, all_bin;
+  auto add_hash = [](std::vector<uint8_t>& all, const std::string& p) {
+    const uint64_t h = fnv1a(slurp(p));
+    for (int b = 0; b < 8; ++b) all.push_back((uint8_t)(h >> (8 * b)));
+  };
+  const int codecs[3] = {FSTX_CODEC_NONE, FSTX_CODEC_LZ4, FSTX_CODEC_ZSTD};
+  const T12 ti = make_i64_mix(20000);
+  for (int cd : codecs)
+    for (int tag = 1; tag <= 7; ++tag) {
+      const std::string p = dir + "/mix_i64.fstx";
+      const std::string lab = std::string("int64 mix ") + kTagNames[tag] + " " + codec_name(cd);
+      if (!rc_ok(write12(p, ti, cd, 2, tag | 0x400), fstx_error{}, lab + ": write")) continue;
+      check12(p, ti, lab);
+      collect(p);
+      add_hash(all_i64, p);
+      std::remove(p.c_str());
+    }
+  const T12 tb = make_bin_mix(20000);
+  // plain, FSST, then code pages with each tag (dictionary page plain or FSST in turn)
+  const int bforce[9] = {1, 10, 0x100 | 1, 0x300 | 2, 0x100 | 3, 0x300 | 4, 0x100 | 5, 0x300 | 6, 0x100 | 7};
+  for (int cd : codecs)
+    for (int bf : bforce) {
+      const std::string p = dir + "/mix_bin.fstx";
+      const std::string lab = "binary mix force " + std::to_string(bf) + " " + codec_name(cd);
+      if (!rc_ok(write12(p, tb, cd, 2, bf | 0x400), fstx_error{}, lab + ": write")) continue;
+      check12(p, tb, lab);
+      collect(p);
+      add_hash(all_bin, p);
+      std::remove(p.c_str());
+    }
+  int n_i64 = 0, n_bin = 0, want_bin = 0;
+  std::string miss;
+  for (int tag = 1; tag <= 7; ++tag)
+    for (int na = 0; na < 3; ++na)
+      for (int cd = 0; cd < 3; ++cd) {
+        if (seen_i64[(size_t)((tag * 3 + na) * 3 + cd)]) ++n_i64;
+        else miss += " i64/t" + std::to_string(tag) + "/na" + std::to_string(na) + "/c" + std::to_string(cd);
+      }
+  for (int kind = 4; kind <= 6; ++kind)
+    for (int bt = 0; bt <= 7; ++bt)
+      for (int na = 0; na < 3; ++na)
+        for (int cd = 0; cd < 3; ++cd) {
+          const bool legal = kind == 5 ? bt >= 1 : (bt == 0 || bt == 1) && (kind == 4 || na == 0);
+          if (!legal) continue;
+          ++want_bin;
+          if (seen_bin[(size_t)(((kind * 8 + bt) * 3 + na) * 3 + cd)]) ++n_bin;
+          else miss += " k" + std::to_string(kind) + "/t" + std::to_string(bt ? bt : 10) + "/na" + std::to_string(na) +
+                       "/c" + std::to_string(cd);
+        }
+  std::printf("1.2 mixes: int64 %d of 63, binary %d of %d%s%s\n", n_i64, n_bin, want_bin, miss.empty() ? "" : "; missing:",
+              miss.c_str());
+  check(n_i64 == 63 && n_bin == 87 && want_bin == 87, "every int64 and binary mix written and read back");
+  h_i64 = fnv1a(all_i64);
+  h_bin = fnv1a(all_bin);
+}
+
 // every int64 tag (codec none / lz4 / zstd in turn) and the binary layouts: same bytes at 1 and 4 threads and through
 // get_values; returns the file hashes
 static std::vector<uint64_t> test_i64_bin(const std::string& dir, std::vector<std::string>& names) {
@@ -987,6 +1106,12 @@ static std::vector<uint64_t> test_i64_bin(const std::string& dir, std::vector<st
     std::remove(p.c_str());
     std::remove(p4.c_str());
   }
+  uint64_t hm_i64 = 0, hm_bin = 0;
+  test_mixes12(dir, hm_i64, hm_bin);
+  hs.push_back(hm_i64);
+  names.push_back("mix_i64");
+  hs.push_back(hm_bin);
+  names.push_back("mix_bin");
   return hs;
 }
 
