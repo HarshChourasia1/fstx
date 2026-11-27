@@ -833,7 +833,7 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
   opt.keep_pct = keep_pct;
   // No string pointer cache (the engine's flag 0x800, F_NO_STR_CACHE, which R's tests call no_str_cache): it saves
   // R a second walk over its CHARSXPs, but get_strings here only reads Arrow offsets, so pages read the strings
-  // again as fast as from the cache, and the cache's up to 64 MB a call (12 bytes a string) stay free. Same bytes.
+  // again as fast as from the cache, and the cache's up to 8 MB a call (12 bytes a string) stay free. Same bytes.
   opt.force_encoding = 0x800;
   const int nthreads = threads > 0 ? threads : (int)fstx_hardware_threads();
 
