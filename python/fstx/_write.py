@@ -176,13 +176,10 @@ _AS_DOUBLE = (pt.is_float64, pt.is_float32, pt.is_int32, pt.is_date32, pt.is_int
 
 
 def _int32(arr, name: str, add: int = 0) -> _Num:
-    """int32 with NA_integer_ for nulls. A value that is itself R's NA cannot be stored."""
+    """int32 with NA_integer_ for nulls. A value that is itself R's NA cannot be stored: the binding looks for one
+    in int32 / date32 columns (on all threads, before the file is touched) and refuses the write."""
     if not any(f(arr.type) for f in _AS_INT32):
         arr = arr.cast(pa.int32())
-    if add == 0 and (pt.is_int32(arr.type) or pt.is_date32(arr.type)) and _valid(arr) and \
-            pc.min(arr.cast(pa.int32())).as_py() == _NA_INT:
-        raise ValueError(f"write_fstx: column '{name}' holds -2147483648, which is R's missing integer and "
-                         "cannot be stored as a value (cast the column to int64 or float64)")
     return _Num(arr, add)
 
 

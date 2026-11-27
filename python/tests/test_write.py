@@ -503,6 +503,28 @@ def test_refused_string_in_a_repeated_column(chunks, row, match, tmp_path):
     assert not p.exists()
 
 
+def test_refused_int32_na_value_anywhere(tmp_path):
+    # R's NA_integer_ as a value is looked for in every chunk, on all threads, before the file is touched; under
+    # a missing value it does not count
+    import numpy as np
+
+    p = tmp_path / "kept.fstx"
+    fstx.write_fstx(pa.table({"x": pa.array([1, 2], pa.int32())}), p)
+    before = p.read_bytes()
+    v = np.arange(3_000_000, dtype="int32")
+    v[2_500_000] = -2**31
+    chunks = [pa.array(v[a:a + 700_000]) for a in range(0, len(v), 700_000)]
+    for threads in (1, None):
+        with pytest.raises(ValueError, match="'x' holds -2147483648"):
+            fstx.write_fstx(pa.table({"ok": pa.array(v.astype("float64")), "x": pa.chunked_array(chunks)}), p,
+                            threads=threads)
+        assert p.read_bytes() == before
+    masked = pa.array(v, mask=v == -2**31)
+    fstx.write_fstx(pa.table({"x": masked}), p)
+    got = fstx.read_fstx(p).column("x")
+    assert got.null_count == 1 and got[2_500_000].as_py() is None and got[2_499_999].as_py() == 2_499_999
+
+
 def test_refused_strings_checked_on_many_threads(tmp_path):
     # the string check runs in slices of 65,536 values on all threads: the error still names the first column
     # with a problem and its first row, whatever slice found it

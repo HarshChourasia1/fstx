@@ -439,6 +439,40 @@ int check_strings(const std::vector<Col>& cols, const std::vector<fstx_write_col
   return res;
 }
 
+// The first int32 column (int32 / date32 chunks kept as they are, nothing added) that holds INT32_MIN in a row
+// that is not missing: R's NA_integer_, which cannot be stored as a value. -1 when none does. On `threads` threads.
+int64_t int_na_column(const std::vector<Col>& cols, const std::vector<fstx_write_column>& defs, int threads) {
+  struct Task {
+    size_t col, chunk;
+    uint64_t a, b;
+  };
+  std::vector<Task> tasks;
+  for (size_t j = 0; j < cols.size(); ++j) {
+    const NumSrc& s = cols[j].num;
+    if (defs[j].phys == FSTX_FLOAT64 || defs[j].phys == FSTX_STRING || s.add) continue;
+    for (size_t k = 0; k < s.chunks.size(); ++k)
+      if (s.chunks[k].kind == N_I32)
+        for (uint64_t a = 0; a < s.chunks[k].rows; a += 1u << 20)
+          tasks.push_back({j, k, a, std::min<uint64_t>(s.chunks[k].rows, a + (1u << 20))});
+  }
+  std::vector<uint8_t> hit(tasks.size(), 0);
+  run_parallel(tasks.size(), threads, [&](size_t i) {
+    const Task& t = tasks[i];
+    const NumChunk& c = cols[t.col].num.chunks[t.chunk];
+    const int32_t* x = (const int32_t*)c.values + c.off;
+    bool any = false;
+    for (uint64_t r = t.a; r < t.b; ++r) any |= x[r] == kNaInt;
+    if (any && c.valid) {  // only a value in a row that is not missing counts
+      any = false;
+      for (uint64_t r = t.a; r < t.b && !any; ++r) any = x[r] == kNaInt && !bit_off(c.valid, c.off + (int64_t)r);
+    }
+    hit[i] = any;
+  });
+  for (size_t i = 0; i < tasks.size(); ++i)
+    if (hit[i]) return (int64_t)tasks[i].col;
+  return -1;
+}
+
 std::string bytes_of(nb::handle h) {
   char* p = nullptr;
   Py_ssize_t n = 0;
@@ -590,16 +624,18 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
   int rc = FSTX_OK, bad = 0;
   size_t bad_col = 0;
   uint64_t bad_row = 0;
+  int64_t na_col = -1;
   {
     nb::gil_scoped_release nogil;  // no Python object is touched until this block ends
     try {
-      bad = check_strings(cols, defs, nthreads, &bad_col, &bad_row);
+      na_col = int_na_column(cols, defs, nthreads);
+      if (na_col < 0) bad = check_strings(cols, defs, nthreads, &bad_col, &bad_row);
     } catch (const std::exception& e) {  // no thread or no memory
       rc = FSTX_ERR_MEMORY;
       std::snprintf(err.message, sizeof(err.message), "write_fstx: %s", e.what());
       err.code = rc;
     }
-    if (!bad && rc == FSTX_OK) {
+    if (!bad && na_col < 0 && rc == FSTX_OK) {
       fstx_writer* w = nullptr;
       const uint8_t* tap = has_ta ? (const uint8_t*)ta.data() : nullptr;
       rc = append ? fstx_writer_open_append(path.c_str(), defs.data(), (uint32_t)nc, tap, ta.size(), &opt, &w, &err)
@@ -645,6 +681,12 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
         else rc = fstx_writer_close(w, &err);
       }
     }
+  }
+  if (na_col >= 0) {
+    const std::string msg = "write_fstx: column '" + cols[(size_t)na_col].name +
+                            "' holds -2147483648, which is R's missing integer and cannot be stored as a value (cast "
+                            "the column to int64 or float64)";
+    throw nb::value_error(msg.c_str());
   }
   if (bad) {
     static const char* why[] = {"", "a string that is not valid UTF-8", "a string with a NUL character",
