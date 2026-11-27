@@ -539,15 +539,24 @@ struct StrSlot {
   std::vector<uint8_t> vm;
 };
 
-// One worker's decode state for a read: its codec context and, for rows plans, its page buffers, kept between the
-// pages it decodes (made per page, the buffers were page faults on every thread). Owned by the read, not by the
-// thread (see page_body_read).
+// One worker's decode state for a read: its codec context and, for rows plans, its page buffers. Leased from
+// Kept<Work> for the read (kept between reads by the process, not by a thread: see Kept in core_internal.h).
 struct Work {
   CodecContext cc;
   std::vector<uint8_t> buf, fbuf, vals, vm, stored;
   std::vector<int32_t> lv;
   std::vector<uint64_t> off;
   std::vector<uint32_t> idx;
+  void trim() {
+    trim_kept(buf);
+    trim_kept(fbuf);
+    trim_kept(vals);
+    trim_kept(vm);
+    trim_kept(stored);
+    trim_kept(lv);
+    trim_kept(off);
+    trim_kept(idx);
+  }
 };
 
 // A string dictionary decoded once for a rows plan.
@@ -848,15 +857,14 @@ struct Reader {
     // Strings are built on this thread: keep a core free for it when the workers would fill the machine.
     const int hw = (int)fstx_hardware_threads();   // cores this process may use
     if (NS > 0 && k > 1 && k >= hw) k = hw - 1;
-    std::vector<std::unique_ptr<Work>> ctxs;
-    for (int i = 0; i < std::max(k, 1); ++i) ctxs.emplace_back(new Work());
+    Lease<Work> ctxs((size_t)std::max(k, 1));
 
     if (!P.dicts.empty()) {  // rows plans: decode each needed string dictionary once, in parallel
       dicts.resize(P.dicts.size());
       const uint32_t nd = (uint32_t)P.dicts.size();
       const int kd = (int)std::min<int64_t>(std::max(k, 1), nd);
       if (kd <= 1) {
-        for (uint32_t i = 0; i < nd; ++i) load_dict(i, *ctxs[0]);
+        for (uint32_t i = 0; i < nd; ++i) load_dict(i, ctxs[0]);
       } else {
         std::atomic<uint32_t> next(0);
         std::mutex dm;
@@ -866,7 +874,7 @@ struct Reader {
             const uint32_t i = next.fetch_add(1);
             if (i >= nd) return;
             try {
-              load_dict(i, *ctxs[(size_t)id]);
+              load_dict(i, ctxs[(size_t)id]);
             } catch (...) {
               std::lock_guard<std::mutex> g(dm);
               if (!derr) derr = std::current_exception();
@@ -882,10 +890,10 @@ struct Reader {
 
     if (k <= 1 || NF + NS <= 1) {
       std::vector<uint8_t> scratch, vals;
-      for (const ReadTask& t : P.fixed) run_fixed(t, *ctxs[0], scratch, vals);
+      for (const ReadTask& t : P.fixed) run_fixed(t, ctxs[0], scratch, vals);
       StrSlot s;
       for (const ReadTask& t : P.strings) {
-        run_string(t, *ctxs[0], s);
+        run_string(t, ctxs[0], s);
         deliver(t, s);
       }
       return;
@@ -901,7 +909,7 @@ struct Reader {
     std::exception_ptr err;
 
     auto job = [&](int id) {
-      Work& cc = *ctxs[(size_t)id];
+      Work& cc = ctxs[(size_t)id];
       std::vector<uint8_t> scratch, vals;
       for (;;) {
         bool is_str = false;

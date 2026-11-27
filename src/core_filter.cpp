@@ -282,19 +282,22 @@ struct Filter {
     return false;
   }
 
-  // a worker's scratch, kept for the whole call (all predicates): made per predicate, the buffers were page faults
-  // on every thread. Owned by the call, not by the thread: no thread_local (see page_body_read in core_reader.cpp).
+  // a worker's scratch, leased from Kept<Scratch> for the call (kept between calls by the process, not by a
+  // thread: see Kept in core_internal.h)
   struct Scratch {
     CodecContext cc;
     std::vector<uint8_t> buf, fbuf, vals, stored;
     std::vector<int32_t> lens;
     std::vector<uint64_t> words;
+    void trim() {
+      trim_kept(buf);
+      trim_kept(fbuf);
+      trim_kept(vals);
+      trim_kept(stored);
+      trim_kept(lens);
+      trim_kept(words);
+    }
   };
-  std::vector<std::unique_ptr<Scratch>> scr;
-  Scratch& scratch(size_t id) {
-    while (scr.size() <= id) scr.emplace_back(new Scratch());
-    return *scr[id];
-  }
 
   // decodes one page of predicate q and ANDs its result into the bitmap
   void eval_page(const Pred& q, const PageRef& r, Scratch& S) {
@@ -358,6 +361,7 @@ struct Filter {
 
   void eval_pass() {
     const int hw = resolve_threads(threads);
+    Lease<Scratch> scr((size_t)std::max(hw, 1));
     for (size_t i = 0; i < preds.size(); ++i) {
       const Pred& q = preds[i];
       std::vector<const PageRef*> tasks;
@@ -376,16 +380,14 @@ struct Filter {
       if (tasks.empty()) continue;
       const int k = (int)std::min<size_t>((size_t)std::max(hw, 1), tasks.size());
       if (k <= 1) {
-        Scratch& S = scratch(0);
-        for (const PageRef* r : tasks) eval_page(q, *r, S);
+        for (const PageRef* r : tasks) eval_page(q, *r, scr[0]);
         continue;
       }
       std::atomic<size_t> next(0);
       std::mutex m;
       std::exception_ptr err;
-      for (int j = 0; j < k; ++j) scratch((size_t)j);  // made before the workers start
       ThreadPool::instance().start(k, [&](int id) {
-        Scratch& S = *scr[(size_t)id];
+        Scratch& S = scr[(size_t)id];
         for (;;) {
           const size_t t = next.fetch_add(1);
           if (t >= tasks.size()) return;

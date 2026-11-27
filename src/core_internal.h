@@ -211,6 +211,72 @@ class ThreadPool {
 
 int resolve_threads(int threads);
 
+// ---------------------------------------------------------------- decode state kept between reads
+// Workers' decode state (codec contexts, page buffers) kept by the process between calls, not by a thread: made
+// afresh per call, its buffers were page faults on every worker; kept in thread_local storage, a thread that ends
+// (a stream pulled from a thread that is not R's) crashed in the MinGW build. A call leases one object per worker
+// and gives them back at its end (T::trim() then caps what is kept). The store itself is never freed (no
+// destructor runs at exit or at unload).
+template <typename T>
+class Kept {
+ public:
+  static Kept& store() {
+    static Kept* k = new Kept();
+    return *k;
+  }
+  T* take() {
+    {
+      std::lock_guard<std::mutex> g(m_);
+      if (!free_.empty()) {
+        T* t = free_.back();
+        free_.pop_back();
+        return t;
+      }
+    }
+    return new T();
+  }
+  void give(T* t) {
+    if (!t) return;
+    t->trim();
+    std::lock_guard<std::mutex> g(m_);
+    try {
+      free_.push_back(t);
+    } catch (...) {
+      delete t;
+    }
+  }
+
+ private:
+  std::mutex m_;
+  std::vector<T*> free_;
+};
+
+// k objects of Kept<T> for one call, given back when it ends.
+template <typename T>
+class Lease {
+ public:
+  explicit Lease(size_t k) {
+    v_.reserve(k);
+    for (size_t i = 0; i < k; ++i) v_.push_back(Kept<T>::store().take());
+  }
+  ~Lease() {
+    for (T* t : v_) Kept<T>::store().give(t);
+  }
+  Lease(const Lease&) = delete;
+  Lease& operator=(const Lease&) = delete;
+  T& operator[](size_t i) { return *v_[i]; }
+  size_t size() const { return v_.size(); }
+
+ private:
+  std::vector<T*> v_;
+};
+
+// Shrinks a kept buffer that grew past `keep` bytes.
+template <typename V>
+inline void trim_kept(V& v, size_t keep = (size_t)4 << 20) {
+  if (v.capacity() * sizeof(typename V::value_type) > keep) V().swap(v);
+}
+
 }  // namespace fstx
 
 #endif
