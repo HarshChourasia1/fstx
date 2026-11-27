@@ -1067,7 +1067,13 @@ static void test_rules12(const std::string& dir) {
       check(fstx_filter(f, &pr, 1, 0, tb.n, 2, 1, 0, &sel, &st, &e) == FSTX_ERR_ARG, "binary < is refused");
       std::memset(&pr, 0, sizeof(pr));
       pr.col = 1, pr.op = FSTX_OP_ISNA;
-      check(fstx_filter(f, &pr, 1, 0, tb.n, 2, 1, 0, &sel, &st, &e) == FSTX_ERR_ARG, "int64 filters refused (drop 1)");
+      if (rc_ok(fstx_filter(f, &pr, 1, 0, tb.n, 2, 1, 0, &sel, &st, &e), e, "int64 is.na filter")) {
+        uint64_t n = 0, k = 0;
+        fstx_selection_rows(sel, &n);
+        for (uint64_t i = 0; i < tb.n; ++i) k += tb.i64[0][i] == NA_I64;
+        check(n == k && k > 0, "int64 is.na filter");
+        fstx_selection_free(sel);
+      }
       fstx_close(f);
     }
   }
@@ -1134,6 +1140,144 @@ static void test_rules12(const std::string& dir) {
   std::remove(q.c_str());
 }
 
+// int64 filters against a plain scan with exact comparisons: int64 literals (has_i64), doubles compared as real
+// numbers, IN with both kinds of set, NA rows; pages are skipped only when no row can match
+static bool ref_i64(int op, bool has, int64_t iv, double dv, const std::vector<int64_t>& iset,
+                    const std::vector<double>& dset, bool set_na, int64_t x) {
+  if (x == NA_I64) return op == FSTX_OP_ISNA || (op == FSTX_OP_IN && set_na);
+  switch (op) {
+    case FSTX_OP_NOTNA: return true;
+    case FSTX_OP_ISNA: return false;
+    case FSTX_OP_IN:
+      if (has) return std::find(iset.begin(), iset.end(), x) != iset.end();
+      for (double d : dset)
+        if (d == d && fstx::cmp_d_i64(d, x) == 0) return true;
+      return false;
+    default: break;
+  }
+  if (has ? iv == NA_I64 : dv != dv) return false;  // a comparison with NA / NaN matches no row
+  const int c = has ? (x < iv ? -1 : x > iv ? 1 : 0) : -fstx::cmp_d_i64(dv, x);  // x against the literal
+  switch (op) {
+    case FSTX_OP_EQ: return c == 0;
+    case FSTX_OP_NE: return c != 0;
+    case FSTX_OP_LT: return c < 0;
+    case FSTX_OP_LE: return c <= 0;
+    case FSTX_OP_GT: return c > 0;
+    case FSTX_OP_GE: return c >= 0;
+    default: return false;
+  }
+}
+
+static void test_filter12(const std::string& dir) {
+  T12 t = make_i64(20000);
+  t.names.push_back("r");  // sorted values near 2^62: page bounds rounded to multiples of 1024
+  t.phys.push_back(FSTX_INT64);
+  t.i64.emplace_back();
+  for (uint64_t i = 0; i < t.n; ++i) t.i64.back().push_back((1LL << 62) + (int64_t)i);
+  const std::string p = dir + "/f12.fstx";
+  if (!rc_ok(write12(p, t, FSTX_CODEC_ZSTD, 2, 0), fstx_error{}, "int64 filter file")) return;
+  fstx_error e;
+  fstx_file* f = nullptr;
+  if (!rc_ok(fstx_open(p.c_str(), &f, &e), e, "open int64 filter file")) return;
+  const std::vector<int64_t> w = wide_values();
+  const std::vector<int64_t> ints = {0, -1, 1, INT64_MAX, INT64_MIN + 1, INT64_MIN, (1LL << 53), (1LL << 53) + 1,
+                                     (1LL << 53) + 3, 1LL << 62, (1LL << 62) + 8191, (1LL << 62) + 8192,
+                                     (1LL << 62) + 19999, 4611686018427387911LL, w[7], w[20], w[33]};
+  const double inf = HUGE_VAL;
+  const std::vector<double> dbls = {0.0, 0.5, -0.5, 2.5, -1.0, 9007199254740992.0, 9007199254740994.0,
+                                    4611686018427387904.0, 4611686018427395072.0, 4611686018427388928.0,
+                                    9223372036854775808.0, -9223372036854775808.0, 1e19, -1e19, inf, -inf,
+                                    std::nan(""), (double)w[7], (double)w[20], (double)4611686018427387911LL};
+  std::vector<uint64_t> got_rows, want;
+  long calls = 0, bad = 0;
+  uint64_t skipped = 0;
+  auto run = [&](const fstx_pred& pr, int verify, const std::vector<int64_t>& iset, const std::vector<double>& dset) {
+    fstx_selection* sel = nullptr;
+    fstx_filter_stats st;
+    ++calls;
+    if (fstx_filter(f, &pr, 1, 0, t.n, 3, verify, 0, &sel, &st, &e) != FSTX_OK) {
+      ++bad;
+      std::printf("  filter failed: %s\n", e.message);
+      return;
+    }
+    skipped += st.pages_skipped;
+    uint64_t n = 0;
+    const uint64_t* got = fstx_selection_rows(sel, &n);
+    const std::vector<int64_t>& x = t.i64[pr.col];
+    want.clear();
+    for (uint64_t r = 0; r < t.n; ++r)
+      if (ref_i64(pr.op, pr.has_i64 != 0, pr.i64, pr.value, iset, dset, pr.set_na != 0, x[r])) want.push_back(r);
+    if (n != want.size() || (n && std::memcmp(got, want.data(), n * 8) != 0)) {
+      if (bad++ < 5)
+        std::printf("  int64 filter mismatch: column %s op %d %s %lld / %.17g: %llu rows, want %llu\n",
+                    t.names[pr.col].c_str(), pr.op, pr.has_i64 ? "int" : "double", (long long)pr.i64, pr.value,
+                    (unsigned long long)n, (unsigned long long)want.size());
+    }
+    fstx_selection_free(sel);
+  };
+  const std::vector<int64_t> none_i;
+  const std::vector<double> none_d;
+  for (uint32_t c = 0; c < t.names.size(); ++c) {
+    for (int op = FSTX_OP_EQ; op <= FSTX_OP_GE; ++op) {
+      for (int64_t v : ints) {
+        fstx_pred pr;
+        std::memset(&pr, 0, sizeof(pr));
+        pr.col = c, pr.op = op, pr.has_i64 = 1, pr.i64 = v, pr.value = std::nan("");  // value is ignored
+        run(pr, 1, none_i, none_d);
+      }
+      for (double v : dbls) {
+        fstx_pred pr;
+        std::memset(&pr, 0, sizeof(pr));
+        pr.col = c, pr.op = op, pr.value = v;
+        run(pr, op == FSTX_OP_LE ? FSTX_VERIFY_HASH | FSTX_VERIFY_NULLS : 1, none_i, none_d);
+      }
+    }
+    for (int na = 0; na < 2; ++na) {
+      std::vector<int64_t> is = {w[3], w[7], INT64_MIN, 12345, (1LL << 62) + 100, (1LL << 53) + 3, 4611686018427387911LL};
+      std::vector<double> ds = {2.5, (double)w[3], 9007199254740996.0, std::nan(""), 4611686018427387904.0, -inf};
+      fstx_pred pr;
+      std::memset(&pr, 0, sizeof(pr));
+      pr.col = c, pr.op = FSTX_OP_IN, pr.set_na = na, pr.has_i64 = 1, pr.i64_set = is.data(), pr.n_i64_set = is.size();
+      run(pr, 1, is, ds);
+      std::memset(&pr, 0, sizeof(pr));
+      pr.col = c, pr.op = FSTX_OP_IN, pr.set_na = na, pr.set = ds.data(), pr.n_set = ds.size();
+      run(pr, 1, is, ds);
+    }
+    for (int op : {FSTX_OP_ISNA, FSTX_OP_NOTNA, FSTX_OP_NONE}) {
+      fstx_pred pr;
+      std::memset(&pr, 0, sizeof(pr));
+      pr.col = c, pr.op = op;
+      run(pr, 1, none_i, none_d);
+      run(pr, FSTX_VERIFY_HASH | FSTX_VERIFY_NULLS, none_i, none_d);
+    }
+  }
+  std::printf("int64 filters: %ld filters, %ld wrong, %llu pages skipped\n", calls, bad, (unsigned long long)skipped);
+  check(bad == 0 && calls > 1000, "int64 filters exact against a plain scan");
+  // page skipping on the rounded bounds: r >= 2^62 + 17408 skips pages 0 and 1 (max rounded up to 2^62 + 16384)
+  fstx_pred pr;
+  std::memset(&pr, 0, sizeof(pr));
+  pr.col = 6, pr.op = FSTX_OP_GE, pr.has_i64 = 1, pr.i64 = (1LL << 62) + 17408;
+  fstx_selection* sel = nullptr;
+  fstx_filter_stats st;
+  if (rc_ok(fstx_filter(f, &pr, 1, 0, t.n, 2, 1, 0, &sel, &st, &e), e, "int64 page skipping")) {
+    uint64_t n = 0;
+    fstx_selection_rows(sel, &n);
+    check(n == 2592 && st.pages_skipped == 2 && st.pages_total == 3, "int64 pages skipped by their rounded bounds");
+    fstx_selection_free(sel);
+  }
+  // a page whose rounded max reaches the literal but whose values do not: read, no rows (not wrongly skipped / kept)
+  pr.i64 = (1LL << 62) + 8192;  // page 0 holds 2^62 .. 2^62 + 8191, its max rounds up to 2^62 + 8192
+  pr.op = FSTX_OP_GE;
+  if (rc_ok(fstx_filter(f, &pr, 1, 0, 8192, 2, 1, 0, &sel, &st, &e), e, "int64 rounded bound")) {
+    uint64_t n = 0;
+    fstx_selection_rows(sel, &n);
+    check(n == 0 && st.pages_skipped == 0 && st.pages_read == 1, "a rounded bound keeps the page, the rows decide");
+    fstx_selection_free(sel);
+  }
+  fstx_close(f);
+  std::remove(p.c_str());
+}
+
 int main(int argc, char** argv) {
   const std::string dir = argc > 1 ? argv[1] : ".";
   const uint64_t n = argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 200000;
@@ -1184,6 +1328,7 @@ int main(int argc, char** argv) {
     if (m == 0) {
       ref12 = h12;
       test_rules12(dir);
+      test_filter12(dir);
     } else {
       check(h12 == ref12, "1.2 files: same bytes as scalar under " + lab);
     }

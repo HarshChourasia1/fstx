@@ -26,6 +26,8 @@ const uint8_t* page_body_read(const fstx_file& F, uint32_t col, const fb::Page* 
 namespace {
 
 const int32_t kNaI = std::numeric_limits<int32_t>::min();
+const int64_t kNaL = std::numeric_limits<int64_t>::min();  // int64 pages: the missing value
+const int64_t kMaxL = std::numeric_limits<int64_t>::max();
 
 inline bool r_na_real(double x) {
   uint64_t b;
@@ -42,7 +44,74 @@ struct Pred {
   bool set_na = false, set_nan = false;
   std::vector<std::string> strs;
   std::unordered_set<std::string_view> sset;
+  // int64 columns: EQ..GE become "lo <= x <= hi" (neg: the opposite, for NE; lo > hi: no value), IN the sorted set
+  int64_t lo = 1, hi = 0;
+  bool neg = false;
+  std::vector<int64_t> iset;
 };
+
+// Integers x with "x op v" for a double v (not NaN), as the range [lo, hi] (lo > hi: none) and neg (NE), exactly.
+void i64_range_of_double(int op, double v, int64_t& lo, int64_t& hi, bool& neg) {
+  const bool above = v >= 9223372036854775808.0, below = v < -9223372036854775808.0;
+  int64_t t = 0;
+  int c = 0;  // v against t = trunc(v): -1, 0 (v is a whole number), 1
+  if (!above && !below) {
+    t = (int64_t)v;
+    c = cmp_d_i64(v, t);
+  }
+  const bool whole = !above && !below && c == 0;
+  // largest integer <= v and smallest integer >= v, when they are int64 values
+  const int64_t fl = c < 0 ? t - 1 : t, ce = c > 0 ? t + 1 : t;
+  neg = false;
+  lo = kNaL;
+  hi = kMaxL;
+  switch (op) {
+    case FSTX_OP_EQ:
+    case FSTX_OP_NE:
+      neg = op == FSTX_OP_NE;
+      if (whole) lo = hi = t;
+      else lo = 1, hi = 0;
+      return;
+    case FSTX_OP_LT:  // x < v
+      if (below || (whole && t == kNaL)) lo = 1, hi = 0;
+      else if (!above) hi = whole ? t - 1 : fl;
+      return;
+    case FSTX_OP_LE:
+      if (below) lo = 1, hi = 0;
+      else if (!above) hi = fl;
+      return;
+    case FSTX_OP_GT:  // x > v (t < 2^63 - 1, so t + 1 does not overflow)
+      if (above) lo = 1, hi = 0;
+      else if (!below) lo = whole ? t + 1 : ce;
+      return;
+    case FSTX_OP_GE:
+      if (above) lo = 1, hi = 0;
+      else if (!below) lo = ce;
+      return;
+    default: return;
+  }
+}
+
+void i64_range_of_int(int op, int64_t i, int64_t& lo, int64_t& hi, bool& neg) {
+  neg = op == FSTX_OP_NE;
+  lo = kNaL;
+  hi = kMaxL;
+  switch (op) {
+    case FSTX_OP_EQ:
+    case FSTX_OP_NE: lo = hi = i; return;
+    case FSTX_OP_LT:
+      if (i == kNaL) lo = 1, hi = 0;
+      else hi = i - 1;
+      return;
+    case FSTX_OP_LE: hi = i; return;
+    case FSTX_OP_GT:
+      if (i == kMaxL) lo = 1, hi = 0;
+      else lo = i + 1;
+      return;
+    case FSTX_OP_GE: lo = i; return;
+    default: return;
+  }
+}
 
 // one dictionary string chunk: which entries match, and whether any / all do
 struct DictMatch {
@@ -94,6 +163,24 @@ inline bool num_match(const Pred& q, double x) {
 inline bool int_match(const Pred& q, int32_t x) {
   if (x == kNaI) return q.op == FSTX_OP_ISNA || (q.op == FSTX_OP_IN && q.set_na);
   return num_match(q, (double)x);
+}
+
+inline bool i64_match(const Pred& q, int64_t x) {
+  if (x == kNaL) return q.op == FSTX_OP_ISNA || (q.op == FSTX_OP_IN && q.set_na);
+  switch (q.op) {
+    case FSTX_OP_NOTNA: return true;
+    case FSTX_OP_IN: return std::binary_search(q.iset.begin(), q.iset.end(), x);
+    case FSTX_OP_EQ:
+    case FSTX_OP_NE:
+    case FSTX_OP_LT:
+    case FSTX_OP_LE:
+    case FSTX_OP_GT:
+    case FSTX_OP_GE: {
+      const bool in = x >= q.lo && x <= q.hi;
+      return q.neg ? !in : in;
+    }
+    default: return false;
+  }
 }
 
 inline bool dbl_match(const Pred& q, double x) {
@@ -150,6 +237,42 @@ Verdict num_verdict(const Pred& q, const fb::Page* p, bool dbl, bool known) {
   }
   if (skip) return V_SKIP;
   return (all && known && nc == 0 && !dbl) ? V_ALL : V_MAYBE;
+}
+
+// int64 pages: min / max are doubles rounded outward (every value v has min <= v <= max as real numbers), so a page
+// is skipped only when no value in [min, max] can match, and proved to match in full only when every one does
+Verdict i64_verdict(const Pred& q, const fb::Page* p, bool known) {
+  const uint32_t n = p->row_count(), nc = p->null_count();
+  const bool mm = (p->flags() & kFlagMinMax) != 0;
+  const double mn = p->min(), mx = p->max();
+  const bool none_na = known && nc == 0;
+  switch (q.op) {
+    case FSTX_OP_NONE: return V_SKIP;
+    case FSTX_OP_ISNA:
+      if (!known) return V_MAYBE;
+      return nc == 0 ? V_SKIP : nc == n ? V_ALL : V_MAYBE;
+    case FSTX_OP_NOTNA:
+      if (!mm) return V_SKIP;
+      return none_na ? V_ALL : V_MAYBE;
+    case FSTX_OP_IN: {
+      // first set value not below mn
+      auto it = std::lower_bound(q.iset.begin(), q.iset.end(), mn,
+                                 [](int64_t e, double d) { return cmp_d_i64(d, e) > 0; });
+      const bool hit = mm && it != q.iset.end() && cmp_d_i64(mx, *it) >= 0;
+      if (q.set_na && (nc > 0 || !known)) return (!mm && known) ? V_ALL : V_MAYBE;
+      if (!hit) return V_SKIP;
+      if (none_na && cmp_d_i64(mn, *it) == 0 && cmp_d_i64(mx, *it) == 0) return V_ALL;
+      return V_MAYBE;
+    }
+    default: break;
+  }
+  if (!mm) return V_SKIP;  // only missing values: no comparison is true
+  const bool empty = q.lo > q.hi;
+  const bool overlap = !empty && cmp_d_i64(mn, q.hi) <= 0 && cmp_d_i64(mx, q.lo) >= 0;
+  const bool inside = !empty && cmp_d_i64(mn, q.lo) >= 0 && cmp_d_i64(mx, q.hi) <= 0;
+  const bool can = q.neg ? !inside : overlap, every = q.neg ? !overlap : inside;
+  if (!can) return V_SKIP;
+  return (every && none_na) ? V_ALL : V_MAYBE;
 }
 
 Verdict str_verdict(const Pred& q, const fb::Page* p, const DictMatch* d, bool known) {
@@ -232,8 +355,9 @@ struct Filter {
           const uint64_t fr = p->first_row(), e = fr + p->row_count();
           if (fr >= to || e <= from) continue;
           ++st.pages_total;
-          const Verdict v = is_str(q.phys) ? str_verdict(q, p, di >= 0 ? &dm[(size_t)di] : nullptr, !nulls)
-                                                  : num_verdict(q, p, dbl, !nulls);
+          const Verdict v = is_str(q.phys)          ? str_verdict(q, p, di >= 0 ? &dm[(size_t)di] : nullptr, !nulls)
+                            : q.phys == FSTX_INT64 ? i64_verdict(q, p, !nulls)
+                                                   : num_verdict(q, p, dbl, !nulls);
           if (v == V_SKIP) {
             ++st.pages_skipped;
             continue;
@@ -320,6 +444,13 @@ struct Filter {
         if (nulls) check_nulls(p, x, n);
         for (uint64_t row = r.r0; row < r.r1; ++row)
           if (!dbl_match(q, x[row - fr])) clear(row - from);
+      } else if (q.phys == FSTX_INT64) {
+        if (S.vals.size() < (size_t)n * 8) S.vals.resize((size_t)n * 8);
+        int64_t* x = (int64_t*)S.vals.data();
+        enc::decode_i64_page(b, len, p->chain(), n, x);
+        if (nulls) check_nulls(p, x, n);
+        for (uint64_t row = r.r0; row < r.r1; ++row)
+          if (!i64_match(q, x[row - fr])) clear(row - from);
       } else if (!is_str(q.phys)) {
         if (S.vals.size() < (size_t)n * 4) S.vals.resize((size_t)n * 4);
         int32_t* x = (int32_t*)S.vals.data();
@@ -448,9 +579,34 @@ extern "C" int fstx_filter(const fstx_file* f, const fstx_pred* preds, uint32_t 
       q.v = s.value;
       q.set_na = s.set_na != 0;
       q.set_nan = s.set_nan != 0;
-      if (q.phys == FSTX_INT64)  // fstx 1.2 drop 2: exact int64 filters
-        fstx::fail(FSTX_ERR_ARG, "column '%s' holds 64-bit integers: filters on it are not supported yet",
-                   f->col_name(s.col).c_str());
+      if (q.phys == FSTX_INT64) {
+        // exact: int64 literals (has_i64) or doubles compared as real numbers; INT64_MIN is the missing value, so a
+        // comparison with it matches no row (as with NA), and it is never a set member (set_na asks for NA rows)
+        if (q.op >= FSTX_OP_EQ && q.op <= FSTX_OP_GE) {
+          if (s.has_i64 ? s.i64 == fstx::kNaL : std::isnan(s.value)) q.op = FSTX_OP_NONE;
+          else if (s.has_i64) fstx::i64_range_of_int(q.op, s.i64, q.lo, q.hi, q.neg);
+          else fstx::i64_range_of_double(q.op, s.value, q.lo, q.hi, q.neg);
+        } else if (q.op == FSTX_OP_IN) {
+          if (s.has_i64) {
+            if (s.n_i64_set && !s.i64_set) fstx::fail(FSTX_ERR_ARG, "predicate %u: missing int64 set", i + 1);
+            for (uint64_t k = 0; k < s.n_i64_set; ++k)
+              if (s.i64_set[k] != fstx::kNaL) q.iset.push_back(s.i64_set[k]);
+          } else {
+            if (s.n_set && !s.set) fstx::fail(FSTX_ERR_ARG, "predicate %u: missing set", i + 1);
+            for (uint64_t k = 0; k < s.n_set; ++k) {  // only whole numbers inside the int64 range can be equal
+              int64_t a, b;
+              bool ng;
+              if (std::isnan(s.set[k])) continue;
+              fstx::i64_range_of_double(FSTX_OP_EQ, s.set[k], a, b, ng);
+              if (a <= b && a != fstx::kNaL) q.iset.push_back(a);
+            }
+          }
+          std::sort(q.iset.begin(), q.iset.end());
+          q.iset.erase(std::unique(q.iset.begin(), q.iset.end()), q.iset.end());
+        }
+        X.preds.push_back(std::move(q));
+        continue;
+      }
       if (fstx::is_str(q.phys)) {
         if (q.op >= FSTX_OP_LT && q.op <= FSTX_OP_GE)
           fstx::fail(FSTX_ERR_ARG, "column '%s' holds %s: only ==, !=, %%in%% and is.na() are supported",
