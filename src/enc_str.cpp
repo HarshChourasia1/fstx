@@ -583,10 +583,11 @@ void plan_str_finish(const EncCtx& cx, StrChunk& sc, StrPrep& p) {
   } else if (!use) {
     FSTX_PROF_SCOPE(W_STR_CHOOSE);
     // The samples as one page in each encoding (lengths included: FSST pages store the encoded lengths), each
-    // compressed as a page of the size they stand for. The writer cuts a page at the first 1,024-row vector that
-    // takes it to kDefaultPageBytes of plain size (4 x rows + text), so a page holds about vpp vectors (all of a
-    // smaller chunk) and a page is about vpp / nsv times a sample page of nsv vectors (integers: the same choice
-    // on every build).
+    // compressed as a page of the size it stands for. The writer cuts a page at the first 1,024-row vector that
+    // takes it to kDefaultPageBytes of plain size (4 x rows + text), so a page holds about vpp vectors of the
+    // chunk's average size (all of a smaller chunk) and page_text bytes of text; a page in either encoding is then
+    // about page_text / sbytes times the sample's page. From the whole chunk's sizes, not the sample's: the
+    // samples leave out missing rows and their share of them varies (integers: the same choice on every build).
     std::vector<const char*> pp(sp.size());
     std::vector<int32_t> ll(sp.size());
     for (size_t k = 0; k < sp.size(); ++k) {
@@ -596,11 +597,16 @@ void plan_str_finish(const EncCtx& cx, StrChunk& sc, StrPrep& p) {
     Buf bp, bf;
     encode_str_page(K_STR, pp.data(), ll.data(), (uint32_t)sp.size(), T_PLAIN, nullptr, cx, bp);
     encode_str_page(K_STR, pp.data(), ll.data(), (uint32_t)sp.size(), T_FSST, ft.get(), cx, bf);
-    uint64_t samp = 0;
-    for (uint64_t v : p.svec) samp += sc.vsizes[(size_t)v];
-    const uint64_t nsv = p.svec.size(), nv = sc.vsizes.size();
-    const uint64_t vpp = samp ? std::min<uint64_t>(nv, (kDefaultPageBytes * nsv + samp - 1) / samp) : nsv;
-    auto as_page = [&](size_t m) { return nsv ? (uint64_t)m * vpp / nsv : (uint64_t)m; };
+    uint64_t all = 0;
+    for (uint64_t s : sc.vsizes) all += s;
+    const uint64_t nv = sc.vsizes.size(), avg = all / nv, lens = 4ull * kV * nv;  // lens: 4 x rows, to within a vector
+    const uint64_t vpp = avg ? std::min<uint64_t>(nv, (kDefaultPageBytes + avg - 1) / avg) : nv;
+    const uint64_t page_text = all > lens ? vpp * ((all - lens) / nv) : 0;
+    auto as_page = [&](size_t m) -> uint64_t {
+      if (!page_text) return m;
+      if (m >= (1ull << 31) || page_text >= (1ull << 32)) return std::max<uint64_t>(m, page_text);  // past 256 KB
+      return (uint64_t)m * page_text / sbytes;
+    };
     const size_t zp = std::min(bp.size(), zstd_est_page(cx, bp.v.data(), bp.size(), as_page(bp.size())));
     const size_t zf = std::min(bf.size(), zstd_est_page(cx, bf.v.data(), bf.size(), as_page(bf.size())));
     use = zf < zp;
