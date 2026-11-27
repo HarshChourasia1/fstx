@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "arrow_abi.h"  // fstx 1.2 tests: the Arrow stream's int64 and binary types
 #include "core_file.h"  // fstx 1.2 tests: forge_copy, the footer's page statistics, cmp_d_i64
 #include "fstx_core.h"
 #include "kern_test.h"
@@ -1240,6 +1241,125 @@ static void test_dict_content(const std::string& dir) {
   }
 }
 
+// the Arrow stream over a binary + int64 file: "z" / dictionary<int32, "z"> and "l", values and nulls equal to the
+// table, whole range and a row list, FSTX_ARROW_PLAIN_STRINGS, FSTX_ARROW_CHECK_UTF8 never flags binary
+static bool arrow_vbit(const ArrowArray* a, int64_t i) {
+  const uint8_t* v = (const uint8_t*)a->buffers[0];
+  const int64_t k = a->offset + i;
+  return !v || (v[k >> 3] >> (k & 7) & 1) != 0;
+}
+static std::string arrow_bytes(const ArrowArray* a, bool large, int64_t i) {
+  const int64_t k = a->offset + i;
+  const int64_t s = large ? ((const int64_t*)a->buffers[1])[k] : ((const int32_t*)a->buffers[1])[k];
+  const int64_t e = large ? ((const int64_t*)a->buffers[1])[k + 1] : ((const int32_t*)a->buffers[1])[k + 1];
+  return std::string((const char*)a->buffers[2] + s, (size_t)(e - s));
+}
+// pulls every batch; returns the formats seen ("<bin>|<i64>") or "" on a failure (printed)
+static std::string arrow_pull(const std::string& p, const T12& t, int flags, const std::vector<uint64_t>* rows,
+                              bool& values_ok, bool& utf8_ok) {
+  const uint32_t cols[2] = {0, 1};
+  const char* names[2] = {"bin", "i"};
+  uint8_t bad[2] = {9, 9};
+  fstx_arrow_args A;
+  std::memset(&A, 0, sizeof(A));
+  A.cols = cols;
+  A.names = names;
+  A.n_cols = 2;
+  A.from = 0;
+  A.to = t.n;
+  if (rows) {
+    A.rows = rows->data();
+    A.n_rows = rows->size();
+  }
+  A.threads = 4;
+  A.batch_rows = rows ? 1000 : 0;
+  A.verify = 1;
+  A.flags = flags | FSTX_ARROW_CHECK_UTF8;
+  A.utf8_bad = bad;
+  ArrowArrayStream st;
+  std::memset(&st, 0, sizeof(st));
+  fstx_error e;
+  if (fstx_arrow_stream_open(p.c_str(), &A, &st, &e) != FSTX_OK) {
+    std::printf("  arrow open: %s\n", e.message);
+    return "";
+  }
+  ArrowSchema sc;
+  std::string fmt;
+  if (st.get_schema(&st, &sc) != 0) {
+    st.release(&st);
+    return "";
+  }
+  const ArrowSchema* b = sc.children[0];
+  fmt = std::string(b->format) + (b->dictionary ? std::string("<") + b->dictionary->format + ">" : "") + "|" +
+        sc.children[1]->format;
+  const bool dict = b->dictionary != nullptr, large = !dict && std::string(b->format) == "Z";
+  uint64_t seen = 0;
+  for (;;) {
+    ArrowArray a;
+    if (st.get_next(&st, &a) != 0) {
+      std::printf("  arrow batch: %s\n", st.get_last_error(&st));
+      values_ok = false;
+      break;
+    }
+    if (!a.release) break;
+    utf8_ok = utf8_ok && bad[0] == 0 && bad[1] == 0;
+    const ArrowArray* x = a.children[0];
+    const ArrowArray* y = a.children[1];
+    for (int64_t i = 0; i < a.length; ++i) {
+      const uint64_t r = rows ? (*rows)[(size_t)(seen + (uint64_t)i)] : seen + (uint64_t)i;
+      const int32_t k = t.idx[0][r];
+      bool ok = arrow_vbit(x, i) == (k >= 0);
+      if (ok && k >= 0) {
+        const std::string v = dict ? arrow_bytes(x->dictionary, false, ((const int32_t*)x->buffers[1])[x->offset + i])
+                                   : arrow_bytes(x, large, i);
+        ok = v == t.tab[(size_t)k];
+      }
+      const int64_t w = t.i64[0][r];
+      ok = ok && arrow_vbit(y, i) == (w != NA_I64) &&
+           (w == NA_I64 || ((const int64_t*)y->buffers[1])[y->offset + i] == w);
+      if (!ok && values_ok) std::printf("  arrow value differs at row %llu\n", (unsigned long long)r);
+      values_ok = values_ok && ok;
+    }
+    seen += (uint64_t)a.length;
+    a.release(&a);
+  }
+  values_ok = values_ok && seen == (rows ? rows->size() : t.n);
+  sc.release(&sc);
+  st.release(&st);
+  return fmt;
+}
+
+static void test_arrow12(const std::string& dir) {
+  const T12 tb = make_bin(30000);
+  std::vector<uint64_t> rows;
+  for (uint64_t r = 3; r < tb.n; r += 7) rows.push_back(r);
+  rows.push_back(rows.back());  // a repeat
+  const struct {
+    const char* nm;
+    int force, flags;
+    const char* want;
+  } cases[] = {{"plain", 1, 0, "z|l"},
+               {"fsst", 10, 0, "z|l"},
+               {"dict", 0x100, 0, "i<z>|l"},
+               {"dict, plain strings", 0x100, FSTX_ARROW_PLAIN_STRINGS, "z|l"},
+               {"dict_fsst", 0x100 | 0x200, 0, "i<z>|l"}};
+  for (const auto& c : cases) {
+    const std::string p = dir + "/arrow12.fstx";
+    const std::string lab = std::string("arrow stream, binary ") + c.nm;
+    if (!rc_ok(write12(p, tb, FSTX_CODEC_ZSTD, 2, c.force), fstx_error{}, lab + ": write")) continue;
+    for (int by_rows = 0; by_rows < 2; ++by_rows) {
+      bool values_ok = true, utf8_ok = true;
+      const std::string got = arrow_pull(p, tb, c.flags, by_rows ? &rows : nullptr, values_ok, utf8_ok);
+      const std::string l2 = lab + (by_rows ? ", row list" : ", whole range");
+      if (got != c.want) std::printf("  %s: types %s, want %s\n", l2.c_str(), got.c_str(), c.want);
+      check(got == c.want, l2 + ": Arrow types");
+      check(values_ok, l2 + ": values and nulls");
+      check(utf8_ok, l2 + ": CHECK_UTF8 skips binary");
+    }
+    std::remove(p.c_str());
+  }
+}
+
 static int open_code(const std::string& p) {
   fstx_error e;
   fstx_file* f = nullptr;
@@ -1582,6 +1702,7 @@ int main(int argc, char** argv) {
       test_rules12(dir);
       test_filter12(dir);
       test_dict_content(dir);
+      test_arrow12(dir);
       test_rand16(dir);
     } else {
       check(h12 == ref12, "1.2 files: same bytes as scalar under " + lab);
