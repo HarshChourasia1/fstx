@@ -48,11 +48,10 @@ numbers exactly), `invalid_utf8="replace"` (`"error"`, `"binary"`). Options of `
 
 - `"auto"` (default): int32 (an R integer) when every value fits, else an int64 column.
 - `"native"`: always an int64 column.
-- `"integer64"`: R's bit64 integer64 in the fstx 1.0 layout (the bits in a double column), for files fstx 1.0
-  must read.
+- `"integer64"`: R's bit64 integer64 in the fstx 1.0 layout (the bits in a double column).
 - `"double"`: float64; refused when a value is past 2^53.
 
-An int64 column needs fstx 1.2 or later to read (R or Python); fstx 1.0 refuses the file with "Update fstx".
+An int64 column needs fstx 1.2 or later to read (R or Python).
 A column read from an fstx file keeps its layout when written back, and an append follows the file. A uint64 value
 above 2^63 - 1, and a non-null -2^63 (the missing value), are refused.
 
@@ -113,7 +112,7 @@ against 69 MB).
 ### 1.2.0
 
 - New column types, shared with the R package fstx 1.2: int64 (R's bit64 integer64) and binary. Files with such a
-  column need fstx 1.2 or later; every other file 1.2 writes reads in 1.0.
+  column need fstx 1.2 or later.
 - `int64="auto"` now stores a column whose values do not fit int32 as an int64 column (1.0: integer64 in the 1.0
   layout, which `int64="integer64"` still writes). New `int64="native"`.
 - Exact filters on int64 columns; `==`, `!=`, `in` and the null tests on binary columns.

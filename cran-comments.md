@@ -11,8 +11,7 @@ values (lists of raw vectors), makes reads, filters and the Arrow stream faster,
 * 'bit64' and 'blob' are new in Suggests. fstx does not call either package: an integer64 vector is a double vector
   with a class, and a blob is a list of raw vectors with a class. 'bit64' is only checked for with
   `requireNamespace()` to tell the user how to print an int64 column; the tests use both packages when installed.
-* Files with the new column types set a feature flag, so fstx 1.0.2 refuses them with a message that names the
-  feature and asks to update fstx. Every other file reads in both versions.
+* Files with the new column types need fstx 1.2 or later to read. fstx 1.2 reads every file fstx 1.0 wrote.
 
 ## Test environments
 

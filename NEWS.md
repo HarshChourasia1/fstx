@@ -5,7 +5,7 @@
 * 64-bit integers. `bit64::integer64` columns are stored as int64 columns: exact values, missing values kept,
   integer encodings (frame-of-reference, delta, dictionary and the rest) and page statistics like other integer
   columns. `write_fstx(int64 = "native")` is the default; `int64 = "integer64"` writes the fstx 1.0 layout instead
-  (the bits in a double column with class "integer64"), for files that fstx 1.0 must read.
+  (the bits in a double column with class "integer64").
 * `read_fstx(int64 = "integer64")` (default) returns int64 columns as integer64; `int64 = "double"` returns doubles
   and warns once when a value past 2^53 loses precision. Columns in the 1.0 layout read as before.
 * bit64 is suggested, not imported: without it, int64 columns still read as correct integer64 vectors, with one
@@ -27,9 +27,8 @@
 
 * fstx format 1.2, still format version 3 in the file. Its specification ships with the package:
   `system.file("spec", "fstx-format-1.2.md", package = "fstx")`. The 1.0 specification stays alongside it.
-* A file with an int64 or binary column sets the required feature bit 16 (`int64`) or 17 (`binary`). fstx 1.0.x
-  refuses such a file with a message that names the feature and ends "Update fstx". Every other file fstx 1.2
-  writes is one that fstx 1.0 reads with the same result.
+* A file with an int64 or binary column sets the required feature bit 16 (`int64`) or 17 (`binary`) and
+  needs fstx 1.2 or later to read.
 * Appends follow the column types already in the file (a 1.0-layout integer64 column gets 1.0-layout rows), so an
   append never changes the feature bits. `fstx_compact(merge = TRUE)` keeps each column's stored type.
 * Files record "fstx 1.2.0" as the writer.

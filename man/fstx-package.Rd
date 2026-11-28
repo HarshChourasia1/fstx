@@ -50,7 +50,7 @@ later to read.
 strings; see its help page.
 
 \strong{File format.} Files are written in fstx format 1.2 (format version 3 inside the file), which is
-format 1.0 plus the int64 and binary column types; fstx 1.0 reads every file without those types. The
+format 1.0 plus the int64 and binary column types; files with those types need fstx 1.2 or later. The
 specification ships with the package:
 \code{system.file("spec", "fstx-format-1.2.md", package = "fstx")} (\code{fstx-format-1.0.md} is the
 1.0 text). Files from fstx 0.x development versions are not read. A file from a later fstx that needs something this version does not know is refused with a message that

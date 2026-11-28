@@ -12,8 +12,8 @@ fstx 1.0 reads and writes format 3 only. Files with format versions 1 and 2 (fst
 are refused with a message that says so.
 
 fstx 1.2 also reads and writes format 3 and adds two column types: 64-bit integers (physical type 4) and binary
-(physical type 5). A file that has a column of either type sets a required feature bit (section 5), so fstx 1.0
-refuses it by name ("Update fstx"); every other file fstx 1.2 writes is one fstx 1.0 can read.
+(physical type 5). A file that has a column of either type sets a required feature bit (section 5), so a reader
+that does not know the type refuses the file by name ("Update fstx").
 
 A reader must know all ten encoding tags to read ordinary files. The fstx writer often picks ALP (tag 8) or
 ALPRD (tag 9) for double columns (decimal numbers, and dates and times stored as doubles) and FSST (tag 10)

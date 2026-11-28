@@ -79,8 +79,7 @@ fstx_simd()                  # SIMD target in use (SSE2 / SSE4 / AVX2, chosen at
 | list of raw vectors (also `blob`, `arrow_binary`, `I()`) | binary (fstx 1.2) | `NULL` is missing; any bytes, NUL included |
 | other attributes (labels, units, classes) | an attribute blob per column | |
 
-A file with an int64 or binary column needs fstx 1.2 or later to read: fstx 1.0 refuses it with "Update fstx".
-Write with `int64 = "integer64"` and without binary columns when fstx 1.0 must read the file. `where` filters
+A file with an int64 or binary column needs fstx 1.2 or later to read. `where` filters
 int64 columns exactly; binary columns take only `is.na()`.
 
 ## File format

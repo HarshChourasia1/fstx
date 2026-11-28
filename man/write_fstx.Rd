@@ -33,9 +33,8 @@ write_fstx(x, path, profile = c("balanced", "fast", "small"), compress = NULL,
     \code{int64} says.}
   \item{int64}{how \code{bit64::integer64} columns are stored. \code{"native"} (default): as 64-bit integer
     columns (fstx 1.2; exact, compact, and filterable with \code{where}); files with such a column need fstx
-    1.2 or later, and fstx 1.0 refuses them with a message that names the feature. \code{"integer64"}: as fstx
-    1.0 stored them (a double column carrying the class), so fstx 1.0 can read the file; such columns cannot be
-    filtered.}
+    1.2 or later. \code{"integer64"}: as fstx 1.0 stored them (a double column carrying the class); such
+    columns cannot be filtered.}
 }
 \details{
 Every page is encoded with the lightweight encoding that fits it best (bit-packing, frame-of-reference,
@@ -60,7 +59,7 @@ Memory: besides the data and the pages in flight, the writer keeps the string po
 columns it does not dictionary-code, 12 bytes per string and at most 8 MB per call (past that it reads
 those strings a second time instead).
 
-Files are written in format version 3. A file without int64 or binary columns is one fstx 1.0 reads.
+Files are written in format version 3. A file with int64 or binary columns needs fstx 1.2 or later to read.
 }
 \value{\code{x} as it was passed in, invisibly (also after an append that added factor levels).}
 \seealso{\code{\link{read_fstx}}, \code{\link{fstx_compact}}}
