@@ -202,8 +202,9 @@ class OutFile {
 // can do its own part (the writer thread on write, building strings on read); wait() joins the job.
 // A job is k slots, job(0) .. job(k-1), each run once by whichever thread claims it first: a worker that is up,
 // or the caller in wait() (slots nobody has claimed yet). Threads are made in the background by a spawner thread
-// (warm() at the first open, or start() when a job wants more than there are), so no call waits for a thread to be
-// created or to start: the first read of a process no longer pays for it (0.5-3.6 ms with 14 threads on the desk).
+// (asked by warm() at the first open, or by start() when a job wants more than there are; it stays up, parked, until
+// shutdown() joins it), so no call waits for a thread to be created or to start: the first read of a process no
+// longer pays for it (0.5-3.6 ms with 14 threads on the desk).
 class ThreadPool {
  public:
   static ThreadPool& instance();
@@ -221,7 +222,7 @@ class ThreadPool {
   void grow(int k);                                    // m_ held: ask the spawner for k threads
   void spawn_loop();
   std::mutex m_;
-  std::condition_variable cv_work_, cv_done_;
+  std::condition_variable cv_work_, cv_done_, cv_spawn_;
   std::vector<std::thread> threads_;
   std::thread spawner_;
   std::function<void(int)> job_;
@@ -230,7 +231,6 @@ class ThreadPool {
   int next_slot_ = 0;  // first slot not claimed yet
   int remaining_ = 0;  // slots not finished yet
   int want_ = 0;       // threads the spawner makes
-  bool spawning_ = false;
   bool stop_ = false;
   bool running_ = false;
   std::exception_ptr error_;
