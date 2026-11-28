@@ -2,6 +2,11 @@
 // The three structs and the flag values are the Arrow C Data Interface and C Stream Interface ABI, copied from the
 // Apache Arrow specification (https://arrow.apache.org/docs/format/CDataInterface.html), Apache License 2.0.
 // The fstx_arrow_* declarations below are fstx's own (MIT). No R headers: the fuzz target builds this without R.
+// Stream output types (fstx 1.2 added the last two): int32 "i", float64 "g", logical "b", factor
+// dictionary<int32, "u">, Date "tdD", POSIXct "tsu:<tz>" (raw: as stored), string "u" / "U" / dictionary<int32, "u">;
+// FSTX_INT64 -> "l" (int64; INT64_MIN rows are null); FSTX_BINARY -> "z" (binary), "Z" (large_binary) by the same
+// size rule as strings, dictionary-coded pages as dictionary<int32, "z"> unless FSTX_ARROW_PLAIN_STRINGS.
+// FSTX_ARROW_CHECK_UTF8 skips binary columns (their utf8_bad byte stays 0); raw affects neither type.
 #ifndef FSTX_ARROW_ABI_H
 #define FSTX_ARROW_ABI_H
 
@@ -78,8 +83,9 @@ typedef struct fstx_arrow_args {
 } fstx_arrow_args;
 
 enum {
-  FSTX_ARROW_PLAIN_STRINGS = 1, /* string columns always as utf8 / large_utf8 (dictionary pages laid out as text) */
-  FSTX_ARROW_CHECK_UTF8 = 2     /* check the text of every string column (needs utf8_bad) */
+  FSTX_ARROW_PLAIN_STRINGS = 1, /* string columns always as utf8 / large_utf8, binary as binary / large_binary
+                                   (dictionary pages laid out as values) */
+  FSTX_ARROW_CHECK_UTF8 = 2     /* check the text of every string column (needs utf8_bad); binary columns are not checked */
 };
 
 /* Opens path and fills *out (which must be released, i.e. out->release == NULL). The stream owns the open file

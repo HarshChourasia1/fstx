@@ -6,7 +6,8 @@ Writes a data frame to an fstx file, or appends its rows to an existing one.
 }
 \usage{
 write_fstx(x, path, profile = c("balanced", "fast", "small"), compress = NULL,
-           level = NULL, threads = fstx_hw_threads(), append = FALSE)
+           level = NULL, threads = fstx_hw_threads(), append = FALSE,
+           int64 = c("native", "integer64"))
 }
 \arguments{
   \item{x}{a data.frame (data.table and tibble keep their class).}
@@ -27,21 +28,39 @@ write_fstx(x, path, profile = c("balanced", "fast", "small"), compress = NULL,
     A file with an optional feature this fstx does not know cannot be appended to ("Update fstx to change this
     file; reading works"). Appending reads the file's table and column attributes, with \code{unserialize()}
     for any stored with R's \code{serialize()} (append has no \code{attributes = FALSE} switch), so the
-    trusted-source note in \code{\link{read_fstx}} applies to those files.}
+    trusted-source note in \code{\link{read_fstx}} applies to those files.
+    An append writes \code{integer64} rows in the layout the file's column already has, whatever
+    \code{int64} says.}
+  \item{int64}{how \code{bit64::integer64} columns are stored. \code{"native"} (default): as 64-bit integer
+    columns (fstx 1.2; exact, compact, and filterable with \code{where}); files with such a column need fstx
+    1.2 or later, and fstx 1.0 refuses them with a message that names the feature. \code{"integer64"}: as fstx
+    1.0 stored them (a double column carrying the class), so fstx 1.0 can read the file; such columns cannot be
+    filtered.}
 }
 \details{
 Every page is encoded with the lightweight encoding that fits it best (bit-packing, frame-of-reference,
 delta, run-length, dictionary, ALP for doubles, FSST for strings); the profile decides what goes on top.
-Columns may be logical, integer, double or character vectors. Factors (and ordered factors), Date and
+Columns may be logical, integer, double or character vectors, \code{bit64::integer64} vectors, or
+binary columns. Factors (and ordered factors), Date and
 POSIXct are stored natively; any other attributes (classes, units, labels) are kept and restored on read,
 in fstx's own checked encoding when they are plain vectors, else with R's \code{serialize()} (see
 \code{\link{read_fstx}}).
-Matrix and list columns are not supported. Strings are stored as UTF-8.
+Strings are stored as UTF-8.
+
+64-bit integers: a \code{bit64::integer64} column is a double vector that holds the integers' bits; fstx
+stores those bits as they are (see \code{int64}), so bit64 is not needed to write or read one. Its
+\code{NA} is the format's missing value.
+
+Binary columns (fstx 1.2): a list column whose elements are all raw vectors or \code{NULL} (a missing value)
+is stored as a binary column, bytes as they are (any byte, \code{NUL} included; a value can have up to 1 GB).
+Its class may be none, \code{"AsIs"} (\code{I(list(...))}), \code{"blob"} (blob package),
+\code{"arrow_binary"} or another vctrs \code{list_of} of raw vectors; it is restored on read. Files with a
+binary column need fstx 1.2 or later. Other list columns, and matrix columns, are not supported.
 Memory: besides the data and the pages in flight, the writer keeps the string pointers of character
 columns it does not dictionary-code, 12 bytes per string and at most 8 MB per call (past that it reads
 those strings a second time instead).
 
-Files are written in fstx format 1.0 (format version 3 inside the file).
+Files are written in format version 3. A file without int64 or binary columns is one fstx 1.0 reads.
 }
 \value{\code{x} as it was passed in, invisibly (also after an append that added factor levels).}
 \seealso{\code{\link{read_fstx}}, \code{\link{fstx_compact}}}

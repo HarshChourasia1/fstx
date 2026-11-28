@@ -18,6 +18,7 @@ bool r_na_real(double x) {
 struct P {
   fstx_pred p{};
   std::vector<double> set;
+  std::vector<int64_t> iset;
   std::vector<std::string> strs;
   std::vector<const char*> sp;
   std::vector<int32_t> sl;
@@ -40,9 +41,34 @@ bool num_match(int op, double x, double v, const std::vector<double>& set) {
   }
 }
 
+// int64 rows (fstx 1.2): exact, against an int64 literal / set (has_i64) or a double compared as a real number
+bool match_i64(const P& q, int64_t x) {
+  const int op = q.p.op;
+  if (x == INT64_MIN) return op == FSTX_OP_ISNA || (op == FSTX_OP_IN && q.p.set_na);
+  if (op == FSTX_OP_NOTNA) return true;
+  if (op == FSTX_OP_IN) {
+    if (q.p.has_i64) return std::find(q.iset.begin(), q.iset.end(), x) != q.iset.end();
+    for (double d : q.set)
+      if (!std::isnan(d) && fstx::cmp_d_i64(d, x) == 0) return true;
+    return false;
+  }
+  if (op < FSTX_OP_EQ || op > FSTX_OP_GE) return false;
+  if (q.p.has_i64 ? q.p.i64 == INT64_MIN : std::isnan(q.p.value)) return false;
+  const int k = q.p.has_i64 ? (x < q.p.i64 ? -1 : x > q.p.i64 ? 1 : 0) : -fstx::cmp_d_i64(q.p.value, x);
+  switch (op) {
+    case FSTX_OP_EQ: return k == 0;
+    case FSTX_OP_NE: return k != 0;
+    case FSTX_OP_LT: return k < 0;
+    case FSTX_OP_LE: return k <= 0;
+    case FSTX_OP_GT: return k > 0;
+    default: return k >= 0;
+  }
+}
+
 bool match(const P& q, const fz::Col& c, uint64_t r) {
   const int op = q.p.op;
-  if (c.phys == FSTX_STRING) {
+  if (c.phys == FSTX_INT64) return match_i64(q, c.l[r]);
+  if (fz::is_strlike(c.phys)) {
     if (c.na[r] == 1) return op == FSTX_OP_ISNA || (op == FSTX_OP_IN && q.p.set_na);
     const std::string& s = c.s[r];
     switch (op) {
@@ -88,7 +114,19 @@ bool stats_true(const std::vector<uint8_t>& b, uint32_t col, const fz::Col& c, u
     bool any = false;
     for (uint64_t r = r0; r < r0 + n; ++r) {
       double x;
-      if (c.phys == FSTX_STRING) {
+      if (c.phys == FSTX_INT64) {  // rounded outward: min <= x <= max as real numbers
+        const int64_t v = c.l[r];
+        if (v == INT64_MIN) {
+          ++na;
+          continue;
+        }
+        any = true;
+        if (mm && (std::isnan(p->min()) || std::isnan(p->max()) || fstx::cmp_d_i64(p->min(), v) > 0 ||
+                   fstx::cmp_d_i64(p->max(), v) < 0))
+          ok = false;
+        continue;
+      }
+      if (fz::is_strlike(c.phys)) {
         if (c.na[r] == 1) ++na;
         continue;
       }
@@ -144,15 +182,31 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     q.p.op = (int)c.below(10);
     // a value from the table (or NaN / a random one)
     double v = (double)(int32_t)c.next();
+    int64_t iv = (int64_t)((uint64_t)c.next() << 32 | c.next());
     std::string sv = "x";
     if (have_a && a.n) {
       const uint64_t r = c.below(a.n);
       const fz::Col& ac = a.cols[col];
       if (ac.phys == FSTX_FLOAT64) v = ac.d[r];
-      else if (ac.phys == FSTX_STRING) sv = ac.na[r] == 1 ? std::string() : ac.s[r];
-      else v = ac.i[r] == kNaI ? NAN : ac.i[r];
+      else if (fz::is_strlike(ac.phys)) sv = ac.na[r] == 1 ? std::string() : ac.s[r];
+      else if (ac.phys == FSTX_INT64) {
+        iv = ac.l[r];
+        v = iv == INT64_MIN ? NAN : (double)iv;  // rounded: may sit between two rows' values
+      } else v = ac.i[r] == kNaI ? NAN : ac.i[r];
     }
     if ((c.next() & 7) == 0) v = NAN;
+    if (ci.phys == FSTX_INT64) {  // an int64 literal (exact) half the time, near the picked value
+      q.p.has_i64 = (int)(c.next() & 1);
+      const uint32_t z = c.next() & 15;
+      if (z == 1) iv = INT64_MIN;
+      else if (z == 2 && iv < INT64_MAX) ++iv;
+      else if (z == 3 && iv > INT64_MIN + 1) --iv;
+      q.p.i64 = iv;
+      q.iset = {iv, iv ^ 1, INT64_MIN, INT64_MAX};
+      q.p.i64_set = q.iset.data();
+      q.p.n_i64_set = q.iset.size();
+      if ((c.next() & 3) == 0) v += 0.5;
+    }
     q.p.value = v;
     q.p.set_na = (int)(c.next() & 1);
     q.p.set_nan = (int)(c.next() & 1);
@@ -160,7 +214,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     q.p.set = q.set.data();
     q.p.n_set = q.set.size();
     q.strs = {sv, sv + "a", std::string()};
-    if (ci.phys == FSTX_STRING && (q.p.op == FSTX_OP_EQ || q.p.op == FSTX_OP_NE)) q.strs.resize(1);
+    if (fz::is_strlike(ci.phys) && (q.p.op == FSTX_OP_EQ || q.p.op == FSTX_OP_NE)) q.strs.resize(1);
     for (const auto& s : q.strs) {
       q.sp.push_back(s.data());
       q.sl.push_back((int32_t)s.size());

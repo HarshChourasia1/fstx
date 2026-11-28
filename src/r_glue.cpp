@@ -83,6 +83,45 @@ int get_strings(void* ctx, uint64_t row, uint32_t n, const char** ptrs, int32_t*
   return 0;
 }
 
+// Binary columns (fstx 1.2): each row's bytes, gathered on the main thread before the engine starts (an element
+// can be an ALTREP raw vector, whose data pointer may allocate), so the worker threads only copy pointers.
+struct BinSrc {
+  std::vector<const char*> p;
+  std::vector<int32_t> len;  // -1 = NULL (missing)
+};
+
+int get_binary(void* ctx, uint64_t row, uint32_t n, const char** ptrs, int32_t* lens) {
+  const BinSrc* s = (const BinSrc*)ctx;
+  std::memcpy(ptrs, s->p.data() + row, (size_t)n * sizeof(const char*));
+  std::memcpy(lens, s->len.data() + row, (size_t)n * sizeof(int32_t));
+  return 0;
+}
+
+const R_xlen_t kMaxBinary = (R_xlen_t)1 << 30;  // the writer's limit for one binary value (spec 8: 1 GB)
+
+// Fills s from list x (n rows); an element that is not a raw vector or NULL, or is over 1 GB, is an R error.
+void binary_prepare(SEXP x, uint64_t n, const std::string& name, BinSrc& s) {
+  s.p.assign((size_t)n, nullptr);
+  s.len.assign((size_t)n, -1);
+  static const char empty = 0;
+  cpp11::unwind_protect([&] {  // no C++ object is created in here: Rf_error unwinds through R only
+    for (uint64_t i = 0; i < n; ++i) {
+      SEXP e = VECTOR_ELT(x, (R_xlen_t)i);
+      if (e == R_NilValue) continue;
+      if (TYPEOF(e) != RAWSXP)
+        Rf_errorcall(R_NilValue, "write_fstx: column '%s' has type 'list' with an element of type '%s' (row %.0f); fstx "
+                     "stores a list column only as binary data, whose elements are raw vectors or NULL",
+                     name.c_str(), Rf_type2char(TYPEOF(e)), (double)i + 1);
+      const R_xlen_t l = Rf_xlength(e);
+      if (l > kMaxBinary)
+        Rf_errorcall(R_NilValue, "write_fstx: column '%s' row %.0f has %.0f bytes; a binary value can have at most 1 GB",
+                     name.c_str(), (double)i + 1, (double)l);
+      s.len[(size_t)i] = (int32_t)l;
+      s.p[(size_t)i] = l ? (const char*)RAW(e) : &empty;
+    }
+  });
+}
+
 }  // namespace
 
 // Returns 0 on success, or the 1-based index of a character column that must be converted to UTF-8 first.
@@ -118,6 +157,7 @@ int fstx_write_impl(SEXP cols, SEXP path, SEXP names, SEXP phys, SEXP logical, S
   std::vector<fstx_write_column> defs((size_t)nc);
   std::vector<fstx_column_data> data((size_t)nc);
   std::vector<StrSrc> srcs((size_t)nc);
+  std::vector<BinSrc> bins((size_t)nc);
   for (R_xlen_t j = 0; j < nc; ++j) {
     fstx_write_column& d = defs[(size_t)j];
     std::memset(&d, 0, sizeof(d));
@@ -164,9 +204,15 @@ int fstx_write_impl(SEXP cols, SEXP path, SEXP names, SEXP phys, SEXP logical, S
         if (d.phys != FSTX_LOGICAL) cpp11::stop("fstx: internal type mismatch");
         cd.data = cpp11::safe[LOGICAL_RO](x);
         break;
-      case REALSXP:
-        if (d.phys != FSTX_FLOAT64) cpp11::stop("fstx: internal type mismatch");
+      case REALSXP:  // float64, or int64 (an integer64 vector: the int64 bits in a double vector, read as they are)
+        if (d.phys != FSTX_FLOAT64 && d.phys != FSTX_INT64) cpp11::stop("fstx: internal type mismatch");
         cd.data = cpp11::safe[REAL_RO](x);
+        break;
+      case VECSXP:  // binary
+        if (d.phys != FSTX_BINARY) cpp11::stop("fstx: internal type mismatch");
+        binary_prepare(x, n, col_names[(size_t)j], bins[(size_t)j]);
+        cd.get_strings = get_binary;
+        cd.ctx = &bins[(size_t)j];
         break;
       case STRSXP:
         if (d.phys != FSTX_STRING) cpp11::stop("fstx: internal type mismatch");
@@ -217,13 +263,20 @@ struct ReadCtx {
   SEXP out;    // protected list of output vectors (all selected columns)
   SEXP dicts;  // protected list: the current string dictionary of each planned column
   std::vector<uint32_t> map;  // planned column -> position in out
+  std::vector<char> bin;      // planned column is binary (fstx 1.2): a list of raw vectors, not a STRSXP
   bool pending = false;
   SEXP token = R_NilValue;
 };
 
 void* alloc_column(void* ctx, uint32_t j, uint32_t, int phys, uint64_t n) {
   ReadCtx* c = (ReadCtx*)ctx;
-  SEXPTYPE t = phys == FSTX_FLOAT64 ? REALSXP : phys == FSTX_LOGICAL ? LGLSXP : phys == FSTX_STRING ? STRSXP : INTSXP;
+  // int64 (fstx 1.2): the int64 values go straight into a double vector's memory (integer64's representation)
+  SEXPTYPE t = phys == FSTX_FLOAT64 || phys == FSTX_INT64 ? REALSXP
+               : phys == FSTX_LOGICAL                     ? LGLSXP
+               : phys == FSTX_STRING                      ? STRSXP
+               : phys == FSTX_BINARY                      ? VECSXP
+                                                          : INTSXP;
+  c->bin[j] = phys == FSTX_BINARY;
   try {
     SEXP v = cpp11::unwind_protect([&] {
       SEXP x = Rf_allocVector(t, (R_xlen_t)n);
@@ -234,7 +287,7 @@ void* alloc_column(void* ctx, uint32_t j, uint32_t, int phys, uint64_t n) {
       case REALSXP: return n ? (void*)REAL(v) : (void*)c;
       case LGLSXP: return n ? (void*)LOGICAL(v) : (void*)c;
       case INTSXP: return n ? (void*)INTEGER(v) : (void*)c;
-      default: return (void*)c;  // strings arrive through on_strings
+      default: return (void*)c;  // strings and binary values arrive through on_strings
     }
   } catch (const cpp11::unwind_exception& e) {
     c->pending = true;
@@ -243,12 +296,29 @@ void* alloc_column(void* ctx, uint32_t j, uint32_t, int phys, uint64_t n) {
   }
 }
 
+// Binary row i of list v: NULL for a missing value (len < 0), else a new raw vector of the next len bytes at p.
+// R allocation (inside unwind_protect); the new vector is stored before anything else allocates.
+inline void set_raw(SEXP v, R_xlen_t i, int32_t len, const char*& p) {
+  if (len < 0) {
+    SET_VECTOR_ELT(v, i, R_NilValue);
+    return;
+  }
+  SEXP r = Rf_allocVector(RAWSXP, (R_xlen_t)len);
+  if (len) std::memcpy(RAW(r), p, (size_t)len);
+  SET_VECTOR_ELT(v, i, r);
+  p += len;
+}
+
 int on_strings(void* ctx, uint32_t j, uint64_t dest, uint32_t n, const int32_t* lens, const char* bytes) {
   ReadCtx* c = (ReadCtx*)ctx;
   try {
     cpp11::unwind_protect([&] {
       SEXP v = VECTOR_ELT(c->out, c->map[j]);
       const char* p = bytes;
+      if (c->bin[j]) {
+        for (uint32_t i = 0; i < n; ++i) set_raw(v, (R_xlen_t)(dest + i), lens[i], p);
+        return;
+      }
       for (uint32_t i = 0; i < n; ++i) {
         int32_t l = lens[i];
         if (l < 0) {
@@ -273,6 +343,10 @@ int on_strings_at(void* ctx, uint32_t j, uint32_t n, const uint64_t* dest, const
     cpp11::unwind_protect([&] {
       SEXP v = VECTOR_ELT(c->out, c->map[j]);
       const char* p = bytes;
+      if (c->bin[j]) {
+        for (uint32_t i = 0; i < n; ++i) set_raw(v, (R_xlen_t)dest[i], lens[i], p);
+        return;
+      }
       for (uint32_t i = 0; i < n; ++i) {
         int32_t l = lens[i];
         if (l < 0) {
@@ -295,9 +369,13 @@ int on_dict(void* ctx, uint32_t j, uint32_t n, const int32_t* lens, const char* 
   ReadCtx* c = (ReadCtx*)ctx;
   try {
     cpp11::unwind_protect([&] {
-      SEXP d = Rf_allocVector(STRSXP, (R_xlen_t)n);
+      SEXP d = Rf_allocVector(c->bin[j] ? VECSXP : STRSXP, (R_xlen_t)n);
       SET_VECTOR_ELT(c->dicts, j, d);  // protected from here on
       const char* p = bytes;
+      if (c->bin[j]) {  // binary: a list of raw vectors, shared by the rows that use them
+        for (uint32_t i = 0; i < n; ++i) set_raw(d, (R_xlen_t)i, lens[i] < 0 ? 0 : lens[i], p);
+        return;
+      }
       for (uint32_t i = 0; i < n; ++i) {
         const int32_t l = lens[i] < 0 ? 0 : lens[i];
         SET_STRING_ELT(d, (R_xlen_t)i, Rf_mkCharLenCE(p, l, CE_UTF8));
@@ -317,6 +395,16 @@ int on_codes(void* ctx, uint32_t j, uint64_t dest, uint32_t n, const int32_t* co
   ReadCtx* c = (ReadCtx*)ctx;
   SEXP v = VECTOR_ELT(c->out, c->map[j]);
   SEXP d = VECTOR_ELT(c->dicts, j);
+  if (c->bin[j]) {
+    if (TYPEOF(d) != VECSXP) return 1;
+    const R_xlen_t nd = Rf_xlength(d);
+    for (uint32_t i = 0; i < n; ++i) {
+      const int32_t k = codes[i];
+      if (k >= nd) return 1;
+      SET_VECTOR_ELT(v, (R_xlen_t)(dest + i), k < 0 ? R_NilValue : VECTOR_ELT(d, k));
+    }
+    return 0;
+  }
   if (TYPEOF(d) != STRSXP) return 1;
   const R_xlen_t nd = Rf_xlength(d);
   const SEXP* dp = STRING_PTR_RO(d);
@@ -506,7 +594,7 @@ SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads
         continue;
       }
     }
-    if (mode == 2) how[j] = 2;
+    if (mode == 2 && phys[j] != FSTX_BINARY) how[j] = 2;  // binary columns are read eagerly (no lazy lists)
     else if ((mode == 1 || mode == 3) && phys[j] == FSTX_STRING) how[j] = 1;
     else if (mode == 0 && !by_rows && phys[j] == FSTX_STRING) how[j] = 4;
   }
@@ -538,6 +626,7 @@ SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads
     ctx.out = out;
     ctx.dicts = dicts;
     ctx.map = pmap;
+    ctx.bin.assign(pmap.size(), 0);
     fstx_read_host host;
     std::memset(&host, 0, sizeof(host));
     host.ctx = &ctx;
@@ -591,7 +680,10 @@ SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads
     col_attrs[j] = raw_of(ci.attrs, ci.attrs_len);
     if (how[(size_t)j] == 3) continue;  // factor from dictionaries: finished in R
     SEXP v = out[j];
-    if (ci.logical == FSTX_LT_FACTOR) {
+    if (ci.phys == FSTX_INT64) {  // fstx 1.2: bit64's class (R/fstx.R turns it into doubles for int64 = "double")
+      cpp11::writable::strings cl({"integer64"});
+      cpp11::safe[Rf_setAttrib](v, R_ClassSymbol, (SEXP)cl);
+    } else if (ci.logical == FSTX_LT_FACTOR) {
       cpp11::writable::strings lv((R_xlen_t)ci.n_levels);
       for (uint32_t i = 0; i < ci.n_levels; ++i) {
         const char* s;
@@ -621,8 +713,10 @@ SEXP fstx_read_impl(SEXP path, SEXP columns, double from, double to, int threads
     }
   }
   cpp11::sexp ta = raw_of(info.table_attrs, info.table_attrs_len);
+  cpp11::writable::integers ph(nc);
+  for (R_xlen_t j = 0; j < nc; ++j) ph[j] = phys[(size_t)j];
   using namespace cpp11::literals;
-  return cpp11::writable::list({"columns"_nm = out, "names"_nm = nm, "col_attrs"_nm = col_attrs, "table_attrs"_nm = ta,
+  return cpp11::writable::list({"columns"_nm = out, "names"_nm = nm, "phys"_nm = ph, "col_attrs"_nm = col_attrs, "table_attrs"_nm = ta,
                                 "nrow"_nm = cpp11::as_sexp((double)out_rows), "all_columns"_nm = cpp11::as_sexp(columns == R_NilValue),
                                 "file_rows"_nm = cpp11::as_sexp(nr),
                                 "factor_dicts"_nm = fdicts, "factor_fallback"_nm = fallback});
@@ -634,7 +728,7 @@ SEXP fstx_meta_impl(SEXP path) {
   fstx_file_info info;
   fstx_file_info_get(f.get(), &info);
   const R_xlen_t nc = info.n_cols;
-  static const char* phys_names[] = {"integer", "double", "logical", "character"};
+  static const char* phys_names[] = {"integer", "double", "logical", "character", "int64", "binary"};
   static const char* lt_names[] = {"", "factor", "Date", "POSIXct"};
   cpp11::writable::strings name(nc), phys(nc), logical(nc), tz(nc);
   cpp11::writable::doubles comp(nc), raw(nc), pages(nc), nlev(nc);
@@ -643,8 +737,8 @@ SEXP fstx_meta_impl(SEXP path) {
     fstx_column_info ci;
     fstx_column_info_get(f.get(), (uint32_t)j, &ci);
     name[j] = cpp11::r_string(str1(ci.name, ci.name_len));
-    phys[j] = cpp11::r_string(phys_names[ci.phys]);
-    logical[j] = cpp11::r_string(lt_names[ci.logical]);
+    phys[j] = cpp11::r_string(ci.phys >= 0 && ci.phys <= 5 ? phys_names[ci.phys] : "?");  // open checks both
+    logical[j] = cpp11::r_string(ci.logical >= 0 && ci.logical <= 3 ? lt_names[ci.logical] : "?");
     if (ci.has_tzone) tz[j] = cpp11::r_string(str1(ci.tzone, ci.tzone_len));
     else tz[j] = cpp11::r_string(NA_STRING);
     comp[j] = (double)ci.compressed_bytes;
@@ -707,7 +801,9 @@ SEXP fstx_pages_impl(SEXP path) {
                                 "encoding"_nm = e0, "child1"_nm = e1, "child2"_nm = e2});
 }
 
-// preds: list of list(col = name, op = int, value = double, set = double, set_na, set_nan, strs = character).
+// preds: list of list(col = name, op = int, value = double, set = double, set_na, set_nan, strs = character,
+// i64 = integer, or double holding int64 bits (integer64)). i64 (int64 columns, fstx 1.2) is the exact value or,
+// for %in%, the set; NA in it (NA_integer_ or INT64_MIN) makes a comparison match nothing and sets set_na for %in%.
 // Returns list(rows = 1-based matching rows (double), stats = named doubles).
 [[cpp11::register]]
 SEXP fstx_filter_impl(SEXP path, SEXP preds, double from, double to, int threads, int verify, bool plan_only) {
@@ -719,6 +815,7 @@ SEXP fstx_filter_impl(SEXP path, SEXP preds, double from, double to, int threads
   std::vector<std::vector<std::string>> strs((size_t)np);
   std::vector<std::vector<const char*>> sp((size_t)np);
   std::vector<std::vector<int32_t>> sl((size_t)np);
+  std::vector<std::vector<int64_t>> i64s((size_t)np);
   if (TYPEOF(preds) != VECSXP) cpp11::stop("fstx: internal error, bad filter");
   auto field = [](SEXP l, const char* nm) -> SEXP {
     SEXP names = Rf_getAttrib(l, R_NamesSymbol);
@@ -764,6 +861,39 @@ SEXP fstx_filter_impl(SEXP path, SEXP preds, double from, double to, int threads
       d.str_lens = sl[(size_t)i].data();
       d.n_strs = (uint64_t)strs[(size_t)i].size();
     }
+    SEXP i6 = field(q, "i64");
+    if (i6 != R_NilValue) {
+      if (TYPEOF(i6) != INTSXP && TYPEOF(i6) != REALSXP) cpp11::stop("fstx: internal error, bad filter");
+      const R_xlen_t k = Rf_xlength(i6);
+      std::vector<int64_t>& vv = i64s[(size_t)i];
+      vv.reserve((size_t)k);
+      bool na = false;
+      if (TYPEOF(i6) == INTSXP) {
+        const int* x = cpp11::safe[INTEGER_RO](i6);
+        for (R_xlen_t e = 0; e < k; ++e) {
+          if (x[e] == NA_INTEGER) na = true;
+          else vv.push_back((int64_t)x[e]);
+        }
+      } else {
+        const double* x = cpp11::safe[REAL_RO](i6);
+        for (R_xlen_t e = 0; e < k; ++e) {
+          int64_t b;
+          std::memcpy(&b, x + e, sizeof(b));
+          if (b == FSTX_NA_INT64) na = true;
+          else vv.push_back(b);
+        }
+      }
+      d.has_i64 = 1;
+      if (d.op == FSTX_OP_IN) {
+        d.i64_set = vv.data();
+        d.n_i64_set = (uint64_t)vv.size();
+        d.set_na = d.set_na || na;
+      } else if (vv.empty()) {
+        d.op = FSTX_OP_NONE;  // a comparison with NA
+      } else {
+        d.i64 = vv[0];
+      }
+    }
   }
   const double nr = (double)info.n_rows;
   double t = ISNAN(to) ? nr : std::min(to, nr);
@@ -795,6 +925,35 @@ SEXP fstx_filter_impl(SEXP path, SEXP preds, double from, double to, int threads
   stats.names() = {"pages_total", "pages_skipped", "pages_pruned", "pages_all", "pages_read", "rows_window",
                    "rows_candidate", "rows_matched"};
   return cpp11::writable::list({"rows"_nm = keep, "stats"_nm = stats});
+}
+
+// read_fstx(int64 = "double"), fstx 1.2: an int64 column (integer64: int64 bits in a double vector) as plain
+// doubles, NA for the missing value; converted in place when x is a plain vector nobody else holds. Returns
+// list(doubles, number of values past 2^53 that the conversion rounded).
+[[cpp11::register]]
+SEXP fstx_i64_double_impl(SEXP x) {
+  if (TYPEOF(x) != REALSXP) cpp11::stop("fstx: internal error, not an int64 column");
+  const R_xlen_t n = Rf_xlength(x);
+  const double* src = cpp11::safe[REAL_RO](x);  // a lazy column is materialised here
+  cpp11::sexp out = ALTREP(x) || MAYBE_SHARED(x) ? cpp11::safe[Rf_allocVector](REALSXP, n) : x;
+  double* dst = REAL(out);
+  double lossy = 0;
+  for (R_xlen_t i = 0; i < n; ++i) {
+    int64_t v;
+    std::memcpy(&v, src + i, sizeof(v));
+    double d;
+    if (v == FSTX_NA_INT64) {
+      d = NA_REAL;
+    } else {
+      d = (double)v;
+      // exact up to 2^53; past it, compare back (2^63 is out of int64 range, so it is tested before the cast)
+      if ((v > ((int64_t)1 << 53) || v < -((int64_t)1 << 53)) && (d >= 9223372036854775808.0 || (int64_t)d != v)) ++lossy;
+    }
+    dst[i] = d;
+  }
+  cpp11::safe[Rf_setAttrib](out, R_ClassSymbol, R_NilValue);
+  using namespace cpp11::literals;
+  return cpp11::writable::list({"x"_nm = out, "lossy"_nm = cpp11::as_sexp(lossy)});
 }
 
 [[cpp11::register]]

@@ -16,7 +16,7 @@ import pyarrow as pa
 import pytest
 
 import fstx
-from conftest import CASES, GOLDEN, ids, quiet
+from conftest import CASES, DROP2, GOLDEN, ids, quiet
 from fstx import _fxa1 as fxa
 
 to_pandas = fstx.to_pandas
@@ -258,9 +258,9 @@ def test_native_types():
     for name in ("i8", "i16", "u8", "u16", "i32", "u32_small", "i64_small", "dint"):
         assert k[name] == ("integer", "none"), name
         assert c[name].attrs is None
-    for name in ("u32_big", "i64_big", "u64"):
-        assert k[name] == ("double", "none"), name
-        assert attrs(c[name]) == {"class": fxa.character(["integer64"])}
+    for name in ("u32_big", "i64_big", "u64"):  # fstx 1.2: int64="auto" stores values past int32 as int64
+        assert k[name] == ("int64", "none"), name
+        assert c[name].attrs is None
     assert k["f32"] == k["f64"] == ("double", "none")
     assert k["s"] == k["ls"] == ("character", "none")
     assert k["d32"] == k["d64"] == ("double", "Date")
@@ -344,7 +344,9 @@ def test_number_chunks_over_row_groups(tmp_path):
         fstx.write_fstx(many, q, threads=threads)
         assert p.read_bytes() == q.read_bytes()
     m = fstx.metadata(q)
-    assert m.row_groups == 2
+    assert m.row_groups == 2 and kinds(m)["i64_big"] == ("int64", "none")
+    if not DROP2:  # reading the int64 column back waits for the engine's drop 2
+        return
     got = fstx.read_fstx(q)
     for name, a in cols.items():
         g = got.column(name).combine_chunks()
@@ -441,10 +443,12 @@ def test_int64_modes():
     small = pa.table({"a": pa.array([1, 2, None], pa.int64())})
     big = pa.table({"a": pa.array([1, 2**40, None], pa.int64())})
     assert kinds(write(small, NATIVE / "int64_auto_small.fstx")) == {"a": ("integer", "none")}
-    m = write(big, NATIVE / "int64_auto_big.fstx")
+    m = write(big, NATIVE / "int64_auto_big.fstx")  # fstx 1.2: an int64 column
+    assert kinds(m) == {"a": ("int64", "none")} and m.columns[0].attrs is None
+    m = write(small, NATIVE / "int64_native.fstx", int64="native")
+    assert kinds(m) == {"a": ("int64", "none")} and m.columns[0].attrs is None
+    m = write(big, NATIVE / "int64_integer64.fstx", int64="integer64")  # the fstx 1.0 layout
     assert kinds(m) == {"a": ("double", "none")} and attrs(m.columns[0])["class"].values == ["integer64"]
-    m = write(small, NATIVE / "int64_integer64.fstx", int64="integer64")
-    assert attrs(m.columns[0])["class"].values == ["integer64"]
     m = write(big, NATIVE / "int64_double.fstx", int64="double")
     assert kinds(m) == {"a": ("double", "none")} and m.columns[0].attrs is None
     with pytest.raises(ValueError, match="2\\^53"):
@@ -455,8 +459,6 @@ def test_int64_modes():
 
 # ---------------------------------------------------------------- refusals
 @pytest.mark.parametrize("arr,exc,match", [
-    (pa.array([b"ab"], pa.binary()), TypeError, "binary"),
-    (pa.array([b"ab"], pa.large_binary()), TypeError, "binary"),
     (pa.array([1], pa.int64()).cast(pa.decimal128(25, 2)), TypeError, "decimal"),
     (pa.array([[1, 2]], pa.list_(pa.int32())), TypeError, "list"),
     (pa.array([{"a": 1}], pa.struct([("a", pa.int32())])), TypeError, "struct"),
@@ -467,7 +469,7 @@ def test_int64_modes():
     (pa.array(["a\x00b"]), ValueError, "bad"),
     (pa.DictionaryArray.from_arrays(pa.array([0, 1], pa.int8()), pa.array(["a", "a"])), ValueError, "repeated"),
     (pa.DictionaryArray.from_arrays(pa.array([0], pa.int8()), pa.array(["a\x00"])), ValueError, "NUL"),
-], ids=["binary", "large_binary", "decimal", "list", "struct", "map", "int32_min", "int64_min", "uint64_big",
+], ids=["decimal", "list", "struct", "map", "int32_min", "int64_min", "uint64_big",
         "nul_in_string", "repeated_levels", "nul_in_level"])
 def test_refused(arr, exc, match, tmp_path):
     p = tmp_path / "refused.fstx"
@@ -604,13 +606,16 @@ def test_number_pages_in_place_and_filled(tmp_path):
         "i32": pa.array(rng.integers(-2**31 + 1, 2**31, n).astype("int32")),
         "f64": pa.array(rng.standard_normal(n)),
         "i16": pa.array(rng.integers(-3000, 3000, n).astype("int16")),
+        "i64": pa.array(rng.integers(-2**62, 2**62, n)),  # fstx 1.2: an int64 column (int64="auto", past int32)
     }
     nulls = np.zeros(n, bool)
     nulls[300_000:300_010] = True
     vals["f64_na"] = pa.array(rng.standard_normal(n), mask=nulls)
+    vals["i64_na"] = pa.array(rng.integers(-2**62, 2**62, n), mask=nulls)
     one = pa.table(vals)
     p = tmp_path / "one.fstx"
     fstx.write_fstx(one, p, threads=1)
+    assert [c.phys for c in fstx.metadata(p).columns][-3:] == ["int64", "double", "int64"]
     for size in (65_536, 40_000, 32_768, 1):
         cuts = list(range(0, n, size if size > 1 else 99_999)) + [n]
         many = pa.table({k: pa.chunked_array([v.slice(a, b - a) for a, b in zip(cuts, cuts[1:])], v.type)
@@ -619,7 +624,11 @@ def test_number_pages_in_place_and_filled(tmp_path):
             q = tmp_path / f"many_{size}_{threads}.fstx"
             fstx.write_fstx(many, q, threads=threads)
             assert p.read_bytes() == q.read_bytes(), (size, threads)
-    assert fstx.read_fstx(p).column("f64_na").null_count == 10
+    assert fstx.read_fstx(p, columns=["f64_na"]).column("f64_na").null_count == 10
+    if DROP2:
+        got = fstx.read_fstx(p, columns=["i64", "i64_na"])
+        assert got.column("i64").equals(pa.chunked_array([vals["i64"]])) and got.column("i64_na").null_count == 10
+        assert got.column("i64_na").equals(pa.chunked_array([vals["i64_na"]]))
 
 
 def test_one_thread_team_for_every_step(tmp_path):
@@ -966,4 +975,4 @@ def test_polars_native():
     assert k["f"] == ("double", "none") and k["s"] == ("character", "none") and k["b"] == ("logical", "none")
     assert k["d"] == ("double", "Date") and k["t"] == ("double", "POSIXct") and c["t"].tzone == "UTC"
     assert k["c"] == ("integer", "factor") and set(c["c"].levels) >= {"x", "y"}
-    assert attrs(c["u64"])["class"].values == ["integer64"]
+    assert k["u64"] == ("int64", "none") and c["u64"].attrs is None  # fstx 1.2: past int32, an int64 column

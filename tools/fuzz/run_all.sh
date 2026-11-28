@@ -28,6 +28,8 @@ bash "$F/build.sh" "$PKG" "$WORK" "$CORES"
 rm -rf "$WORK/seeds"
 "$WORK/bin/mkseeds" "$WORK/seeds" > "$WORK/mkseeds.log" 2>&1 || { cat "$WORK/mkseeds.log"; exit 4; }
 cp "$F"/regress/* "$WORK/seeds/" 2>/dev/null || true
+# the damaged files of craft (fstx 1.2 cases included) are seeds too
+"$WORK/bin/craft" "$WORK/craft" > "$WORK/craft.log" 2>&1 && cp "$WORK"/craft/seed/* "$WORK/seeds/" 2>/dev/null || true
 echo "seeds: $(ls "$WORK/seeds" | wc -l)"
 TARGETS="$*"
 if [ -z "$TARGETS" ]; then

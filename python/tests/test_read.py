@@ -47,6 +47,8 @@ def canon(col, w):
         return struct.pack("<%di" % len(codes), *codes) + str_raw(a.dictionary.to_pylist())
     ty = w["r_typeof"]
     vals = col.to_pylist()
+    if at == "binary":  # fstx 1.2: per value the length (-1 = NULL), then the bytes
+        return str_raw(vals)
     if ty in ("logical", "integer"):
         return struct.pack("<%di" % len(vals), *[INT_NA if v is None else int(v) for v in vals])
     if ty == "double":
@@ -85,6 +87,12 @@ def check_values(col, w):
                 assert g is None  # NA_real_ and its quiet form are null
             else:
                 assert g is not None and struct.pack(">d", g).hex() == bits  # exact bits: NaN, -0, subnormal
+    elif at == "binary":  # fstx 1.2
+        for g, v in zip(a.to_pylist(), w["values"]):
+            if isinstance(v, dict):
+                assert len(g) == v["bytes"] and hashlib.md5(g).hexdigest() == v["md5"]
+            else:
+                assert (None if g is None else g.hex()) == v
     elif at == "string":
         got = a.to_pylist()
         hexes = w.get("hex")

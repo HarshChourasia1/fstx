@@ -30,7 +30,7 @@ int64_t count_nulls(const ArrowArray* a) {
   return n;
 }
 
-// string i of a utf8 ("u") or large_utf8 ("U") array
+// string i of a utf8 ("u") or large_utf8 ("U") array (binary "z" / "Z" have the same layout)
 std::string str_at(const ArrowArray* a, bool large, int64_t i) {
   const char* d = (const char*)a->buffers[2];
   int64_t s, e;
@@ -67,8 +67,10 @@ void check_child(const ArrowSchema* sc, const ArrowArray* a, int64_t len, const 
   const std::string f = sc->format;
   const fz::Col* col = t ? &t->cols[j] : nullptr;
   const int32_t NA = std::numeric_limits<int32_t>::min();
-  if (sc->dictionary) {  // factor (levels) or dictionary-coded strings
-    if (f != "i" || !a->dictionary || std::string(sc->dictionary->format) != "u") fz::fail("dictionary shape");
+  if (sc->dictionary) {  // factor (levels) or dictionary-coded strings (utf8 values) or binary (binary values)
+    const std::string df = sc->dictionary->format;
+    if (f != "i" || !a->dictionary || (df != "u" && df != "z")) fz::fail("dictionary shape");
+    if (col && (df == "z") != (col->phys == FSTX_BINARY)) fz::fail("dictionary value type differs from the column");
     const ArrowArray* d = a->dictionary;
     check_strings(d, false, "dictionary values");
     const int32_t* x = (const int32_t*)a->buffers[1];
@@ -79,7 +81,7 @@ void check_child(const ArrowSchema* sc, const ArrowArray* a, int64_t len, const 
       if (k < 0 || k >= d->length) fz::fail("dictionary index outside the dictionary");
       if (!col) continue;
       const uint64_t r = rows[i];
-      if (col->phys == FSTX_STRING) {
+      if (fz::is_strlike(col->phys)) {
         if (col->na[r] || col->s[r] != str_at(d, false, k)) fz::fail("dictionary string differs from the whole read");
       } else if (col->i[r] != k + 1) {
         fz::fail("factor code differs from the whole read");
@@ -87,23 +89,25 @@ void check_child(const ArrowSchema* sc, const ArrowArray* a, int64_t len, const 
     }
     if (col)
       for (int64_t i = 0; i < len; ++i)
-        if (!vbit(a, i) && (col->phys == FSTX_STRING ? col->na[rows[i]] != 1 : col->i[rows[i]] != NA))
+        if (!vbit(a, i) && (fz::is_strlike(col->phys) ? col->na[rows[i]] != 1 : col->i[rows[i]] != NA))
           fz::fail("null where the whole read has a value");
     return;
   }
-  if (f == "u" || f == "U") {
-    check_strings(a, f == "U", "utf8 column");
+  if (f == "u" || f == "U" || f == "z" || f == "Z") {
+    const bool large = f == "U" || f == "Z";
+    if (col && (f == "z" || f == "Z") != (col->phys == FSTX_BINARY)) fz::fail("binary / utf8 type differs from the column");
+    check_strings(a, large, "string or binary column");
     if (col)
       for (int64_t i = 0; i < len; ++i) {
         const uint64_t r = rows[i];
         if (vbit(a, i) == (col->na[r] == 1)) fz::fail("string null differs from the whole read");
-        if (vbit(a, i) && col->s[r] != str_at(a, f == "U", i)) fz::fail("string differs from the whole read");
+        if (vbit(a, i) && col->s[r] != str_at(a, large, i)) fz::fail("string differs from the whole read");
       }
     return;
   }
   if (a->n_buffers != 2 || (len && !a->buffers[1])) fz::fail("fixed-width buffers");
   if (!col) {  // touch every value so ASan sees a short buffer
-    const size_t w = f == "b" ? 0 : (f == "g" || f.compare(0, 3, "tsu") == 0) ? 8 : 4;
+    const size_t w = f == "b" ? 0 : (f == "g" || f == "l" || f.compare(0, 3, "tsu") == 0) ? 8 : 4;
     volatile uint8_t sink = 0;
     const size_t bytes = w ? (size_t)(a->offset + len) * w : (size_t)((a->offset + len + 7) / 8);
     for (size_t b = 0; b < bytes; ++b) sink = sink ^ ((const uint8_t*)a->buffers[1])[b];
@@ -122,6 +126,12 @@ void check_child(const ArrowSchema* sc, const ArrowArray* a, int64_t len, const 
       if (present && x == NA && col->i[r] == NA) continue;
       if (present != (col->i[r] != NA) || (present && x != col->i[r]))
         fz::fail("int32 differs from the whole read");
+    } else if (f == "l") {  // int64 (fstx 1.2): INT64_MIN is NA
+      const int64_t x = ((const int64_t*)a->buffers[1])[k];
+      if (col->phys != FSTX_INT64) fz::fail("int64 child for a column that is not int64");
+      if (present && x == INT64_MIN && col->l[r] == INT64_MIN) continue;  // see above
+      if (present != (col->l[r] != INT64_MIN) || (present && x != col->l[r]))
+        fz::fail("int64 differs from the whole read");
     } else if (f == "b") {
       const bool bit = (((const uint8_t*)a->buffers[1])[k >> 3] >> (k & 7) & 1) != 0;
       if (present != (col->i[r] != NA) || (present && bit != (col->i[r] != 0)))

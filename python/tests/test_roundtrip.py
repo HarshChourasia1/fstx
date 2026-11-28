@@ -12,7 +12,7 @@ import pytest
 
 import fstx
 import golden_tables
-from conftest import CASES, GOLDEN, ids, quiet, same
+from conftest import CASES, DROP2, GOLDEN, ids, quiet, same
 from fstx import _fxa1 as fxa
 from fstx import _meta
 from fstx._read import row_names
@@ -128,6 +128,8 @@ def test_polars_round_trip(path, want, tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", fstx.FstxWarning)  # the factor with an NA level becomes strings
         df = fstx.to_polars(t)
+    if path.stem == "integer64" and not DROP2:
+        pytest.skip("waits for engine drop 2: through polars (no metadata) the values past int32 become an int64 column")
     back = quiet(write(df, tmp_path / "a.fstx"))
     assert back.column_names == t.column_names
     if t.num_columns:

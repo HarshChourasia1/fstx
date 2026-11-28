@@ -1,6 +1,9 @@
-# FST-X 1.0: what this build can read and write (WS1).
+# FST-X 1.0: what this build can read and write (WS1). fstx 1.2: int64 and binary columns (types 4 and 5) are read
+# and written exactly when the engine knows their feature bits (16 and 17).
 fstx_features <- function() {
   r <- fstx_features_impl(list())
+  known <- function(b) any(r$feature_bit == b & r$feature_read)
+  rw <- c(TRUE, TRUE, TRUE, TRUE, known(16L), known(17L))
   list(
     version = r$version,
     format_read = r$format_read,
@@ -10,7 +13,7 @@ fstx_features <- function() {
     codecs = data.frame(id = r$codec_id, name = r$codec_name, read = r$codec_read, write = r$codec_write,
                         stringsAsFactors = FALSE),
     types = data.frame(id = 0:5, name = c("int32", "float64", "logical", "string", "int64", "binary"),
-                       read = c(TRUE, TRUE, TRUE, TRUE, FALSE, FALSE), stringsAsFactors = FALSE)
+                       read = rw, write = rw, stringsAsFactors = FALSE)
   )
 }
 

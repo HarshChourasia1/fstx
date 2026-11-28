@@ -74,14 +74,18 @@ NULL
 #'
 #' @return x as given, invisibly.
 write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compress = NULL, level = NULL,
-                       threads = fstx_hw_threads(), append = FALSE) {
+                       threads = fstx_hw_threads(), append = FALSE, int64 = c("native", "integer64")) {
+  # int64: the first choice is the default (fstx 1.2 design, open decision 1); to make the 1.0 layout the default,
+  # swap the two strings here and in man/write_fstx.Rd.
   fn <- "write_fstx"
   .encoding <- .test_hooks$encoding
   .crash <- if (is.null(.test_hooks$crash)) 0L else .test_hooks$crash
   if (!is.data.frame(x)) .err(fn, "'x' must be a data frame")
   .flag(append, "append", fn)
+  int64 <- .pick(int64, c("native", "integer64"), "int64", fn)
   x_in <- x
   file_ta <- NULL
+  i64_legacy <- .i64_layout$legacy   # fstx_compact(merge = TRUE): each column's stored layout, else NULL
   if (append) {
     path <- .path_arg(path, fn = fn)
     if (!file.exists(path)) {
@@ -90,6 +94,7 @@ write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compre
       chk <- .append_prepare(x, path)
       x <- chk$x
       file_ta <- chk$table_attrs
+      i64_legacy <- chk$phys == "double"   # appends follow the file's layout, whatever `int64` says
       # a profile from a newer fstx ("unknown"): encode as balanced; the file keeps its stored value
       if (missing(profile)) profile <- if (chk$profile == "unknown") "balanced" else chk$profile
     }
@@ -126,7 +131,9 @@ write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compre
   nm <- enc2utf8(nm)
 
   types <- vapply(cols, typeof, "")
-  ok <- types %in% c("integer", "double", "logical", "character")
+  # list columns: binary (every element a raw vector or NULL; the elements are checked by the C++ writer)
+  ok <- types %in% c("integer", "double", "logical", "character") |
+    (types == "list" & vapply(cols, .binary_class_ok, NA))
   if (!all(ok)) {
     i <- which(!ok)[1L]
     stop(sprintf("write_fstx: column '%s' has type '%s' (class '%s'), which fstx cannot store yet",
@@ -138,7 +145,8 @@ write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compre
     stop(sprintf("write_fstx: column '%s' has %.0f values but the table has %.0f rows (matrix columns are not supported)",
                  nm[i], lens[i], nr), call. = FALSE)
   }
-  phys <- match(types, c("integer", "double", "logical", "character")) - 1L
+  phys <- match(types, c("integer", "double", "logical", "character", "int64", "list")) - 1L
+  if (is.null(i64_legacy)) i64_legacy <- rep(int64 == "integer64", nc)
   logical <- integer(nc)
   ordered <- logical(nc)
   levels <- vector("list", nc)
@@ -151,7 +159,14 @@ write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compre
     cl <- a[["class"]]
     if (!is.null(a[["dim"]]))
       stop(sprintf("write_fstx: column '%s' is a matrix or array, which fstx cannot store yet", nm[i]), call. = FALSE)
-    if (types[i] == "integer" && (identical(cl, "factor") || identical(cl, c("ordered", "factor"))) &&
+    if (types[i] == "double" && "integer64" %in% cl && !isTRUE(i64_legacy[i])) {
+      # native int64 (physical type 4): the bits as they are; a class other than exactly "integer64" is kept
+      # in the blob (the reader sets "integer64", then the blob's class)
+      phys[i] <- 4L
+      if (identical(cl, "integer64")) a[["class"]] <- NULL
+    } else if (types[i] == "list") {
+      a[["ptype"]] <- NULL   # vctrs' raw(0) prototype: set back on read (FXA1 holds no raw vectors)
+    } else if (types[i] == "integer" && (identical(cl, "factor") || identical(cl, c("ordered", "factor"))) &&
         is.character(a[["levels"]]) && !anyNA(a[["levels"]])) {
       logical[i] <- 1L
       ordered[i] <- length(cl) == 2L
@@ -199,6 +214,29 @@ write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compre
   stop("write_fstx: could not convert strings to UTF-8", call. = FALSE)
 }
 
+# Binary columns (fstx 1.2): list columns whose class is none of these is refused; the elements (raw or NULL) are
+# checked by the C++ writer. vctrs list_of classes must have a raw prototype.
+.binary_classes <- c("AsIs", "blob", "arrow_binary", "vctrs_list_of")
+.binary_class_ok <- function(v) {
+  cl <- oldClass(v)
+  if (is.null(cl)) return(TRUE)
+  if (!any(cl %in% .binary_classes)) return(FALSE)
+  pt <- attr(v, "ptype", exact = TRUE)
+  is.null(pt) || (is.raw(pt) && !length(pt) && is.null(attributes(pt)))
+}
+
+# int64 columns read without bit64 installed: one message per session and column name.
+.i64_msg <- new.env(parent = emptyenv())
+.has_bit64 <- function() !isTRUE(.test_hooks$no_bit64) && requireNamespace("bit64", quietly = TRUE)
+.i64_note <- function(cols) {
+  cols <- setdiff(cols, names(.i64_msg))
+  if (!length(cols) || .has_bit64()) return(invisible())
+  for (k in cols) assign(k, TRUE, envir = .i64_msg)
+  message(sprintf("fstx: install bit64 to print and compute with column%s %s, or read %s with int64 = \"double\"",
+                  if (length(cols) > 1L) "s" else "", paste0("'", cols, "'", collapse = ", "),
+                  if (length(cols) > 1L) "them" else "it"))
+}
+
 #' Read an fstx file
 #'
 #' The help page man/read_fstx.Rd is the full text.
@@ -206,11 +244,12 @@ write_fstx <- function(x, path, profile = c("balanced", "fast", "small"), compre
 #' @return a data frame with the class it was written with.
 read_fstx <- function(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads(), verify = TRUE,
                       lazy = FALSE, strings = c("auto", "eager", "deferred"), as_factor = FALSE,
-                      rows = NULL, where = NULL, attributes = TRUE) {
+                      rows = NULL, where = NULL, attributes = TRUE, int64 = c("integer64", "double")) {
   fn <- "read_fstx"
   path <- .path_arg(path, fn = fn)
   .flag(verify, "verify", fn)
   .flag(attributes, "attributes", fn)
+  int64 <- .pick(int64, c("integer64", "double"), "int64", fn)
   wq <- substitute(where)
   if (!is.null(wq)) {
     if (!is.null(rows)) .err(fn, "use either 'rows' or 'where', not both")
@@ -259,14 +298,39 @@ read_fstx <- function(path, columns = NULL, from = 1, to = NULL, threads = fstx_
     res[[i]] <- fstx_codes_impl(res[[i]], lapply(d, match, lv), lv, FALSE, lazy)
   }
   for (i in which(r$factor_fallback)) res[[i]] <- factor(res[[i]])
+  i64 <- which(r$phys == 4L)   # native int64 columns: class "integer64" (set by the C++ reader) or doubles
+  if (length(i64) && int64 == "double") {
+    lossy <- character(0)
+    for (i in i64) {
+      col <- res[[i]]
+      res[i] <- list(NULL)
+      k <- fstx_i64_double_impl(col)   # converts a plain vector in place
+      res[[i]] <- k[[1L]]
+      if (k[[2L]] > 0) lossy <- c(lossy, r$names[i])
+    }
+    if (length(lossy))
+      warning(sprintf("read_fstx: int64 column%s %s ha%s values past 2^53 that lose precision as doubles",
+                      if (length(lossy) > 1L) "s" else "", paste0("'", lossy, "'", collapse = ", "),
+                      if (length(lossy) > 1L) "ve" else "s"), call. = FALSE)
+  } else if (length(i64) && r$nrow > 0) {   # not for zero-row reads (the prototypes appends and filters read)
+    .i64_note(r$names[i64])
+  }
   ca <- r$col_attrs
   for (i in which(!vapply(ca, is.null, NA))) {
     what <- sprintf("column '%s'", r$names[i])
     a <- .attr_decode(ca[[i]], path, what, attributes)   # attributes = FALSE: R-serialized blobs are skipped
     if (is.null(a)) next
+    if (r$phys[i] == 4L && int64 == "double" && !is.null(a[["class"]])) {
+      a[["class"]] <- setdiff(a[["class"]], "integer64")
+      if (!length(a[["class"]])) a[["class"]] <- NULL
+    }
     col <- res[[i]]
     res[i] <- list(NULL)                     # drop the list's reference so the attributes are set in place
-    tryCatch(attributes(col) <- c(attributes(col), a), error = function(e) .attr_corrupt(path, what, conditionMessage(e)))
+    at <- attributes(col)
+    if (is.null(at)) at <- list()
+    at[names(a)] <- a                        # a stored class replaces the one the reader set (int64 columns)
+    if (r$phys[i] == 5L && "vctrs_list_of" %in% at[["class"]]) at[["ptype"]] <- raw(0)
+    tryCatch(attributes(col) <- at, error = function(e) .attr_corrupt(path, what, conditionMessage(e)))
     res[[i]] <- col
   }
   n <- r$nrow
@@ -311,11 +375,14 @@ read_fstx <- function(path, columns = NULL, from = 1, to = NULL, threads = fstx_
 #'
 #' @param path file path.
 #' @return an object of class "fstx_meta": row and column counts, file size, profile ("unknown" for one a
-#'   newer fstx wrote), and per column the type, class and compressed size.
+#'   newer fstx wrote), and per column the type ("integer", "double", "logical", "character", "int64",
+#'   "binary"), class and compressed size.
 fstx_meta <- function(path) {
   path <- .path_arg(path, fn = "fstx_meta")
   m <- fstx_meta_impl(path)
   cls <- ifelse(m$logical == "", m$phys, m$logical)
+  cls[m$phys == "int64"] <- "integer64"   # the R class these columns read back with (fstx 1.2)
+  cls[m$phys == "binary"] <- "list"
   for (i in which(!vapply(m$col_attrs, is.null, NA))) {
     a <- .attr_decode(m$col_attrs[[i]], path, sprintf("column '%s'", m$name[i]))
     if (!is.null(a[["class"]])) cls[i] <- paste(a[["class"]], collapse = "/")
