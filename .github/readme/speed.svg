@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="792" height="787" viewBox="-16 -16 792 787" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="Bar chart: fstx, Vortex and Parquet (snappy) times in milliseconds for write, full read, one column, 1% row window and filter on three tables; the same numbers are in the README speed table.">
+<style>
+  .bg { fill: #fcfcfb; } .t1 { fill: #0b0b0b; } .t2 { fill: #52514e; } .rule { stroke: #dcdbd6; stroke-width: 1; }
+  .s0 { fill: #2a78d6; } .s1 { fill: #eb6834; } .s2 { fill: #1baf7a; }
+  @media (prefers-color-scheme: dark) {
+    .bg { fill: #1a1a19; } .t1 { fill: #f0efec; } .t2 { fill: #c3c2b7; } .rule { stroke: #3a3a37; }
+    .s0 { fill: #3987e5; } .s1 { fill: #d95926; } .s2 { fill: #199e70; }
+  }
+</style>
+<rect x="-16" y="-16" width="792" height="787" rx="8" class="bg"/>
+<text x="0" y="22" class="t1" font-size="17" font-weight="600">fstx vs Vortex vs Parquet: time in milliseconds, shorter is faster</text>
+<text x="0" y="42" class="t2" font-size="12">Python, all cores, one 14-core desktop, 27 Nov 2026. Each row is scaled to its slowest format. Method and more formats: README, Speed.</text>
+<rect x="0" y="56" width="12" height="12" rx="3" class="s0"/>
+<text x="18" y="66.5" class="t1" font-size="12">fstx</text>
+<rect x="72" y="56" width="12" height="12" rx="3" class="s1"/>
+<text x="90" y="66.5" class="t1" font-size="12">Vortex</text>
+<rect x="160" y="56" width="12" height="12" rx="3" class="s2"/>
+<text x="178" y="66.5" class="t1" font-size="12">Parquet (snappy)</text>
+<text x="0" y="104" class="t1" font-size="13" font-weight="600">numeric (10M rows x 6)</text>
+<line x1="0" x2="760" y1="111" y2="111" class="rule"/>
+<text x="0" y="134.5" class="t2" font-size="12">write</text>
+<rect x="150" y="118" width="43.6" height="7" rx="2" class="s0"><title>numeric, write, fstx: 73.8 ms</title></rect>
+<text x="198.6" y="124.5" class="t2" font-size="9.5" font-weight="600">73.8</text>
+<rect x="150" y="127" width="137.7" height="7" rx="2" class="s1"><title>numeric, write, Vortex: 233 ms</title></rect>
+<text x="292.7" y="133.5" class="t2" font-size="9.5">233</text>
+<rect x="150" y="136" width="540.0" height="7" rx="2" class="s2"><title>numeric, write, Parquet (snappy): 914 ms</title></rect>
+<text x="695.0" y="142.5" class="t2" font-size="9.5">914</text>
+<text x="0" y="171.5" class="t2" font-size="12">full read</text>
+<rect x="150" y="155" width="152.8" height="7" rx="2" class="s0"><title>numeric, full read, fstx: 22.7 ms</title></rect>
+<text x="307.8" y="161.5" class="t2" font-size="9.5" font-weight="600">22.7</text>
+<rect x="150" y="164" width="269.3" height="7" rx="2" class="s1"><title>numeric, full read, Vortex: 40.0 ms</title></rect>
+<text x="424.3" y="170.5" class="t2" font-size="9.5">40.0</text>
+<rect x="150" y="173" width="540.0" height="7" rx="2" class="s2"><title>numeric, full read, Parquet (snappy): 80.2 ms</title></rect>
+<text x="695.0" y="179.5" class="t2" font-size="9.5">80.2</text>
+<text x="0" y="208.5" class="t2" font-size="12">one column</text>
+<rect x="150" y="192" width="143.3" height="7" rx="2" class="s0"><title>numeric, one column, fstx: 11.7 ms</title></rect>
+<text x="298.3" y="198.5" class="t2" font-size="9.5" font-weight="600">11.7</text>
+<rect x="150" y="201" width="253.5" height="7" rx="2" class="s1"><title>numeric, one column, Vortex: 20.7 ms</title></rect>
+<text x="408.5" y="207.5" class="t2" font-size="9.5">20.7</text>
+<rect x="150" y="210" width="540.0" height="7" rx="2" class="s2"><title>numeric, one column, Parquet (snappy): 44.1 ms</title></rect>
+<text x="695.0" y="216.5" class="t2" font-size="9.5">44.1</text>
+<text x="0" y="245.5" class="t2" font-size="12">1% row window</text>
+<rect x="150" y="229" width="48.5" height="7" rx="2" class="s0"><title>numeric, 1% row window, fstx: 1.24 ms</title></rect>
+<text x="203.5" y="235.5" class="t2" font-size="9.5" font-weight="600">1.24</text>
+<rect x="150" y="238" width="108.0" height="7" rx="2" class="s1"><title>numeric, 1% row window, Vortex: 2.76 ms</title></rect>
+<text x="263.0" y="244.5" class="t2" font-size="9.5">2.76</text>
+<rect x="150" y="247" width="540.0" height="7" rx="2" class="s2"><title>numeric, 1% row window, Parquet (snappy): 13.8 ms</title></rect>
+<text x="695.0" y="253.5" class="t2" font-size="9.5">13.8</text>
+<text x="0" y="282.5" class="t2" font-size="12">filter</text>
+<rect x="150" y="266" width="140.5" height="7" rx="2" class="s0"><title>numeric, filter, fstx: 20.9 ms</title></rect>
+<text x="295.5" y="272.5" class="t2" font-size="9.5" font-weight="600">20.9</text>
+<rect x="150" y="275" width="329.5" height="7" rx="2" class="s1"><title>numeric, filter, Vortex: 49.0 ms</title></rect>
+<text x="484.5" y="281.5" class="t2" font-size="9.5">49.0</text>
+<rect x="150" y="284" width="540.0" height="7" rx="2" class="s2"><title>numeric, filter, Parquet (snappy): 80.3 ms</title></rect>
+<text x="695.0" y="290.5" class="t2" font-size="9.5">80.3</text>
+<text x="0" y="325" class="t1" font-size="13" font-weight="600">text (2M rows x 4 strings)</text>
+<line x1="0" x2="760" y1="332" y2="332" class="rule"/>
+<text x="0" y="355.5" class="t2" font-size="12">write</text>
+<rect x="150" y="339" width="100.8" height="7" rx="2" class="s0"><title>text, write, fstx: 104 ms</title></rect>
+<text x="255.8" y="345.5" class="t2" font-size="9.5" font-weight="600">104</text>
+<rect x="150" y="348" width="319.9" height="7" rx="2" class="s1"><title>text, write, Vortex: 330 ms</title></rect>
+<text x="474.9" y="354.5" class="t2" font-size="9.5">330</text>
+<rect x="150" y="357" width="540.0" height="7" rx="2" class="s2"><title>text, write, Parquet (snappy): 557 ms</title></rect>
+<text x="695.0" y="363.5" class="t2" font-size="9.5">557</text>
+<text x="0" y="392.5" class="t2" font-size="12">full read</text>
+<rect x="150" y="376" width="241.2" height="7" rx="2" class="s0"><title>text, full read, fstx: 39.4 ms</title></rect>
+<text x="396.2" y="382.5" class="t2" font-size="9.5" font-weight="600">39.4</text>
+<rect x="150" y="385" width="268.2" height="7" rx="2" class="s1"><title>text, full read, Vortex: 43.8 ms</title></rect>
+<text x="423.2" y="391.5" class="t2" font-size="9.5">43.8</text>
+<rect x="150" y="394" width="540.0" height="7" rx="2" class="s2"><title>text, full read, Parquet (snappy): 88.2 ms</title></rect>
+<text x="695.0" y="400.5" class="t2" font-size="9.5">88.2</text>
+<text x="0" y="429.5" class="t2" font-size="12">one column</text>
+<rect x="150" y="413" width="117.4" height="7" rx="2" class="s0"><title>text, one column, fstx: 19.0 ms</title></rect>
+<text x="272.4" y="419.5" class="t2" font-size="9.5">19.0</text>
+<rect x="150" y="422" width="116.8" height="7" rx="2" class="s1"><title>text, one column, Vortex: 18.9 ms</title></rect>
+<text x="271.8" y="428.5" class="t2" font-size="9.5" font-weight="600">18.9</text>
+<rect x="150" y="431" width="540.0" height="7" rx="2" class="s2"><title>text, one column, Parquet (snappy): 87.4 ms</title></rect>
+<text x="695.0" y="437.5" class="t2" font-size="9.5">87.4</text>
+<text x="0" y="466.5" class="t2" font-size="12">1% row window</text>
+<rect x="150" y="450" width="9.2" height="7" rx="2" class="s0"><title>text, 1% row window, fstx: 1.52 ms</title></rect>
+<text x="164.2" y="456.5" class="t2" font-size="9.5" font-weight="600">1.52</text>
+<rect x="150" y="459" width="16.9" height="7" rx="2" class="s1"><title>text, 1% row window, Vortex: 2.79 ms</title></rect>
+<text x="171.9" y="465.5" class="t2" font-size="9.5">2.79</text>
+<rect x="150" y="468" width="540.0" height="7" rx="2" class="s2"><title>text, 1% row window, Parquet (snappy): 89.1 ms</title></rect>
+<text x="695.0" y="474.5" class="t2" font-size="9.5">89.1</text>
+<text x="0" y="503.5" class="t2" font-size="12">filter</text>
+<rect x="150" y="487" width="74.9" height="7" rx="2" class="s0"><title>text, filter, fstx: 11.5 ms</title></rect>
+<text x="229.9" y="493.5" class="t2" font-size="9.5" font-weight="600">11.5</text>
+<rect x="150" y="496" width="220.2" height="7" rx="2" class="s1"><title>text, filter, Vortex: 33.8 ms</title></rect>
+<text x="375.2" y="502.5" class="t2" font-size="9.5">33.8</text>
+<rect x="150" y="505" width="540.0" height="7" rx="2" class="s2"><title>text, filter, Parquet (snappy): 82.9 ms</title></rect>
+<text x="695.0" y="511.5" class="t2" font-size="9.5">82.9</text>
+<text x="0" y="546" class="t1" font-size="13" font-weight="600">mixed (5M rows x 8)</text>
+<line x1="0" x2="760" y1="553" y2="553" class="rule"/>
+<text x="0" y="576.5" class="t2" font-size="12">write</text>
+<rect x="150" y="560" width="59.3" height="7" rx="2" class="s0"><title>mixed, write, fstx: 95.4 ms</title></rect>
+<text x="214.3" y="566.5" class="t2" font-size="9.5" font-weight="600">95.4</text>
+<rect x="150" y="569" width="215.0" height="7" rx="2" class="s1"><title>mixed, write, Vortex: 346 ms</title></rect>
+<text x="370.0" y="575.5" class="t2" font-size="9.5">346</text>
+<rect x="150" y="578" width="540.0" height="7" rx="2" class="s2"><title>mixed, write, Parquet (snappy): 869 ms</title></rect>
+<text x="695.0" y="584.5" class="t2" font-size="9.5">869</text>
+<text x="0" y="613.5" class="t2" font-size="12">full read</text>
+<rect x="150" y="597" width="130.7" height="7" rx="2" class="s0"><title>mixed, full read, fstx: 32.2 ms</title></rect>
+<text x="285.7" y="603.5" class="t2" font-size="9.5" font-weight="600">32.2</text>
+<rect x="150" y="606" width="171.3" height="7" rx="2" class="s1"><title>mixed, full read, Vortex: 42.2 ms</title></rect>
+<text x="326.3" y="612.5" class="t2" font-size="9.5">42.2</text>
+<rect x="150" y="615" width="540.0" height="7" rx="2" class="s2"><title>mixed, full read, Parquet (snappy): 133 ms</title></rect>
+<text x="695.0" y="621.5" class="t2" font-size="9.5">133</text>
+<text x="0" y="650.5" class="t2" font-size="12">one column</text>
+<rect x="150" y="634" width="94.8" height="7" rx="2" class="s0"><title>mixed, one column, fstx: 6.13 ms</title></rect>
+<text x="249.8" y="640.5" class="t2" font-size="9.5">6.13</text>
+<rect x="150" y="643" width="81.7" height="7" rx="2" class="s1"><title>mixed, one column, Vortex: 5.28 ms</title></rect>
+<text x="236.7" y="649.5" class="t2" font-size="9.5" font-weight="600">5.28</text>
+<rect x="150" y="652" width="540.0" height="7" rx="2" class="s2"><title>mixed, one column, Parquet (snappy): 34.9 ms</title></rect>
+<text x="695.0" y="658.5" class="t2" font-size="9.5">34.9</text>
+<text x="0" y="687.5" class="t2" font-size="12">1% row window</text>
+<rect x="150" y="671" width="48.6" height="7" rx="2" class="s0"><title>mixed, 1% row window, fstx: 3.87 ms</title></rect>
+<text x="203.6" y="677.5" class="t2" font-size="9.5">3.87</text>
+<rect x="150" y="680" width="40.1" height="7" rx="2" class="s1"><title>mixed, 1% row window, Vortex: 3.19 ms</title></rect>
+<text x="195.1" y="686.5" class="t2" font-size="9.5" font-weight="600">3.19</text>
+<rect x="150" y="689" width="540.0" height="7" rx="2" class="s2"><title>mixed, 1% row window, Parquet (snappy): 43.0 ms</title></rect>
+<text x="695.0" y="695.5" class="t2" font-size="9.5">43.0</text>
+<text x="0" y="724.5" class="t2" font-size="12">filter</text>
+<rect x="150" y="708" width="77.2" height="7" rx="2" class="s0"><title>mixed, filter, fstx: 17.3 ms</title></rect>
+<text x="232.2" y="714.5" class="t2" font-size="9.5" font-weight="600">17.3</text>
+<rect x="150" y="717" width="136.6" height="7" rx="2" class="s1"><title>mixed, filter, Vortex: 30.6 ms</title></rect>
+<text x="291.6" y="723.5" class="t2" font-size="9.5">30.6</text>
+<rect x="150" y="726" width="540.0" height="7" rx="2" class="s2"><title>mixed, filter, Parquet (snappy): 121 ms</title></rect>
+<text x="695.0" y="732.5" class="t2" font-size="9.5">121</text>
+</svg>

@@ -5,6 +5,10 @@ C++ engine. A file written by either language is an ordinary fstx file that the 
 Tables are `pyarrow.Table`s; pandas and polars are helpers on top. Python 3.10+, pyarrow 15+; pandas, polars and
 numpy are optional. The design, type by type, is in `DESIGN.md`; build and test notes are in `DEV.md`.
 
+Docs: https://harshchourasia1.github.io/fstx/ · Source: https://github.com/HarshChourasia1/fstx
+
+![fstx vs Vortex vs Parquet: time in milliseconds](https://harshchourasia1.github.io/fstx/speed.svg)
+
 ## Install
 
 ```

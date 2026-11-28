@@ -1,10 +1,19 @@
 # fstx
 
+[![PyPI](https://img.shields.io/pypi/v/fstx)](https://pypi.org/project/fstx/)
+[![CRAN](https://www.r-pkg.org/badges/version/fstx)](https://cran.r-project.org/package=fstx)
+[![R-universe](https://harshchourasia1.r-universe.dev/badges/fstx)](https://harshchourasia1.r-universe.dev/fstx)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 Fast, safe column-store files for Python and R. One C++ engine sits under both packages, so a file written
 from Python reads in R and the other way round. Each column is split into pages; every page gets the
 lightweight encoding that fits it (bit-packing, frame-of-reference, delta, run-length, dictionary, ALP for
 doubles, FSST for strings), optionally under ZSTD or LZ4, with an XXH3 checksum per page. Reads and writes
 run on all cores.
+
+Docs: [https://harshchourasia1.github.io/fstx/](https://harshchourasia1.github.io/fstx/)
+
+![fstx vs Vortex vs Parquet: time in milliseconds](https://raw.githubusercontent.com/HarshChourasia1/fstx/main/.github/readme/speed.svg)
 
 ## Install
 
@@ -158,5 +167,19 @@ implements).
   `readRDS()` does: only read such files from sources you trust, or use `read_fstx(attributes = FALSE)`, which
   skips them. The checksum catches accidental damage, not deliberate tampering.
 
-In R, see `?fstx` for a short guide, and `?read_fstx` and `?write_fstx` for every argument. Third-party code bundled
-under `src/vendor/` and its licences are listed in `inst/COPYRIGHTS`.
+In R, see `?fstx` for a short guide, and `?read_fstx` and `?write_fstx` for every argument.
+
+## Credits
+
+fstx's ALP and ALP-RD double encodings follow Afroozeh, Kuffo and Boncz, "ALP: Adaptive Lossless floating-Point
+Compression", Proc. ACM Manag. Data 1(4), 2023, [doi:10.1145/3626717](https://doi.org/10.1145/3626717). String
+pages use FSST (Boncz, Neumann and Leis, "FSST: Fast Random Access String Compression", PVLDB 13(12), 2020,
+[doi:10.14778/3407790.3407851](https://doi.org/10.14778/3407790.3407851)), bundled from cwida/fsst. fstx also
+bundles Zstandard, LZ4, xxHash, FlatBuffers and Highway, and the Apache Arrow C Data Interface structs; each with
+its licence, listed in [inst/COPYRIGHTS](inst/COPYRIGHTS) (the Python package ships the same list in
+`python/LICENSES/`).
+
+## Citing fstx
+
+GitHub's "Cite this repository" button gives APA and BibTeX from [CITATION.cff](https://github.com/HarshChourasia1/fstx/blob/main/CITATION.cff); in R,
+`citation("fstx")`.

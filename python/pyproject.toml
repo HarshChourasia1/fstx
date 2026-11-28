@@ -20,10 +20,20 @@ requires-python = ">=3.10"
 # reader is built on); pandas and polars are optional (fstx.to_pandas / fstx.to_polars import them on use).
 dependencies = ["pyarrow>=15"]
 authors = [{ name = "Harsh Chourasia" }]
+keywords = ["columnar", "file format", "column store", "parquet alternative", "arrow", "pyarrow", "pandas", "polars", "dataframe", "compression"]
 classifiers = [
   "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
   "Programming Language :: C++",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Database",
+  "Topic :: Scientific/Engineering",
+  "Topic :: System :: Archiving :: Compression",
 ]
 
 [project.optional-dependencies]
@@ -32,7 +42,11 @@ polars = ["polars>=1"]
 test = ["pytest>=7", "pandas>=2", "polars>=1"]
 
 [project.urls]
-Homepage = "https://github.com/HarshChourasia1/fstx"
+Homepage = "https://harshchourasia1.github.io/fstx/"
+Documentation = "https://harshchourasia1.github.io/fstx/python.html"
+Source = "https://github.com/HarshChourasia1/fstx"
+Issues = "https://github.com/HarshChourasia1/fstx/issues"
+Changelog = "https://github.com/HarshChourasia1/fstx/blob/main/NEWS.md"
 
 [tool.scikit-build]
 minimum-version = "build-system.requires"
