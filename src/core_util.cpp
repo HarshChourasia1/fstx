@@ -527,6 +527,7 @@ void ThreadPool::after_fork() {
   new (&m_) std::mutex();
   new (&cv_work_) std::condition_variable();
   new (&cv_done_) std::condition_variable();
+  new (&cv_spawn_) std::condition_variable();
   std::vector<std::thread>* gone = new std::vector<std::thread>(std::move(threads_));
   gone->push_back(std::move(spawner_));
   threads_ = std::vector<std::thread>();
@@ -535,7 +536,7 @@ void ThreadPool::after_fork() {
   error_ = nullptr;
   generation_ = 0;
   active_ = next_slot_ = remaining_ = want_ = 0;
-  spawning_ = stop_ = running_ = false;
+  stop_ = running_ = false;
 }
 
 ThreadPool::~ThreadPool() { shutdown(); }
@@ -566,34 +567,41 @@ void ThreadPool::worker_main() {
   }
 }
 
-// The spawner makes threads one after another until there are want_ (m_ is not held while one is made).
+// The spawner makes threads one after another until there are want_ (m_ is not held while one is made), then
+// waits for the next request. It stays up like the workers until shutdown() joins it: a spawner that had finished
+// but was not joined yet was a "thread leak" at process exit under TSan, and a detached one could still be running
+// its last instructions when the library is unloaded.
 void ThreadPool::spawn_loop() {
   std::unique_lock<std::mutex> lk(m_);
-  while (!stop_ && (int)threads_.size() < want_) {
+  for (;;) {
+    cv_spawn_.wait(lk, [&] { return stop_ || (int)threads_.size() < want_; });
+    if (stop_) return;
     lk.unlock();
     std::thread t;
     try {
       t = std::thread([this] { worker_main(); });
     } catch (...) {  // no thread: the pool works with the ones it has (the caller runs any slot left)
       lk.lock();
-      break;
+      want_ = (int)threads_.size();
+      continue;
     }
     lk.lock();
     threads_.push_back(std::move(t));
   }
-  spawning_ = false;  // the spawner touches nothing after this
 }
 
 void ThreadPool::grow(int k) {
+  if (stop_) return;
   if (k > want_) want_ = std::min(k, 256);
-  if (spawning_ || stop_ || (int)threads_.size() >= want_) return;
-  if (spawner_.joinable()) spawner_.join();  // the last one has finished (spawning_ is false)
-  spawning_ = true;
-  try {
-    spawner_ = std::thread([this] { spawn_loop(); });
-  } catch (...) {
-    spawning_ = false;
+  if ((int)threads_.size() >= want_) return;
+  if (!spawner_.joinable()) {
+    try {
+      spawner_ = std::thread([this] { spawn_loop(); });
+    } catch (...) {
+      return;  // no spawner: the caller runs the slots
+    }
   }
+  cv_spawn_.notify_one();
 }
 
 void ThreadPool::warm(int k) {
@@ -640,6 +648,7 @@ void ThreadPool::shutdown() {
     stop_ = true;
   }
   cv_work_.notify_all();
+  cv_spawn_.notify_all();
   if (spawner_.joinable()) spawner_.join();  // first: it may still add a thread
   for (auto& t : threads_)
     if (t.joinable()) t.join();
@@ -647,7 +656,6 @@ void ThreadPool::shutdown() {
   std::lock_guard<std::mutex> g(m_);
   stop_ = false;
   running_ = false;
-  spawning_ = false;
   want_ = 0;
 }
 
