@@ -1,7 +1,7 @@
 # fstx for Python
 
-Reads and writes fstx files (the FST-X column-store format of the R package fstx) from Python, on the same C++
-engine as the R package. A file written by either language is an ordinary fstx file that the other reads.
+Reads and writes fstx files from Python. fstx is one column-store format with a Python and an R package on the same
+C++ engine. A file written by either language is an ordinary fstx file that the other reads.
 Tables are `pyarrow.Table`s; pandas and polars are helpers on top. Python 3.10+, pyarrow 15+; pandas, polars and
 numpy are optional. The design, type by type, is in `DESIGN.md`; build and test notes are in `DEV.md`.
 
