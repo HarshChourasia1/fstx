@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import struct
+import sys
 import threading
 import warnings
 
@@ -628,6 +629,22 @@ def test_row_groups_make_the_batches():
             assert f.read(rows=slice(7, f.num_rows - 9)).equals(t.slice(7, f.num_rows - 16))
 
 
+def _assert_no_open_handle(p):
+    """On Windows: opening the file with no sharing at all fails (error 32) while any handle on it is open."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateFileW.restype = wintypes.HANDLE
+    k.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+                              wintypes.DWORD, wintypes.HANDLE]
+    h = k.CreateFileW(str(p), 0x80000000, 0, None, 3, 0x80, None)  # GENERIC_READ, no sharing, OPEN_EXISTING
+    assert h != wintypes.HANDLE(-1).value, "the file is still open (Windows error %d)" % ctypes.get_last_error()
+    k.CloseHandle(h)
+
+
 def test_file_is_released_after_reading(tmp_path):
     p = tmp_path / "x.fstx"
     shutil.copyfile(BIG, p)
@@ -636,7 +653,10 @@ def test_file_is_released_after_reading(tmp_path):
         r = f.to_batches(batch_rows=100)
         first = r.read_next_batch()
         r.close()
-    p.unlink()  # Windows refuses to delete a mapped file
+    # Windows Server 2022 refuses to delete a mapped file, but Windows 11 deletes it anyway (POSIX delete
+    # semantics): check that no handle is left, not just that the delete works
+    _assert_no_open_handle(p)
+    p.unlink()
     assert t.num_rows > 0 and first.num_rows == 100 and t.column("w").to_pylist()  # the data owns its memory
 
 

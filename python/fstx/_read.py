@@ -587,7 +587,11 @@ def to_batches(f: File, columns=None, batch_rows=None, filters=None, *, rows=Non
     if not plan.cols:
         return pa.RecordBatchReader.from_batches(schema, iter(_no_columns(sel.n, schema).to_batches()))
     gen = _batches(plan, schema, sel, nt, batch_rows, vf, _State()) if sel.n else iter(())
-    return pa.RecordBatchReader.from_batches(schema, gen)
+    # close() on a reader made by from_batches does nothing (pyarrow's PyRecordBatchReader has no Close): the
+    # paused generator, and with it the stream and the mapped file, would live on until the reader is garbage, and
+    # Windows refuses to delete a mapped file. Passed through the C stream interface, close() releases the
+    # exported stream, which drops the generator and runs its finally (the file is closed there).
+    return pa.RecordBatchReader.from_stream(pa.RecordBatchReader.from_batches(schema, gen))
 
 
 def read_fstx(path: PathLike, columns=None, rows=None, filters=None, *, threads=None, verify=True,
