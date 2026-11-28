@@ -47,6 +47,37 @@ The Python guide (every option, pandas and polars, how each type maps, speed aga
 DuckDB) is [python/README.md](https://github.com/HarshChourasia1/fstx/blob/main/python/README.md). The R guide
 follows.
 
+## Speed
+
+Python, all cores, seconds; one desktop (Intel Core Ultra 5 245K, 14 cores, NVMe SSD, Windows x64), 27 Nov 2026,
+the 1.2 speed work before the new column types. Each case runs in a fresh process; a time is the median of 3 runs,
+the better of 2 rounds; page cache warm. Tables: numeric 10,000,000 rows x 6, text 2,000,000 x 4 strings, mixed
+5,000,000 x 8 (numbers, a date, strings, a factor, a logical). Also run: Parquet zstd, Lance, DuckDB and Polars;
+the "fastest" column covers all of them.
+
+| table | test | fstx | Vortex | Parquet (snappy) | fastest |
+|---|---|---:|---:|---:|---|
+| numeric | write | **0.0738** | 0.233 | 0.914 | fstx |
+| numeric | full read | **0.0227** | 0.0400 | 0.0802 | fstx |
+| numeric | one column | **0.0117** | 0.0207 | 0.0441 | fstx |
+| numeric | 1% row window | **0.00124** | 0.00276 | 0.0138 | fstx |
+| numeric | filter | **0.0209** | 0.0490 | 0.0803 | fstx |
+| text | write | **0.104** | 0.330 | 0.557 | fstx |
+| text | full read | **0.0394** | 0.0438 | 0.0882 | fstx |
+| text | one column | 0.0190 | **0.0189** | 0.0874 | Vortex |
+| text | 1% row window | **0.00152** | 0.00279 | 0.0891 | fstx |
+| text | filter | **0.0115** | 0.0338 | 0.0829 | fstx |
+| mixed | write | **0.0954** | 0.346 | 0.869 | fstx |
+| mixed | full read | **0.0322** | 0.0422 | 0.133 | fstx |
+| mixed | one column | 0.00613 | **0.00528** | 0.0349 | Vortex |
+| mixed | 1% row window | 0.00387 | **0.00319** | 0.0430 | Vortex |
+| mixed | filter | **0.0173** | 0.0306 | 0.121 | fstx |
+| | file size, MB (numeric / text / mixed) | **119 / 70.8 / 64.8** | 120 / 101 / 83.7 | 204 / 117 / 128 | |
+
+Counting the one-thread runs too, fstx was the fastest in 26 of 30 cases; Vortex was faster in four: the three
+above and the mixed row window at one thread. Reads of a few milliseconds are noisy. More detail, memory use included, is in
+the [Python guide](https://github.com/HarshChourasia1/fstx/blob/main/python/README.md#speed).
+
 ## R: write and read
 
 ```r
