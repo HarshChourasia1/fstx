@@ -1,27 +1,53 @@
 # fstx
 
-Fast, safe column-store files for R data frames. Each column is split into pages; every page gets the
+Fast, safe column-store files for Python and R. One C++ engine sits under both packages, so a file written
+from Python reads in R and the other way round. Each column is split into pages; every page gets the
 lightweight encoding that fits it (bit-packing, frame-of-reference, delta, run-length, dictionary, ALP for
 doubles, FSST for strings), optionally under ZSTD or LZ4, with an XXH3 checksum per page. Reads and writes
 run on all cores.
 
 ## Install
 
-Needs R 4.4.0 or newer. Ready-built for Windows and macOS (and from source on Linux) through R-universe:
+Python 3.10 or newer; wheels for Windows x64, Linux x86_64 and aarch64, and macOS (Intel and Apple silicon):
+
+```
+pip install fstx
+```
+
+R 4.4.0 or newer; ready-built for Windows and macOS (and from source on Linux) through R-universe:
 
 ```r
 install.packages("fstx", repos = c("https://harshchourasia1.r-universe.dev", "https://cloud.r-project.org"))
 ```
 
-From source (needs a C++17 compiler; Rtools on Windows):
+R from source (needs a C++17 compiler; Rtools on Windows): `remotes::install_github("HarshChourasia1/fstx")`.
 
-```r
-remotes::install_github("HarshChourasia1/fstx")
+## Quick start
+
+Python (tables are `pyarrow.Table`s; pandas and polars helpers on top):
+
+```python
+import fstx
+
+fstx.write_fstx(table, "sales.fstx")                  # a pyarrow Table, or a pandas / polars DataFrame
+t = fstx.read_fstx("sales.fstx", columns=["city", "price"])
+t = fstx.read_fstx("sales.fstx", filters=[("price", ">", 500), ("city", "in", ["Pune", "Mumbai"])])
+df = fstx.to_pandas(t)
 ```
 
-For Python, `pip install fstx` (see `python/README.md`).
+R:
 
-## Write and read
+```r
+library(fstx)
+write_fstx(x, "sales.fstx")
+y <- read_fstx("sales.fstx", where = city == "Goa" & amount > 0.99)
+```
+
+The Python guide (every option, pandas and polars, how each type maps, speed against Parquet, Vortex, Lance and
+DuckDB) is [python/README.md](https://github.com/HarshChourasia1/fstx/blob/main/python/README.md). The R guide
+follows.
+
+## R: write and read
 
 ```r
 library(fstx)
@@ -37,7 +63,7 @@ read_fstx("sales.fstx", rows = c(10, 5, 999999))        # only the pages that ho
 read_fstx("sales.fstx", where = city == "Goa" & amount > 0.99)
 ```
 
-## Filters
+## R: filters
 
 `where` takes terms joined by `&`: comparisons with a value, `%in%`, `between()`, `is.na()`, `!is.na()`
 or a logical column. Pages are skipped by their min / max / NA count before rows are tested.
@@ -47,7 +73,7 @@ fstx_explain("sales.fstx", amount > 0.99, exact = TRUE)   # pages skipped, pages
 fstx_which("sales.fstx", city == "Goa")                    # matching row numbers
 ```
 
-## Strings, factors and lazy reads
+## R: strings, factors and lazy reads
 
 - `strings = "auto"` (default): string pages are decoded in parallel and each character column comes
   back as an ALTREP vector whose R strings are made a page at a time on first use. Columns with few
@@ -58,7 +84,7 @@ fstx_which("sales.fstx", city == "Goa")                    # matching row number
 - `as_factor = TRUE`: dictionary-coded columns become factors without hashing the rows.
 - `lazy = TRUE`: returns at once; columns are decoded from the memory-mapped file when used.
 
-## Inspect and maintain
+## R: inspect and maintain
 
 ```r
 fstx_meta("sales.fstx")      # rows, columns, sizes, profile (footer only)
@@ -67,7 +93,9 @@ fstx_compact("sales.fstx")   # drop what appends leave behind; merge = TRUE rewr
 fstx_simd()                  # SIMD target in use (SSE2 / SSE4 / AVX2, chosen at run time)
 ```
 
-## Column types
+## R: column types
+
+How Python types map is in the Python guide.
 
 | R | stored as | notes |
 |---|---|---|
@@ -85,18 +113,19 @@ int64 columns exactly; binary columns take only `is.na()`.
 ## File format
 
 fstx 1.2 writes fstx format 1.2 (format version 3 inside the file): format 1.0 plus the int64 and binary column
-types. Every later fstx reads these files, and fstx 1.2 reads every file fstx 1.0 wrote. The specification ships
-with the package: `system.file("spec", "fstx-format-1.2.md", package = "fstx")` (and `fstx-format-1.0.md`, what
-fstx 1.0 implements).
+types, the same from Python and R. Every later fstx reads these files, and fstx 1.2 reads every file fstx 1.0
+wrote. The specification is [inst/spec/fstx-format-1.2.md](https://github.com/HarshChourasia1/fstx/blob/main/inst/spec/fstx-format-1.2.md)
+(in R also `system.file("spec", "fstx-format-1.2.md", package = "fstx")`; `fstx-format-1.0.md` is what fstx 1.0
+implements).
 
 - A file from a later fstx that needs something this version does not know is refused with a message that
   names it and ends "Update fstx". It is not called corrupt.
-- `fstx_features()` lists what this build reads and writes.
-- Column and table attributes that are plain vectors (class, row names, data.table key and index, labels)
+- `fstx_features()` (R) lists what this build reads and writes.
+- R: column and table attributes that are plain vectors (class, row names, data.table key and index, labels)
   are stored in fstx's own checked encoding. Other attributes (lists, complex values; and all attributes in
   files from earlier fstx 1.0 builds) use R's `serialize()` and are restored with `unserialize()`, as
   `readRDS()` does: only read such files from sources you trust, or use `read_fstx(attributes = FALSE)`, which
   skips them. The checksum catches accidental damage, not deliberate tampering.
 
-See `?fstx` for a short guide, and `?read_fstx` and `?write_fstx` for every argument. Third-party code bundled
+In R, see `?fstx` for a short guide, and `?read_fstx` and `?write_fstx` for every argument. Third-party code bundled
 under `src/vendor/` and its licences are listed in `inst/COPYRIGHTS`.
