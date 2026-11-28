@@ -526,7 +526,7 @@ def test_pandas_round_trip(tmp_path):
     # pyarrow's own to_pandas turns int64 with nulls into float64, which loses precision past 2^53 (pyarrow's rule;
     # DESIGN-1.2.md section 5); pandas' Arrow dtypes keep it
     plain = got.to_pandas()
-    assert plain["i"].dtype == "float64" and plain["i"][0] != 2**53 + 1
+    assert plain["i"].dtype == "float64" and int(plain["i"][0]) != 2**53 + 1
     assert got.to_pandas(types_mapper=pd.ArrowDtype)["i"][0] == 2**53 + 1
     # back to fstx: df.attrs["fstx"] keeps the types
     m = write(df, tmp_path / "b.fstx")
