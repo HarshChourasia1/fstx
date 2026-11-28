@@ -71,7 +71,7 @@ read_outcome <- function(p, ...) {
 # Tests that need the engine's drop 2 (exact int64 filters, Arrow stream types) are skipped until
 # this is TRUE (switch it on here once drop 2 is merged, or for one run with the environment variable
 # FSTX_TEST_DROP2=true); the rest of the 1.2 tests need drop 1 (types, pages, read / write).
-fstx_drop2 <- FALSE || identical(Sys.getenv("FSTX_TEST_DROP2"), "true")
+fstx_drop2 <- TRUE || identical(Sys.getenv("FSTX_TEST_DROP2"), "true")
 skip_until_drop2 <- function() skip_if_not(fstx_drop2, "needs the fstx 1.2 engine drop 2 (int64 filters, Arrow types)")
 
 # integer64 vectors without bit64: from the high 32 bits (signed) and the low 32 bits (unsigned), as doubles
