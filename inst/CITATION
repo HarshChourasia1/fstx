@@ -1,0 +1,10 @@
+bibentry(
+  bibtype = "Manual",
+  title = "fstx: Fast, Safe Column-Store Files for Python and R",
+  author = person("Harsh", "Chourasia"),
+  year = "2026",
+  note = sprintf("R package version %s", meta$Version),
+  url = "https://harshchourasia1.github.io/fstx/",
+  textVersion = paste0("Chourasia H (2026). fstx: Fast, Safe Column-Store Files for Python and R. ",
+                       "R package version ", meta$Version, ". https://harshchourasia1.github.io/fstx/")
+)

@@ -1,6 +1,12 @@
 fstx itself is Copyright (c) 2026 Harsh Chourasia, MIT licensed (see LICENSE). It bundles these
 third-party libraries under src/vendor/, each with its licence file next to the sources:
 
+- Apache Arrow C Data Interface and C Stream Interface (apache/arrow), in src/arrow_abi.h:
+  Apache License 2.0. Copyright The Apache Software Foundation. Only the three ABI structs
+  (ArrowSchema, ArrowArray, ArrowArrayStream) and the ARROW_FLAG_* values are copied, from the Arrow
+  specification (https://arrow.apache.org/docs/format/CDataInterface.html); everything else in the file
+  is fstx's own (MIT). Licence text and Arrow's NOTICE: src/vendor/arrow/LICENSE.
+
 - Zstandard 1.5.7 (facebook/zstd), src/vendor/zstd/LICENSE: BSD 3-Clause (the project is dual
   BSD/GPLv2; fstx uses it under BSD). Copyright (c) Meta Platforms, Inc. and affiliates. Local change:
   zstd.h no longer has the clang "diagnostic push / ignored -Wzero-as-null-pointer-constant / pop" pragmas
@@ -34,3 +40,12 @@ third-party libraries under src/vendor/, each with its licence file next to the 
   exit() / __builtin_trap(); fstx's R entry points turn it into an R error. The include of
   sanitizer/common_interface_defs.h and the sanitizer stack-trace call that went with it are removed. All
   other Highway files are unchanged.
+
+Algorithms fstx implements in its own code (no code copied), cited for credit:
+
+- ALP and ALP-RD (double encodings): Azim Afroozeh, Leonardo X. Kuffo and Peter Boncz, "ALP: Adaptive
+  Lossless floating-Point Compression", Proceedings of the ACM on Management of Data 1(4), 2023,
+  doi:10.1145/3626717.
+- FSST (string compression, bundled above): Peter Boncz, Thomas Neumann and Viktor Leis, "FSST: Fast
+  Random Access String Compression", Proceedings of the VLDB Endowment 13(12), 2020,
+  doi:10.14778/3407790.3407851.

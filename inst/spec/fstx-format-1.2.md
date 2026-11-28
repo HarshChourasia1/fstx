@@ -479,6 +479,9 @@ as an unknown encoding when the file is opened, 4.6) and does not compare them w
 
 ### 6.6 ALP (tag 8): decimal doubles
 
+ALP and ALPRD (6.7) follow Afroozeh, Kuffo and Boncz, "ALP: Adaptive Lossless floating-Point Compression",
+Proc. ACM Manag. Data 1(4), 2023, doi:10.1145/3626717. The byte layout below is fstx's own.
+
 ```
 a = e (0..18), b = f (0..e)          (others corrupt)
 u32 exception count x + 4            (x at most n)
@@ -545,6 +548,9 @@ pages of 0-based positions into the chunk's dictionary page, -1 = missing; any o
 0..entries-1 is corrupt (checked on the rows read).
 
 ### 6.9 FSST symbol table and decoding
+
+FSST is described in Boncz, Neumann and Leis, "FSST: Fast Random Access String Compression", PVLDB 13(12),
+2020, doi:10.14778/3407790.3407851.
 
 The table is the `fsst_export()` format of the FSST library (cwida/fsst, version 20190218), which fstx
 vendors in `src/vendor/fsst`:

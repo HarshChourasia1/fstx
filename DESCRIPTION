@@ -8,7 +8,9 @@ Authors@R: c(
     person("Yann Collet", role = "cph", comment = "bundled 'LZ4' and 'xxHash' libraries"),
     person("Google Inc.", role = "cph", comment = "bundled 'FlatBuffers' runtime headers"),
     person("CWI, TU Munich, FSU Jena", role = "cph", comment = "bundled 'FSST' library"),
-    person("The Highway Project Authors", role = "cph", comment = "bundled 'Highway' library"))
+    person("The Highway Project Authors", role = "cph", comment = "bundled 'Highway' library"),
+    person("The Apache Software Foundation", role = "cph",
+           comment = "'Arrow' C Data and C Stream Interface structs in src/arrow_abi.h"))
 Description: Reads and writes data frames in a column-store file format built
     for speed and safety. Each column is split into 64-byte aligned pages, and
     every page gets the lightweight encoding that fits it best (bit-packing,
@@ -25,7 +27,7 @@ Description: Reads and writes data frames in a column-store file format built
     raw vectors). The file format ('fstx' format 1.2) is written down in a
     specification shipped with the package.
 License: MIT + file LICENSE
-URL: https://github.com/HarshChourasia1/fstx
+URL: https://harshchourasia1.github.io/fstx/, https://github.com/HarshChourasia1/fstx
 BugReports: https://github.com/HarshChourasia1/fstx/issues
 Encoding: UTF-8
 Depends: R (>= 4.4.0)

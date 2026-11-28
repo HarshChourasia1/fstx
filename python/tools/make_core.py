@@ -19,7 +19,7 @@ PY = Path(__file__).resolve().parents[1]
 REPO = PY.parent
 SRC = REPO / "src"
 CORE = PY / "core"
-LIBS = ["flatbuffers", "fsst", "highway", "lz4", "xxhash", "zstd"]
+LIBS = ["arrow", "flatbuffers", "fsst", "highway", "lz4", "xxhash", "zstd"]
 
 
 def r_glue(name: str) -> bool:

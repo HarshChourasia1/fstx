@@ -1,0 +1,54 @@
+cff-version: 1.2.0
+message: "If you use fstx, please cite it as below."
+title: "fstx: Fast, Safe Column-Store Files for Python and R"
+type: software
+authors:
+  - family-names: Chourasia
+    given-names: Harsh
+version: 1.2.0
+date-released: 2026-11-28
+license: MIT
+url: "https://harshchourasia1.github.io/fstx/"
+repository-code: "https://github.com/HarshChourasia1/fstx"
+abstract: >-
+  fstx is a column-store file format with one C++ engine under a Python package and an R package, so a file
+  written from Python reads in R and the other way round. Every page gets the lightweight encoding that fits
+  it (bit-packing, frame-of-reference, delta, run-length, dictionary, ALP for doubles, FSST for strings),
+  optionally under ZSTD or LZ4, with a checksum per page; reads and writes run on all cores.
+keywords:
+  - columnar storage
+  - file format
+  - data frames
+  - Apache Arrow
+  - compression
+  - Python
+  - R
+references:
+  - type: article
+    title: "ALP: Adaptive Lossless floating-Point Compression"
+    authors:
+      - family-names: Afroozeh
+        given-names: Azim
+      - family-names: Kuffo
+        given-names: Leonardo X.
+      - family-names: Boncz
+        given-names: Peter
+    journal: "Proceedings of the ACM on Management of Data"
+    volume: 1
+    issue: 4
+    year: 2023
+    doi: 10.1145/3626717
+  - type: article
+    title: "FSST: Fast Random Access String Compression"
+    authors:
+      - family-names: Boncz
+        given-names: Peter
+      - family-names: Neumann
+        given-names: Thomas
+      - family-names: Leis
+        given-names: Viktor
+    journal: "Proceedings of the VLDB Endowment"
+    volume: 13
+    issue: 12
+    year: 2020
+    doi: 10.14778/3407790.3407851
