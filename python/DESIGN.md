@@ -24,8 +24,8 @@ Facts below marked "checked" were run on 17 Nov 2026 with R 4.5.1 + fstx 1.0.0 a
    for every case in section 3 that is not marked lossy.
 4. **Never run R code.** Attribute blobs in R serialization (spec 9.4) are never decoded in Python; they travel as
    opaque bytes. FXA1 blobs are decoded and encoded in Python (a few dozen lines; spec 9.4 is complete).
-5. **Refuse rather than guess.** A type with no fstx 1.0 storage (binary, list, struct, decimal, ...) is an error
-   that names the column, as `write_fstx()` in R does.
+5. **Refuse rather than guess.** A type with no fstx storage (list, struct, decimal, ...) is an error that names
+   the column, as `write_fstx()` in R does. (fstx 1.2 stores binary and 64-bit integer columns natively: section 10.)
 
 ## 2. API
 
@@ -78,7 +78,7 @@ Arguments, against R's `read_fstx()` / `write_fstx()`:
 | `options(fstx.verify_nulls = TRUE)` | `fstx.set_options(verify_nulls=True)` | |
 | - | `datetimes="arrow"` / `"float"` | `"float"` returns Date / POSIXct as their stored float64 / int32 (exact; section 3.4) |
 | - | `invalid_utf8="replace"` / `"error"` / `"binary"` | section 3.3 |
-| - | `int64="auto"` / `"integer64"` / `"double"` | section 3.6 |
+| - | `int64="auto"` / `"native"` / `"integer64"` / `"double"` | section 3.6; `"native"` and what `"auto"` does past int32 are fstx 1.2 (section 10) |
 
 Character columns come back as `string` (or `large_string` when the column's text could pass 2 GB), never as
 dictionary unless `as_factor` asks: R's Arrow stream switches to dictionary when every page is dictionary-coded,
@@ -178,11 +178,11 @@ polars has no fixed offsets: `fstx.to_polars` returns them as UTC (same instants
 |---|---|---|---|
 | `bool` | logical | `bool` | |
 | `int8`, `int16`, `uint8`, `uint16`, `int32` | integer | `int32` | type widens; INT32_MIN refused |
-| `uint32`, `int64`, `uint64` | `int64="auto"`: integer when every value fits int32 (and none is INT32_MIN), else integer64; `"integer64"`: always integer64; `"double"`: double (refused if a value is past 2^53) | `int32` or `int64` | pandas makes every integer column int64, so `"auto"` keeps ordinary data readable in R without bit64. uint64 above 2^63 - 1 refused |
+| `uint32`, `int64`, `uint64` | `int64="auto"`: integer when every value fits int32 (and none is INT32_MIN), else (fstx 1.2) an int64 column; `"native"`: always an int64 column; `"integer64"`: always integer64 in the 1.0 layout; `"double"`: double (refused if a value is past 2^53) | `int32` or `int64` | pandas makes every integer column int64, so `"auto"` keeps ordinary data readable in R without bit64. uint64 above 2^63 - 1 and a non-null INT64_MIN refused |
 | `float16`, `float32`, `float64` | double | `double` | float32 values widen exactly |
 | `decimal128/256` | refused | | cast to double or string first |
 | `string`, `large_string`, `string_view` | character | `string` | pandas 3 `str` arrives as `large_string` (checked) |
-| `binary`, `large_binary`, `fixed_size_binary` | refused (fstx 1.0 has no binary type; phys 5 is reserved) | | except `binary` that fstx itself returned with `invalid_utf8="binary"` |
+| `binary`, `large_binary`, `binary_view`, `fixed_size_binary` | fstx 1.2: binary (phys 5); was refused in 1.0 | `binary` (`large_binary` past the 2 GB rule) | `binary` that fstx itself returned with `invalid_utf8="binary"` (meta says character) goes back as text; fixed_size_binary loses its width |
 | `dictionary<*, string>` | factor | `dictionary<int32, string>` | |
 | `date32` | Date (double) | `date32` | |
 | `date64` | Date (double, fractional when not midnight) | `date32` | |
@@ -226,7 +226,8 @@ Field metadata:
   natively with a tzone attribute (`""` = stored empty, key absent = no attribute). Examples:
   `{"phys":"integer","logical":"none"}`, `{"phys":"double","logical":"Date","class":["Date"]}`,
   `{"phys":"double","logical":"POSIXct","class":["POSIXct","POSIXt"],"tzone":""}`,
-  `{"phys":"double","logical":"none","class":["integer64"]}`.
+  `{"phys":"double","logical":"none","class":["integer64"]}`. fstx 1.2 adds `phys` `int64` (class
+  `["integer64"]`, R's class for it, not stored in the file) and `binary` (class from the blob, if any).
   The reader puts it on every column. The writer accepts a column without it and writes it as the plain data it
   is (section 3.6).
 - `fstx.attrs`: the column's attribute blob (FXA1 or R serialization, spec 9.4), base64.
@@ -280,7 +281,8 @@ attributes and row names.
 | double NaN | not NA (`is.na` TRUE, `is.nan` TRUE) | value | `nan` |
 | Date / POSIXct | NA_real_; Inf / NaN are values | as double | null (and Inf / NaN become null too, section 3.4) |
 | character | NA_character_ | block; `""` is a value | null; `""` stays `""` |
-| integer64 | INT64_MIN bits (= the double -0.0) | a value (the file sees -0.0) | null only for INT64_MIN |
+| integer64 | INT64_MIN bits (= the double -0.0) | 1.0 layout: a value (the file sees -0.0); int64 column (1.2): the missing value | null only for INT64_MIN |
+| binary (1.2) | `NULL` in a list of raw | missing-value block, as strings; an empty value is not missing | null; `b""` stays `b""` |
 
 ## 6. Implementation notes for the binding
 
@@ -378,3 +380,20 @@ by the coordinating session):
 
 5. **Attribute blobs in Arrow metadata**: base64 text (`fstx.attrs`, `fstx.table_attrs`), not raw bytes, so that
    polars and other libraries that read metadata as UTF-8 accept the tables. The writer takes raw bytes as well.
+
+## 10. fstx 1.2: int64 and binary columns
+
+Spec: `inst/spec/fstx-format-1.2.md` (engine), the plan `release-1.2/DESIGN-1.2.md` section 5. Physical type 4
+(int64, feature bit 16) and 5 (binary, bit 17); a writer sets a bit exactly when the file has such a column, and
+fstx 1.0 refuses those files by name ("Update fstx"); every other file stays one fstx 1.0 reads.
+
+| Topic | Python |
+|---|---|
+| `write_fstx(int64=)` | `"auto"` (default): int32 when every value fits, else an int64 column. `"native"`: always int64. `"integer64"`: the 1.0 layout (double column with the bits, class in the blob), for files fstx 1.0 must read. `"double"`: as before. What `"auto"` does past int32 is one constant, `_write._AUTO_WIDE` (`"native"`; `"integer64"` gives back the 1.0 behaviour). |
+| Metadata-driven writes | a column whose `fstx.r` says double + class integer64 (read from a 1.0-layout file) is written in the 1.0 layout again unless `int64="native"` (the class then leaves the blob, other attributes stay); a column whose `fstx.r` says `int64` stays one unless `int64="integer64"` (the class is then added to the blob). An append follows the file's column, whatever `int64=` says. |
+| uint32 / uint64 | values up to INT64_MAX as int64 (auto narrows to int32 when they fit); above it `ValueError` naming the column (hint: `int64="double"` or a string). A non-null INT64_MIN is refused (the missing value). |
+| binary | `binary`, `large_binary`, `binary_view` (cast to large_binary), `fixed_size_binary` (width not kept) -> phys 5, through the string path of `write.cpp` with no UTF-8 or NUL check (offsets and the 2^31-1 length still checked); repeating values go dictionary-coded as strings do. |
+| Read | phys 4 -> `int64` (the stream's `"l"`); phys 5 -> `binary`, or `large_binary` when the column's bytes pass `_MAX_STRING`; dictionary-coded binary is laid out plain in `read()`, `to_batches()` and `__arrow_c_stream__` (one schema per file, as for text). `invalid_utf8` and `as_factor` do not apply to binary. |
+| Filters | int64: `int` / numpy integers go to the engine as `i64` / `i64_set` (exact), floats as `value` (exact real compare), ints past the int64 range are decided in `_filters.py` (`==` none, `!=` / `<` every non-missing row below, ...), `bool` and `str` refused. Binary: `==`, `!=`, `in`, `is_null`, `not_null` with `bytes` / `bytearray` / `memoryview`; `str` and `<`.. refused. 1.0-layout integer64 stays unfilterable. |
+| Metadata | `ColumnMeta.phys` `"int64"` / `"binary"`, `r_class` `["integer64"]` for int64; `FileMeta.required_features` / `optional_features` (footer bits); `fstx.build_info()["features"]` = the bits this engine reads. |
+| pandas / polars | `fstx.to_pandas` gives `Int64` (exact, nulls kept); plain `Table.to_pandas()` turns int64 with nulls into float64 (pyarrow's rule; lossy past 2^53) unless `types_mapper=pd.ArrowDtype`. Binary is `bytes` objects in pandas, `Binary` in polars; polars Int64 / UInt64 / Binary round-trip their values (UInt64 comes back Int64, or Int32 when every value fits). |

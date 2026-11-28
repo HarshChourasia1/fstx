@@ -10,8 +10,9 @@ Metadata the reader left on a table says how R held a column and is used when it
 (keys and helpers in ``_meta.py``; a column without any of it is written as the plain data it is):
 
     field  b"fstx.r"            JSON: {"phys": "double", "logical": "Date", "class": ["Date"], "tzone": ""}
-                                (phys integer / double / logical / character; logical none / factor / Date /
-                                POSIXct; class = R's class vector, absent for none; tzone absent = no attribute)
+                                (phys integer / double / logical / character, and int64 / binary since fstx 1.2;
+                                logical none / factor / Date / POSIXct; class = R's class vector, absent for none;
+                                tzone absent = no attribute)
     field  b"fstx.attrs"        the column's attribute blob (spec 9.4), base64 (raw bytes are taken too)
     schema b"fstx.table_attrs"  the table's attribute blob, base64 (raw bytes are taken too)
     schema b"fstx.nrow"         rows of the table when it was read (decimal text); only looked at for a table
@@ -43,9 +44,10 @@ from ._meta import arrow_tz as _arrow_tz
 from ._meta import blob as _b
 from ._meta import r_tzone as _r_tzone
 
-_INT32, _FLOAT64, _LOGICAL, _STRING = 0, 1, 2, 3
+_INT32, _FLOAT64, _LOGICAL, _STRING, _INT64, _BINARY = 0, 1, 2, 3, 4, 5
 _NONE, _FACTOR, _DATE, _POSIXCT = 0, 1, 2, 3
-_PHYS = {"integer": _INT32, "double": _FLOAT64, "logical": _LOGICAL, "character": _STRING}
+_PHYS = {"integer": _INT32, "double": _FLOAT64, "logical": _LOGICAL, "character": _STRING, "int64": _INT64,
+         "binary": _BINARY}
 _PHYS_NAME = {v: k for k, v in _PHYS.items()}
 _LT = {"none": _NONE, "factor": _FACTOR, "Date": _DATE, "POSIXct": _POSIXCT}
 _PROFILES = {"fast": 0, "balanced": 1, "small": 2}
@@ -53,7 +55,12 @@ _CODECS = {"none": 0, "lz4": 1, "zstd": 2}
 _BALANCED_LEVEL, _SMALL_LEVEL = 3, 9  # as R/fstx.R
 
 _NA_INT = -(2**31)
-_NA_INT64 = -(2**63)  # bit64's NA
+_NA_INT64 = -(2**63)  # bit64's NA, and the missing value of an int64 column (fstx 1.2)
+_INT64_MODES = ("auto", "native", "integer64", "double")
+# What int64="auto" does with a column that does not fit int32: "native" (fstx 1.2: an int64 column, which fstx 1.0
+# cannot read) or "integer64" (the 1.0 layout: bit64 bits in a double column). The one place this is decided.
+_AUTO_WIDE = "native"
+_CLASS64 = {"class": fxa.character(["integer64"])}
 _UNITS = {"s": 1.0, "ms": 1e3, "us": 1e6, "ns": 1e9}
 _DATA_FRAME = {"class": fxa.character(["data.frame"])}
 
@@ -115,9 +122,10 @@ def _one(col) -> pa.Array:
 
 class _Num:
     """A number column as the engine's binding hands it over, a page of rows at a time: the Arrow chunks as they are
-    (int8, int16, int32, uint8, uint16, int64, bool, date32, float32 or float64; no joined copy of the column),
-    missing values left as nulls (the binding writes R's NA in their place). ``add`` is added to every value
-    (factor codes from 0-based indices); ``bits``: int64 values kept bit for bit in a double (integer64)."""
+    (int8, int16, int32, uint8, uint16, int64, bool, date32, float32 or float64; int64 alone for an int64 column; no
+    joined copy of the column), missing values left as nulls (the binding writes R's NA, or INT64_MIN, in their
+    place). ``add`` is added to every value (factor codes from 0-based indices); ``bits``: int64 values kept bit for
+    bit in a double (integer64)."""
     __slots__ = ("chunks", "add", "bits")
 
     def __init__(self, col, add: int = 0, bits: bool = False):
@@ -190,18 +198,61 @@ def _double(arr) -> _Num:
     return _Num(arr)
 
 
-def _int64_bits(arr, name: str) -> _Num:
-    """bit64 integer64: the int64 bit patterns in a float64 column, NA = INT64_MIN."""
+def _as_int64(arr, name: str):
+    """The column as int64 values; uint64 past INT64_MAX and a non-null INT64_MIN (the missing value) are refused."""
     if arr.type != pa.int64():
         try:
             arr = arr.cast(pa.int64())
         except pa.ArrowInvalid:
-            raise ValueError(f"write_fstx: column '{name}' holds values above 9223372036854775807, which "
-                             "integer64 cannot store") from None
+            raise ValueError(f"write_fstx: column '{name}' holds values above 9223372036854775807, which a 64-bit "
+                             "integer cannot store (write it with int64=\"double\" or cast it to string)") from None
     if _valid(arr) and pc.min(arr).as_py() == _NA_INT64:
-        raise ValueError(f"write_fstx: column '{name}' holds -9223372036854775808, which is integer64's "
-                         "missing value and cannot be stored as a value")
-    return _Num(arr, bits=True)
+        raise ValueError(f"write_fstx: column '{name}' holds -9223372036854775808, which is the missing value of "
+                         "64-bit integers (integer64's NA) and cannot be stored as a value")
+    return arr
+
+
+def _int64_bits(arr, name: str) -> _Num:
+    """bit64 integer64 in the fstx 1.0 layout: the int64 bit patterns in a float64 column, NA = INT64_MIN."""
+    return _Num(_as_int64(arr, name), bits=True)
+
+
+def _int64_native(arr, name: str) -> _Num:
+    """An int64 column (fstx 1.2, physical type 4), NA = INT64_MIN."""
+    return _Num(_as_int64(arr, name))
+
+
+def _blob_with_class64(name: str, blob: Optional[bytes]) -> bytes:
+    """The attribute blob of a 1.0-layout integer64 column: the column's own attributes plus class integer64."""
+    if blob is None:
+        return fxa.encode(_CLASS64)
+    if not fxa.is_fxa1(blob):
+        _warn(f"column '{name}': its R-serialized attributes cannot be combined with the integer64 class and "
+              "are dropped")
+        return fxa.encode(_CLASS64)
+    a = fxa.parse(blob)
+    cl = a.get("class")
+    if cl is not None and "integer64" in cl.values:
+        return blob
+    a["class"] = fxa.character((list(cl.values) if cl is not None else []) + ["integer64"])
+    return fxa.encode(a)
+
+
+def _blob_without_class64(blob: Optional[bytes]) -> Optional[bytes]:
+    """The attribute blob of an int64 column: R's integer64 class is not stored (the type says it); the other
+    attributes are."""
+    if blob is None or not fxa.is_fxa1(blob):
+        return blob
+    a = fxa.parse(blob)
+    cl = a.get("class")
+    if cl is None or "integer64" not in cl.values:
+        return blob
+    rest = [c for c in cl.values if c != "integer64"]
+    if rest:
+        a["class"] = fxa.character(rest, cl.attrs)
+    else:
+        del a["class"]
+    return fxa.encode(a) if a else None
 
 
 def _is_view(t) -> bool:
@@ -211,6 +262,11 @@ def _is_view(t) -> bool:
 
 def _is_text(t) -> bool:
     return pt.is_string(t) or pt.is_large_string(t) or _is_view(t)
+
+
+def _is_binary(t) -> bool:
+    f = getattr(pt, "is_binary_view", None)
+    return pt.is_binary(t) or pt.is_large_binary(t) or pt.is_fixed_size_binary(t) or bool(f and f(t))
 
 
 def _refuse(name: str, t, hint: str = "") -> TypeError:
@@ -342,25 +398,39 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
         return _Col(name, _LOGICAL, _int32(col, name), attrs=blob)
 
     if pt.is_integer(t):
-        if t.bit_width < 32 or t == pa.int32():
+        # how R holds it: integer64 in the fstx 1.0 layout (a double column with the class in the blob), or an
+        # int64 column (fstx 1.2)
+        is64 = r is not None and rphys == "double" and rlog == "none" and "integer64" in cls
+        native64 = r is not None and rphys == "int64" and rlog == "none"
+        if (t.bit_width < 32 or t == pa.int32()) and not native64:
             if r is not None and not (rphys == "integer" and rlog in ("none", "Date")):
                 return natural(described())
             return _Col(name, _INT32, _int32(col, name), _DATE if rlog == "Date" else _NONE, attrs=blob)
-        is64 = r is not None and rphys == "double" and rlog == "none" and "integer64" in cls
-        if (r is not None or blob is not None) and not is64:
+        if (r is not None or blob is not None) and not (is64 or native64):
             return natural(described())
         arr = col
-        mm = pc.min_max(arr).as_py() if _valid(arr) else {"min": 0, "max": 0}
-        fits = mm["min"] > _NA_INT and mm["max"] < 2**31
-        if is64 or int64 == "integer64" or (int64 == "auto" and not fits):
-            return _Col(name, _FLOAT64, _int64_bits(arr, name),
-                        attrs=blob if is64 else fxa.encode({"class": fxa.character(["integer64"])}))
-        if int64 == "auto":
+        # a column that came from R keeps its layout unless int64= asks for the other one; read-then-write
+        # never upgrades a 1.0-layout column silently
+        if is64:
+            mode = "native" if int64 == "native" else "integer64"
+        elif native64:
+            mode = "integer64" if int64 == "integer64" else "native"
+        else:
+            mode = int64
+        if mode in ("auto", "double"):
+            mm = pc.min_max(arr).as_py() if _valid(arr) else {"min": 0, "max": 0}
+            if mode == "auto":
+                mode = "int32" if mm["min"] > _NA_INT and mm["max"] < 2**31 else _AUTO_WIDE
+        if mode == "native":
+            return _Col(name, _INT64, _int64_native(arr, name), attrs=_blob_without_class64(blob))
+        if mode == "integer64":
+            return _Col(name, _FLOAT64, _int64_bits(arr, name), attrs=_blob_with_class64(name, blob))
+        if mode == "int32":
             # every value fits: int64 is narrowed by the binding, the rest cast here
             return _Col(name, _INT32, _Num(arr) if pt.is_int64(t) else _int32(arr, name))
         if mm["min"] < -(2**53) or mm["max"] > 2**53:
             raise ValueError(f"write_fstx: column '{name}' holds whole numbers past 2^53, which a double cannot "
-                             "store exactly (use int64='integer64' or 'auto')")
+                             "store exactly (use int64='native', 'integer64' or 'auto')")
         return _Col(name, _FLOAT64, _double(arr))
 
     if pt.is_floating(t):
@@ -380,12 +450,17 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
             col = col.cast(pa.large_string())
         return _Col(name, _STRING, _text_chunks(col, threads), attrs=blob)
 
-    if pt.is_binary(t) or pt.is_large_binary(t):
-        # fstx has no binary type; the one binary column it takes is text it handed out itself as bytes
-        # (read_fstx(invalid_utf8="binary")), which goes back as the same bytes
-        if r is not None and rphys == "character" and rlog == "none":
-            return _Col(name, _STRING, _text_chunks(col, threads), attrs=blob)
-        raise _refuse(name, t, " (fstx 1.0 has no binary type)")
+    if _is_binary(t):
+        if pt.is_binary(t) or pt.is_large_binary(t):
+            # text fstx handed out itself as bytes (read_fstx(invalid_utf8="binary")) goes back as the same text
+            if r is not None and rphys == "character" and rlog == "none":
+                return _Col(name, _STRING, _text_chunks(col, threads), attrs=blob)
+        if r is not None and not (rphys == "binary" and rlog == "none"):
+            return natural(described())
+        if not (pt.is_binary(t) or pt.is_large_binary(t)):  # binary_view, fixed_size_binary (its width is not kept)
+            col = col.cast(pa.large_binary())
+        # a binary column (fstx 1.2, physical type 5): any bytes, kept as they are
+        return _Col(name, _BINARY, _text_chunks(col, threads), attrs=blob)
 
     if pt.is_null(t) and r is not None:
         # nothing but missing values, so the data has no type of its own (pandas hands over an all-None date
@@ -398,7 +473,9 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
             as_type = pa.timestamp("us", _arrow_tz(r.get("tzone")) or None)
         else:
             as_type = {"integer": pa.int32(), "double": pa.float64(), "logical": pa.bool_(),
-                       "character": pa.string()}[rphys]
+                       "character": pa.string(), "int64": pa.int64(), "binary": pa.binary()}[rphys]
+            if rphys == "double" and "integer64" in ((r or {}).get("class") or []):
+                as_type = pa.int64()
         typed = pa.chunked_array([pa.nulls(len(col), as_type)])
         return _column(name, typed, r, blob, int64, quiet, base_levels, threads)
     if pt.is_null(t):  # an all-null column: logical NA, R's default
@@ -696,18 +773,24 @@ def write_fstx(data, path, *, profile: Optional[str] = None, compress: Optional[
     threads   worker threads; None = all cores.
     append    True adds the rows to an existing file (same columns, types and classes; factor levels may grow
               at the end; same time zone; no row names). A file that does not exist is simply written.
-    int64     how 64-bit integers (and uint32 / uint64) are stored: "auto" = R integer when every value fits
-              int32, else bit64 integer64; "integer64" = always integer64; "double" = double (refused past 2^53).
+    int64     how 64-bit integers (and uint32 / uint64) are stored: "auto" (the default) = R integer when every
+              value fits int32, else an int64 column (R: bit64 integer64; such a file needs fstx 1.2 to read);
+              "native" = always an int64 column; "integer64" = bit64 integer64 in the fstx 1.0 layout (a double
+              column holding the bits; for files fstx 1.0 must read); "double" = double (refused past 2^53).
+              A column read from an fstx file keeps its layout (1.0-layout integer64 stays so unless
+              int64="native"; an int64 column stays one unless int64="integer64"); an append follows the file.
 
-    Types fstx 1.0 cannot store (binary, decimal, list, struct, map, extension types) raise TypeError naming
-    the column; values it cannot store (INT32_MIN in an integer column, a NUL inside a string) raise ValueError.
+    binary, large_binary, binary_view and fixed_size_binary columns are stored as binary (fstx 1.2; the width of
+    fixed_size_binary is not kept). Types fstx cannot store (decimal, list, struct, map, extension types) raise
+    TypeError naming the column; values it cannot store (INT32_MIN in an integer column, INT64_MIN or a uint64
+    above INT64_MAX in a 64-bit one, a NUL inside a string) raise ValueError.
     """
     if profile is not None and profile not in _PROFILES:
         raise ValueError("write_fstx: 'profile' should be one of \"balanced\", \"fast\", \"small\"")
     if compress is not None and compress not in _CODECS:
         raise ValueError("write_fstx: 'compress' should be one of \"zstd\", \"lz4\", \"none\"")
-    if int64 not in ("auto", "integer64", "double"):
-        raise ValueError("write_fstx: 'int64' should be one of \"auto\", \"integer64\", \"double\"")
+    if int64 not in _INT64_MODES:
+        raise ValueError("write_fstx: 'int64' should be one of \"auto\", \"native\", \"integer64\", \"double\"")
     if level is not None and (isinstance(level, bool) or not isinstance(level, int)):
         raise ValueError("write_fstx: 'level' must be a single whole number")
     if threads is not None and (isinstance(threads, bool) or not isinstance(threads, int) or threads < 1):
@@ -758,7 +841,14 @@ def _write(p: str, table: pa.Table, row_names, profile, compress, level, threads
                 quiet = True
             if fc.logical == "factor":
                 base = list(fc.levels)
-        col = _column(field.name, table.column(i), r, blob, int64, quiet, base, threads or 0)
+        mode = int64
+        if plan is not None:  # an append follows the file's column type, whatever int64 says
+            fc = plan["meta"].columns[i]
+            if fc.phys == "int64":
+                mode = "native"
+            elif fc.phys == "double" and "integer64" in (_blob_class(fc.attrs) or []):
+                mode = "integer64"
+        col = _column(field.name, table.column(i), r, blob, mode, quiet, base, threads or 0)
         if plan is not None:
             _check_append(col, plan["meta"].columns[i])
         cols.append(col)

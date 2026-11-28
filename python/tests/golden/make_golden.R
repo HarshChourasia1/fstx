@@ -1,6 +1,8 @@
 # Golden files for the Python port of fstx (python/DESIGN.md). Synthetic values only.
 #
 #   Rscript make_golden.R [out dir]          (default: the folder this script is in)
+#   Rscript make_golden.R --v12 [out dir]    only the fstx 1.2 cases (int64 and binary columns; default out dir:
+#                                            v12/ next to this script), with fstx 1.2.0 or later; manifest.json there
 #
 # Needs fstx 1.0.0, bit64, data.table, tibble, hms and jsonlite. Writes, into the out dir:
 #   <case>.fstx         small files, one per type or edge case (list: `cases` below and manifest.json)
@@ -17,7 +19,8 @@
 # Values: logical true/false/null; integer numbers/null; double numbers or "NaN" "Inf" "-Inf" "-0", null = NA,
 # plus `bits` (16 hex digits, big-endian, the exact IEEE pattern R holds); integer64 decimal strings plus bits;
 # character strings/null (strings over 2,000 bytes as {bytes, md5}; `hex` added when a value is not valid UTF-8,
-# and the value itself is then null);
+# and the value itself is then null); binary (fstx 1.2: a list of raw vectors) lowercase hex/null, over 2,000 bytes
+# {bytes, md5};
 # factor `codes` (1-based, null = NA) and `levels` (null = an NA level); Date `days` (numbers as for double) and
 # `date32` (whole days, floor, null when not finite); POSIXct `seconds` and `us` (round half even of seconds x 1e6,
 # decimal string, null when not finite) and `iso_utc`. Columns over 100 rows give only their first 12 values
@@ -27,23 +30,27 @@
 #   double (incl. Date, POSIXct, difftime): float64 LE bits per value, every NA (NaN with low word 1954) written as
 #     0x7FF00000000007A2, other NaN bits as they are
 #   integer64: the 8 stored bytes LE per value (NA = 0x8000000000000000)
-#   character: per value int32 LE byte length (-1 = NA) then the bytes
+#   character, binary: per value int32 LE byte length (-1 = NA / NULL) then the bytes
 #   factor: int32 codes as integer, then the levels as character
 # The md5 of no bytes is d41d8cd98f00b204e9800998ecf8427e.
 
 args <- commandArgs(TRUE)
+v12 <- "--v12" %in% args
+args <- setdiff(args, "--v12")
 me <- normalizePath(sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1]), winslash = "/")
 here <- dirname(me)
-out <- if (length(args)) normalizePath(args[1], winslash = "/", mustWork = FALSE) else here
+out <- if (length(args)) normalizePath(args[1], winslash = "/", mustWork = FALSE) else if (v12) file.path(here, "v12") else here
 repo <- normalizePath(file.path(here, "..", "..", ".."), winslash = "/")
 suppressPackageStartupMessages({
   library(fstx)
   library(bit64)
   library(jsonlite)
 })
-stopifnot(identical(as.character(packageVersion("fstx")), "1.0.0"),
-          requireNamespace("data.table", quietly = TRUE), requireNamespace("tibble", quietly = TRUE),
-          requireNamespace("hms", quietly = TRUE))
+if (v12) stopifnot(packageVersion("fstx") >= "1.2.0") else
+  stopifnot(identical(as.character(packageVersion("fstx")), "1.0.0"),
+            requireNamespace("data.table", quietly = TRUE), requireNamespace("tibble", quietly = TRUE),
+            requireNamespace("hms", quietly = TRUE))
+fv <- as.character(packageVersion("fstx"))
 dir.create(out, recursive = TRUE, showWarnings = FALSE)
 unlink(list.files(out, "\\.(fstx|json)$", full.names = TRUE))
 gp <- function(f) file.path(out, f)
@@ -70,8 +77,11 @@ str_raw <- function(s) {
   unlist(lapply(s, function(e) if (is.na(e)) i32(-1L) else { b <- charToRaw(e); c(i32(length(b)), b) }),
          use.names = FALSE)
 }
+bin_raw <- function(x)
+  unlist(lapply(bare(x), function(e) if (is.null(e)) i32(-1L) else c(i32(length(e)), e)), use.names = FALSE)
 canon_raw <- function(x) {
   if (is.factor(x)) return(c(i32(bare(x)), str_raw(levels(x))))
+  if (is.list(x)) return(if (length(x)) bin_raw(x) else raw(0))
   if (inherits(x, "integer64")) return(writeBin(bare(x), raw(), size = 8L, endian = "little"))
   switch(typeof(x),
     logical = , integer = i32(bare(x)),
@@ -100,13 +110,14 @@ py_type <- function(x) {
     tz <- attr(x, "tzone")
     return(if (is.null(tz) || !nzchar(tz[1L])) "timestamp[us]" else sprintf("timestamp[us, tz=%s]", tz[1L]))
   }
-  switch(typeof(x), logical = "bool", integer = "int32", double = "double", character = "string")
+  switch(typeof(x), logical = "bool", integer = "int32", double = "double", character = "string", list = "binary")
 }
 py_nulls <- function(x) {
   if (inherits(x, "integer64")) return(sum(is.na(x)))
   if (is.factor(x)) return(sum(is.na(bare(x))))
   if (inherits(x, c("Date", "POSIXct")) && is.double(x)) return(sum(!is.finite(bare(x))))
   if (is.double(x)) { v <- bare(x); return(sum(is.na(v) & !is.nan(v))) }
+  if (is.list(x)) return(sum(vapply(bare(x), is.null, NA)))
   sum(is.na(bare(x)))
 }
 
@@ -154,6 +165,9 @@ col_desc <- function(x, name, m, i, pg) {
     d$values <- int_json(x)
   } else if (is.logical(x)) {
     d$values <- lapply(bare(x), function(e) if (is.na(e)) NULL else e)
+  } else if (is.list(x)) {
+    d$values <- lapply(bare(x), function(e) if (is.null(e)) NULL
+                       else if (length(e) > 2000L) list(bytes = length(e), md5 = md5(e)) else hex(e))
   }
   a <- attributes(x)
   a[c("class", "levels", if (stored$tzone_present || stored$logical == "POSIXct") "tzone")] <- NULL
@@ -222,7 +236,7 @@ case <- function(name, x, about, pyarrow = "identical", pandas = "identical", wr
   if (is.null(writer)) do.call(write_fstx, c(list(x, p, threads = 1L), args)) else writer(x, p)
   y <- read_fstx(p, threads = 1L)
   if (!identical(y, x)) stop(sprintf("%s does not read back identical() in R", f))
-  d <- c(list(file = f, about = about, fstx = "1.0.0", write_args = args), table_desc(y, p))
+  d <- c(list(file = f, about = about, fstx = fv, write_args = args), table_desc(y, p))
   write_json(d, gp(paste0(name, ".json")), auto_unbox = TRUE, null = "null", na = "null", pretty = TRUE,
              digits = NA, json_verbatim = TRUE)
   manifest[[length(manifest) + 1L]] <<- list(file = f, about = about, bytes = file.size(p),
@@ -230,6 +244,38 @@ case <- function(name, x, about, pyarrow = "identical", pandas = "identical", wr
                                              roundtrip_polars = if (name %in% names(polars_notes))
                                                polars_notes[[name]] else "identical")
   cat(sprintf("%-28s %6.0f bytes\n", f, file.size(p)))
+}
+
+# ---------------------------------------------------------------- fstx 1.2: int64 and binary columns
+if (v12) {
+  x <- data.frame(
+    i64 = as.integer64(c("0", "1", "-1", "2147483648", "-2147483648", "9007199254740993", "-9007199254740993",
+                         "9223372036854775807", "-9223372036854775807", NA)),
+    small = as.integer64(c(-4:4, NA)),
+    all_na = as.integer64(rep(NA, 10L)))
+  case("int64_native", x, "int64 columns (fstx 1.2, R's default int64 = \"native\"): past int32 and 2^53, the extremes, NA; small values; all NA")
+  x <- data.frame(id = seq_len(3000L))
+  x$many <- as.integer64(seq_len(3000L)) * as.integer64(3000000000)          # FOR / DELTA over 64-bit values
+  x$rep <- as.integer64(rep(c("9000000000", "-9000000000", NA, "1"), 750L))  # few distinct values
+  case("int64_pages", x, "int64 pages over many rows: a growing sequence past int32 and a column of four repeating values")
+  x <- data.frame(id = 1:8)
+  x$bin <- list(as.raw(c(0x00, 0x01, 0x02)), raw(0), NULL, charToRaw("text"), as.raw(0:255), as.raw(c(0xc3, 0x28)),
+                as.raw(rep(c(0x41, 0x00), 40000L)), as.raw(0x00))
+  x$none <- rep(list(NULL), 8L)
+  case("binary", x, "binary column (fstx 1.2): NUL bytes, empty raw, NULL, every byte value, invalid UTF-8, an 80 KB value; an all-NULL column")
+  x <- data.frame(id = seq_len(2000L))
+  x$rep <- rep(list(as.raw(c(1, 2, 3)), as.raw(0x00), NULL, charToRaw("abc")), 500L)
+  x$asis <- I(rep(list(charToRaw("x"), as.raw(c(0, 0))), 1000L))
+  case("binary_dict", x, "binary columns with few distinct values (dictionary pages), one of class AsIs")
+  x <- data.frame(i = as.integer64(c("5000000000", NA, "-1")))
+  x$b <- list(as.raw(0xff), NULL, raw(0))
+  case("int64_binary", x, "both new types in one file: feature bits 16 and 17")
+  write_json(list(fstx = fv, r = R.version.string, made = format(Sys.Date()),
+                  note = "fstx 1.2 cases (int64 and binary columns), written with R's defaults; python/tests/test_types12.py",
+                  cases = manifest),
+             gp("manifest.json"), auto_unbox = TRUE, null = "null", na = "null", pretty = TRUE)
+  cat(sprintf("%d cases\n", length(manifest)))
+  quit(save = "no")
 }
 
 # ---------------------------------------------------------------- data

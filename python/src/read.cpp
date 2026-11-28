@@ -94,7 +94,9 @@ static nb::list stream_utf8_bad(nb::capsule c) {
 }
 
 // preds: one dict per condition (all must hold): col (index), op (FSTX_OP_*), value (float), set (list of
-// float), set_na, set_nan, strs (list of bytes, UTF-8). Returns (rows, stats): rows = bytes of uint64
+// float), set_na, set_nan, strs (list of bytes: UTF-8 text, or any bytes for binary columns), and for int64
+// columns i64 (int) or i64_set (list of int), which set the engine's has_i64 (exact int64 compare; without them
+// value / set are compared with the int64 values as real numbers). Returns (rows, stats): rows = bytes of uint64
 // matching rows of [from, to), ascending and 0-based (empty when plan_only), stats = the engine's counts.
 static nb::tuple file_filter(const File& F, nb::list preds, uint64_t from, uint64_t to, int threads, int verify,
                              bool plan_only) {
@@ -105,6 +107,7 @@ static nb::tuple file_filter(const File& F, nb::list preds, uint64_t from, uint6
   std::vector<std::vector<std::string>> strs(np);
   std::vector<std::vector<const char*>> sp(np);
   std::vector<std::vector<int32_t>> sl(np);
+  std::vector<std::vector<int64_t>> i64s(np);
   for (size_t i = 0; i < np; ++i) {
     nb::dict q = nb::cast<nb::dict>(preds[i]);
     fstx_pred& d = ps[i];
@@ -116,6 +119,16 @@ static nb::tuple file_filter(const File& F, nb::list preds, uint64_t from, uint6
       sets[i] = nb::cast<std::vector<double>>(q["set"]);
       d.set = sets[i].data();
       d.n_set = sets[i].size();
+    }
+    if (q.contains("i64")) {
+      d.has_i64 = 1;
+      d.i64 = nb::cast<int64_t>(q["i64"]);
+    }
+    if (q.contains("i64_set")) {
+      d.has_i64 = 1;
+      i64s[i] = nb::cast<std::vector<int64_t>>(q["i64_set"]);
+      d.i64_set = i64s[i].data();
+      d.n_i64_set = i64s[i].size();
     }
     d.set_na = q.contains("set_na") && nb::cast<bool>(q["set_na"]);
     d.set_nan = q.contains("set_nan") && nb::cast<bool>(q["set_nan"]);
