@@ -219,7 +219,7 @@ void open_file(fstx_file& F, const std::string& path) {
       case FSTX_LT_POSIXCT: ok = phys == FSTX_FLOAT64; break;
       default: ok = false;
     }
-    if (!ok) fail(FSTX_ERR_CORRUPT, "column %u has an invalid type combination", c);  // logical 1-3 on type 4 / 5 too
+    if (!ok) fail(FSTX_ERR_CORRUPT, "column %u has an invalid type combination", c + 1);  // logical 1-3 on type 4 / 5 too
   }
   F.n_rows = ft->row_count();
   if (F.n_rows > (1ull << 62)) fail(FSTX_ERR_CORRUPT, "row count out of range");

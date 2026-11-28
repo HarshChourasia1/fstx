@@ -274,7 +274,7 @@ for (nm in names(refuse)) {
   do.call(forge, c(list(refuse[[nm]][[1]], f), refuse[[nm]][[2]]))
   add_refuse(f, refuse[[nm]][[3]])
 }
-combo <- "column 0 has an invalid type combination"
+combo <- "column 1 has an invalid type combination"
 for (lt in 1:3) {   # logical types 1-3 (factor, Date, POSIXct) on int64 and on binary: corrupt
   f <- sprintf("reserved12_logical%d_int64.fstx", lt)
   forge(f64, f, logical0 = lt, required = both)

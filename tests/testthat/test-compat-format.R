@@ -186,7 +186,7 @@ test_that("fstx 1.2: an int64 / binary type without its bit, or with the wrong p
   bit16 <- "type 4 \\(64-bit integers\\) but the file does not set feature bit 16"
   bit17 <- "type 5 \\(binary\\) but the file does not set feature bit 17"
   page0 <- "page directory entry 0 of column 0, row group 0 is invalid"
-  combo <- "column 0 has an invalid type combination"
+  combo <- "column 1 has an invalid type combination"
   cases <- list(
     list(p, list(phys0 = 4L), bit16),                      # golden reserved_phys4
     list(p, list(phys0 = 5L), bit17),                      # golden reserved_phys5
