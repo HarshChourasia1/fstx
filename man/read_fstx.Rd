@@ -8,7 +8,8 @@ the rows that match a filter, eagerly or lazily.
 \usage{
 read_fstx(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads(),
           verify = TRUE, lazy = FALSE, strings = c("auto", "eager", "deferred"),
-          as_factor = FALSE, rows = NULL, where = NULL, attributes = TRUE)
+          as_factor = FALSE, rows = NULL, where = NULL, attributes = TRUE,
+          int64 = c("integer64", "double"))
 }
 \arguments{
   \item{path}{file path.}
@@ -46,7 +47,11 @@ read_fstx(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads()
     column with a value (\code{==}, \code{!=}, \code{<}, \code{<=}, \code{>}, \code{>=}), \code{\%in\%},
     \code{between()}, \code{is.na()}, \code{!is.na()} or a logical column. Pages are skipped by their
     min / max / NA count, then the remaining rows are tested exactly; rows where the condition is
-    \code{NA} are dropped, as \code{subset()} does. Applied within \code{from} / \code{to}.}
+    \code{NA} are dropped, as \code{subset()} does. Applied within \code{from} / \code{to}.
+    int64 columns take integer, double and \code{integer64} values and are compared exactly (\code{x < 2.5}
+    matches 2; \code{x == 2^53 + 1} as an \code{integer64} value does not match \eqn{2^{53}}); integer64
+    columns stored in the fstx 1.0 layout cannot be filtered. Binary columns take only \code{is.na()} and
+    \code{!is.na()}.}
   \item{attributes}{\code{TRUE} (default) restores every stored attribute. \code{FALSE} skips the
     attribute blobs that would need \code{unserialize()} (see Details), so a file from a source you do not
     trust reads without it: a column whose blob is skipped keeps only its stored type (factor, Date and
@@ -54,10 +59,22 @@ read_fstx(path, columns = NULL, from = 1, to = NULL, threads = fstx_hw_threads()
     names. Blobs in fstx's own encoding are still applied: they hold only plain vectors, no code, and are
     checked (see Details); skipping them would only lose the class (data.table, tibble), row names and labels
     of ordinary files.}
+  \item{int64}{\code{"integer64"} (default) returns 64-bit integer columns as \code{bit64::integer64}
+    vectors; without bit64 installed they are still correct, and a message (once per column name and session)
+    says to install it to print and compute with them. \code{"double"} returns them as plain doubles,
+    \code{NA} for missing values, exact up to \eqn{2^{53}}, with a warning when a larger value loses precision
+    (such columns are then not lazy). integer64 columns written in the fstx 1.0 layout come back as stored
+    either way.}
 }
 \details{
-Reads files in fstx format 1.0 (format version 3); files from fstx 0.x development versions are
-refused. A file written by a later fstx that uses something this version does not know (a column type, codec or file feature) is refused
+Reads files in format version 3 (fstx 1.0 and 1.2); files from fstx 0.x development versions are
+refused.
+
+Column types: as written (see \code{\link{write_fstx}}). 64-bit integer columns come back as
+\code{bit64::integer64} (see \code{int64}); with \code{lazy = TRUE} they are lazy like double columns.
+Binary columns come back as lists of raw vectors (\code{NULL} for a missing value) with their class; a
+vctrs \code{list_of} class (such as blob's) gets its \code{ptype} back. Binary columns are always read in
+full (\code{lazy} and \code{strings} do not apply to them, \code{as_factor} cannot name them). A file written by a later fstx that uses something this version does not know (a column type, codec or file feature) is refused
 with a message that names it and ends "Update fstx", rather than reported as damaged. A damaged file gives
 an R error; with \code{verify = TRUE} (the default) every page checksum is checked as well.
 

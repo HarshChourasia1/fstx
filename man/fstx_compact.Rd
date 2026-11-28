@@ -13,7 +13,8 @@ fstx_compact(path, merge = FALSE, threads = fstx_hw_threads())
 Appends leave the old footers (and anything an interrupted append wrote) inside the file.
 \code{fstx_compact()} copies the pages into a fresh file without re-encoding them, then replaces the
 original. With \code{merge = TRUE} it reads the whole table and writes it again (same profile), so the
-small row groups that appends add are merged into full ones.
+small row groups that appends add are merged into full ones. Each column keeps its stored type: an
+integer64 column in the fstx 1.0 layout stays in that layout.
 }
 \section{File format}{
 The default page copy keeps the file's profile and feature flags.

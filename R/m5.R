@@ -52,17 +52,22 @@
       stop(sprintf("write_fstx: POSIXct column '%s' has time zone '%s' in the file but '%s' in the new rows", fn[i],
                    format(attr(a, "tzone")), format(attr(b, "tzone"))), call. = FALSE)
   }
-  list(x = x, table_attrs = tab, profile = m$profile)
+  list(x = x, table_attrs = tab, profile = m$profile, phys = m$phys)
 }
 
 # ---------------------------------------------------------------- compact
+# fstx_compact(merge = TRUE) sets `legacy` (one logical per column: TRUE = the 1.0 integer64 layout, physical type
+# double) around its write_fstx() call, so a rewrite keeps each column's stored type.
+.i64_layout <- new.env(parent = emptyenv())
+
 #' Compact an fstx file
 #'
 #' Appends leave the old footers (and anything an interrupted append wrote) inside the file. fstx_compact()
 #' copies the pages into a fresh file without re-encoding them, then replaces the original. With merge = TRUE
 #' it reads the whole table and writes it again (same profile), so the small row groups that appends add are
 #' merged into full ones. Page copy keeps the file's profile and feature fields; merge = TRUE writes a fresh
-#' file and drops unknown optional features and a newer profile.
+#' file and drops unknown optional features and a newer profile, and keeps each column's stored type (an
+#' integer64 column in the fstx 1.0 layout stays in it).
 #'
 #' @param path file path.
 #' @param merge FALSE (default): copy the pages; TRUE: rewrite the table.
@@ -82,6 +87,8 @@ fstx_compact <- function(path, merge = FALSE, threads = fstx_hw_threads()) {
       prof <- fstx_meta_impl(path)$profile
       if (prof == "unknown") prof <- "balanced"  # a newer fstx's profile: the rewrite is a fresh balanced file
       x <- read_fstx(path, threads = threads)
+      on.exit(.i64_layout$legacy <- NULL, add = TRUE)
+      .i64_layout$legacy <- fstx_meta_impl(path)$phys == "double"
       write_fstx(x, tmp, profile = prof, threads = threads)
     } else {
       fstx_compact_impl(path, tmp)
@@ -158,8 +165,9 @@ fstx_compact <- function(path, merge = FALSE, threads = fstx_hw_threads()) {
   bad("uses an unsupported function or operator")
 }
 
-# One term -> one engine predicate, with the value converted to what the column stores.
-.term_pred <- function(t, proto, fn = "read_fstx") {
+# One term -> one engine predicate, with the value converted to what the column stores. `phys` is the column's
+# stored type as fstx_meta_impl() names it.
+.term_pred <- function(t, proto, fn = "read_fstx", phys = NULL) {
   x <- proto[[t$col]]
   cl <- oldClass(x)
   op <- t$op
@@ -167,8 +175,22 @@ fstx_compact <- function(path, merge = FALSE, threads = fstx_hw_threads()) {
   bad <- function(why) .err(fn, "'where' on column '%s': %s", t$col, why)
   p <- list(col = enc2utf8(t$col), op = .op_ids[[op]])
   if (op %in% c("isna", "notna")) return(p)
+  if (identical(phys, "binary")) bad("binary columns support is.na() and !is.na() only")
   cmp <- op %in% c("<", "<=", ">", ">=")
   if (op != "%in%" && length(v) != 1L) bad(sprintf("the value of %s must be a single value", op))
+  if (identical(phys, "int64")) {
+    # integer and integer64 values go to the engine as exact int64 (field i64: integer, or integer64's bits; NA
+    # there is handled by the C++ side); doubles as real numbers, which the engine compares with the int64 values
+    # exactly. A 1.0-layout integer64 column (stored as double) is not this branch: it stays unfilterable.
+    if (inherits(v, "integer64") && is.double(v)) return(c(p, list(i64 = as.vector(unclass(v)))))
+    if (is.integer(v) && !is.object(v)) return(c(p, list(i64 = as.vector(v))))
+    if (!(is.double(v) || (is.logical(v) && all(is.na(v)))) || is.object(v))
+      bad("compare an int64 column with numbers or integer64 values")
+    num <- as.double(v)
+    if (op == "%in%") return(c(p, list(set = num[!is.na(num)], set_na = any(is.na(num) & !is.nan(num)))))
+    if (is.na(num)) return(list(col = p$col, op = 0L))
+    return(c(p, list(value = num)))
+  }
   if (is.character(x)) {
     if (cmp) bad("character columns support ==, !=, %in% and is.na() only")
     if (is.factor(v)) v <- as.character(v)
@@ -222,11 +244,12 @@ fstx_compact <- function(path, merge = FALSE, threads = fstx_hw_threads()) {
 }
 
 .where_preds <- function(path, wq, env, fn = "read_fstx") {
-  cols <- fstx_meta_impl(path)$name
+  m <- fstx_meta_impl(path)
+  cols <- m$name
   e <- .where_expr(wq, env, cols, fn)
   terms <- .where_terms(e, cols, env, fn)
   proto <- read_fstx(path, columns = unique(vapply(terms, `[[`, "", "col")), from = 1, to = 0, threads = 1L)
-  lapply(terms, .term_pred, proto = proto, fn = fn)
+  lapply(terms, function(t) .term_pred(t, proto, fn, m$phys[match(t$col, cols)]))
 }
 
 .window <- function(from, to, fn = NULL) {

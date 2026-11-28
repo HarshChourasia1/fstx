@@ -3,10 +3,12 @@
 
 api_snapshot <- list(
   write_fstx = c(x = "", path = "", profile = 'c("balanced", "fast", "small")', compress = "NULL",
-                 level = "NULL", threads = "fstx_hw_threads()", append = "FALSE"),
+                 level = "NULL", threads = "fstx_hw_threads()", append = "FALSE",
+                 int64 = 'c("native", "integer64")'),   # fstx 1.2
   read_fstx = c(path = "", columns = "NULL", from = "1", to = "NULL", threads = "fstx_hw_threads()",
                 verify = "TRUE", lazy = "FALSE", strings = 'c("auto", "eager", "deferred")',
-                as_factor = "FALSE", rows = "NULL", where = "NULL", attributes = "TRUE"),
+                as_factor = "FALSE", rows = "NULL", where = "NULL", attributes = "TRUE",
+                int64 = 'c("integer64", "double")'),   # fstx 1.2
   fstx_meta = c(path = ""),
   fstx_pages = c(path = ""),
   fstx_simd = c(target = "NULL"),
