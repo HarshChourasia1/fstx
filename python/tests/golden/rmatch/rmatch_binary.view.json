@@ -1,0 +1,112 @@
+{
+  "file": "rmatch_binary.fstx",
+  "about": "binary columns (fstx 1.2): NUL bytes, empty raw, NULL, every byte value, 70 KB, invalid UTF-8; repeats; AsIs; all NULL",
+  "made_with": "fstx 1.2.0, R version 4.6.2 (2026-10-29 ucrt)",
+  "names": [
+    "id",
+    "bin",
+    "rep",
+    "asis",
+    "none"
+  ],
+  "nrow": 10,
+  "columns": [
+    {
+      "name": "id",
+      "typeof": "integer",
+      "class": [],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10"
+      ]
+    },
+    {
+      "name": "bin",
+      "typeof": "list",
+      "class": [],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        "000102",
+        "",
+        null,
+        "74657874",
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+        "ff00",
+        "70000:dc198fb175cce4b61d75f7c6b81f5c74",
+        "00",
+        null,
+        "c328"
+      ]
+    },
+    {
+      "name": "rep",
+      "typeof": "list",
+      "class": [],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        "010203",
+        "00",
+        null,
+        "010203",
+        "",
+        "010203",
+        "00",
+        null,
+        "010203",
+        ""
+      ]
+    },
+    {
+      "name": "asis",
+      "typeof": "list",
+      "class": [
+        "AsIs"
+      ],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        "61c3a9",
+        null,
+        "61c3a9",
+        null,
+        "61c3a9",
+        null,
+        "61c3a9",
+        null,
+        "61c3a9",
+        null
+      ]
+    },
+    {
+      "name": "none",
+      "typeof": "list",
+      "class": [],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    }
+  ]
+}

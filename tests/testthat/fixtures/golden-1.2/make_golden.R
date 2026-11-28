@@ -69,7 +69,8 @@ add_read <- function(f, x, wr = writer) {  # x: the table the file must read as
   y <- rd(f)
   if (!identical(y, x, num.eq = FALSE)) stop(sprintf("%s does not read back as written", f))
   yl <- rd(f, lazy = TRUE)
-  if (!identical(golden_describe(yl), golden_describe(x))) stop(sprintf("%s: lazy read differs", f))
+  # against the eager read, not x: identical() ignores attribute order, the attribute md5 does not
+  if (!identical(golden_describe(yl), golden_describe(y))) stop(sprintf("%s: lazy read differs", f))
   rm(yl); invisible(gc())
   m <- fstx_meta(gpath(f))
   add_row(f, "read", "", wr, m, y)

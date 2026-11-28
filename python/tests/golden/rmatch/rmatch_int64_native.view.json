@@ -1,0 +1,98 @@
+{
+  "file": "rmatch_int64_native.fstx",
+  "about": "int64 columns (fstx 1.2): past int32 and 2^53, the extremes, NA; small values; all NA; repeats",
+  "made_with": "fstx 1.2.0, R version 4.6.2 (2026-10-29 ucrt)",
+  "names": [
+    "big",
+    "small",
+    "none",
+    "rep"
+  ],
+  "nrow": 10,
+  "columns": [
+    {
+      "name": "big",
+      "typeof": "double",
+      "class": [
+        "integer64"
+      ],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        "0",
+        "1",
+        "-1",
+        "2147483647",
+        "2147483648",
+        "-2147483648",
+        "9007199254740993",
+        "9223372036854775807",
+        "-9223372036854775807",
+        null
+      ]
+    },
+    {
+      "name": "small",
+      "typeof": "double",
+      "class": [
+        "integer64"
+      ],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        null
+      ]
+    },
+    {
+      "name": "none",
+      "typeof": "double",
+      "class": [
+        "integer64"
+      ],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "name": "rep",
+      "typeof": "double",
+      "class": [
+        "integer64"
+      ],
+      "tzone": null,
+      "levels": null,
+      "values": [
+        "5000000000",
+        "-1",
+        null,
+        "5000000000",
+        "7",
+        "5000000000",
+        "-1",
+        null,
+        "5000000000",
+        "7"
+      ]
+    }
+  ]
+}
