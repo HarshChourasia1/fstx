@@ -4,7 +4,8 @@
 // their own threads. Errors come back through the stream's error slot. Range batches: every string page and every
 // row part of a fixed-width column decodes as a task on the engine pool; fixed-width columns decode straight into
 // the Arrow buffers, string pages are then copied once into them, page by page in parallel (batch_range).
-// Row-list batches: arrow_rows.h.
+// Row-list batches: arrow_rows.h. fstx 1.2: int64 columns leave as Arrow int64 ("l", INT64_MIN = null), binary
+// columns as binary / large_binary ("z" / "Z") or dictionary<int32, binary>, laid out like text and never UTF-8 checked.
 // Everything above the R glue at the bottom builds without R (-DFSTX_ARROW_NO_R, for the fuzz target).
 #include <algorithm>
 #include <atomic>
@@ -200,13 +201,14 @@ void make_utf8(ArrowArray* a, uint64_t n, const int32_t* lens, const char* bytes
 }
 
 // ---------------------------------------------------------------- the stream
-enum Out { O_INT32, O_FLOAT64, O_BOOL, O_UTF8, O_LARGE_UTF8, O_DICT_STR, O_FACTOR, O_DATE, O_TS };
+enum Out { O_INT32, O_FLOAT64, O_BOOL, O_UTF8, O_LARGE_UTF8, O_DICT_STR, O_FACTOR, O_DATE, O_TS, O_INT64 };
 
 struct ColSpec {
   uint32_t col = 0;
   std::string name;
   int out = O_INT32;
   int phys = FSTX_INT32;
+  bool bin = false;  // FSTX_BINARY: O_UTF8 / O_LARGE_UTF8 / O_DICT_STR give binary values, no UTF-8 check
   bool ordered = false;
   std::string tz;
   bool has_tz = false;
@@ -253,8 +255,9 @@ std::string schema_format(const ColSpec& c) {
     case O_INT32: return "i";
     case O_FLOAT64: return "g";
     case O_BOOL: return "b";
-    case O_UTF8: return "u";
-    case O_LARGE_UTF8: return "U";
+    case O_INT64: return "l";
+    case O_UTF8: return c.bin ? "z" : "u";
+    case O_LARGE_UTF8: return c.bin ? "Z" : "U";
     case O_DICT_STR:
     case O_FACTOR: return "i";
     case O_DATE: return "tdD";
@@ -302,10 +305,10 @@ std::vector<uint64_t> fixed_prep(const Stream& S, FixedCol& F, uint64_t b, int p
   SrcPtr s = open_src(S, c, F.a, b);
   fstx_colsrc_info si;
   fstx_colsrc_info_get(s.get(), &si);
-  F.same = (c.out == O_INT32 || c.out == O_FLOAT64 || (c.out == O_DATE && c.phys == FSTX_INT32));
+  F.same = (c.out == O_INT32 || c.out == O_FLOAT64 || c.out == O_INT64 || (c.out == O_DATE && c.phys == FSTX_INT32));
   F.scan = !F.same || si.null_count;
   array_init(F.out, (int64_t)n, 2);
-  const size_t ow = c.out == O_BOOL ? 0 : (c.out == O_FLOAT64 || c.out == O_TS) ? 8 : 4;
+  const size_t ow = c.out == O_BOOL ? 0 : (c.out == O_FLOAT64 || c.out == O_TS || c.out == O_INT64) ? 8 : 4;
   if (ow) {
     F.vals = array_buf(F.out, 1, (size_t)n * ow);
   } else {
@@ -342,7 +345,7 @@ void fixed_part(const Stream& S, FixedCol& F, uint64_t i0, uint64_t i1, int thre
   const uint64_t lo = i0, hi = i1;  // file rows, relative to a
   SrcPtr s = open_src(S, c, F.a + lo, F.a + hi);
   fstx_error e;
-  const size_t w = c.phys == FSTX_FLOAT64 ? 8 : 4;
+  const size_t w = c.phys == FSTX_FLOAT64 || c.phys == FSTX_INT64 ? 8 : 4;
   uint8_t* bits = nullptr;
   int64_t nulls = 0;
   auto null_at = [&](uint64_t i) {
@@ -361,6 +364,10 @@ void fixed_part(const Stream& S, FixedCol& F, uint64_t i0, uint64_t i1, int thre
         const int32_t* x = (const int32_t*)F.vals;
         for (uint64_t i = i0; i < i1; ++i)
           if (x[i] == std::numeric_limits<int32_t>::min()) null_at(i);
+      } else if (c.phys == FSTX_INT64) {
+        const int64_t* x = (const int64_t*)F.vals;
+        for (uint64_t i = i0; i < i1; ++i)
+          if (x[i] == std::numeric_limits<int64_t>::min()) null_at(i);
       } else {
         const uint64_t* x = (const uint64_t*)F.vals;  // R's NA_real_: a NaN whose low word is 1954; other NaN stay NaN
         for (uint64_t i = i0; i < i1; ++i)
@@ -577,7 +584,7 @@ struct StrCol {
 };
 
 void str_open(const Stream& S, StrCol& C, size_t j, uint64_t a, uint64_t b) {
-  const bool check = S.utf8_bad != nullptr;
+  const bool check = S.utf8_bad != nullptr && !C.c->bin;
   C.s = open_src(S, *C.c, a, b);
   if (j < S.bufs.size() && S.bufs[j]) fstx_colsrc_set_bufpool(C.s.get(), S.bufs[j]);
   fstx_colsrc_info si;
@@ -725,7 +732,7 @@ void batch_range(const Stream& S, uint64_t a, uint64_t b, uint64_t n, ArrayHold*
   std::vector<Task> tasks;
   for (size_t j = 0; j < nc; ++j) {
     const ColSpec& c = S.cols[j];
-    if (c.phys == FSTX_STRING) {
+    if (c.phys == FSTX_STRING || c.phys == FSTX_BINARY) {
       sx[j].reset(new StrCol());
       StrCol& C = *sx[j];
       C.c = &c;
@@ -766,9 +773,10 @@ void batch_range(const Stream& S, uint64_t a, uint64_t b, uint64_t n, ArrayHold*
   auto layout = [&](size_t i, fstx_scratch*, int) {
     const Task& t = tasks[i];
     StrCol& C = *sx[t.j];
+    const bool chk = check && !C.c->bin;  // binary values are never checked
     if (t.i1) dict_column(*C.c, C.s.get(), n, C.out);  // its dictionary was checked in str_open
-    else if (C.c->out == O_UTF8) str_write<int32_t>(C, (uint32_t)t.i0, check);
-    else str_write<int64_t>(C, (uint32_t)t.i0, check);
+    else if (C.c->out == O_UTF8) str_write<int32_t>(C, (uint32_t)t.i0, chk);
+    else str_write<int64_t>(C, (uint32_t)t.i0, chk);
   };
   run_tasks(tasks.size(), S.threads, layout);
   for (size_t j = 0; j < nc; ++j) {
@@ -817,7 +825,7 @@ int stream_get_schema(ArrowArrayStream* st, ArrowSchema* out) {
         if (c.ordered) h->kids[j]->flags |= ARROW_FLAG_DICTIONARY_ORDERED;
         k->dict = new ArrowSchema();
         k->dict->release = nullptr;
-        schema_init(k->dict, "u", "", 0);
+        schema_init(k->dict, c.bin ? "z" : "u", "", 0);
         h->kids[j]->dictionary = k->dict;
       }
     }
@@ -970,6 +978,7 @@ extern "C" int fstx_arrow_stream_open(const char* path, const fstx_arrow_args* A
       c.col = A->cols[j];
       c.name = A->names[j];
       c.phys = ci.phys;
+      c.bin = ci.phys == FSTX_BINARY;
       c.ordered = ci.ordered != 0;
       if (ci.logical == FSTX_LT_FACTOR) {
         c.out = O_FACTOR;
@@ -995,12 +1004,14 @@ extern "C" int fstx_arrow_stream_open(const char* path, const fstx_arrow_args* A
         if (c.has_tz) c.tz.assign(ci.tzone, ci.tzone_len);
       } else if (ci.phys == FSTX_INT32) {
         c.out = O_INT32;
+      } else if (ci.phys == FSTX_INT64) {
+        c.out = O_INT64;
       } else if (ci.phys == FSTX_FLOAT64) {
         c.out = O_FLOAT64;
       } else if (ci.phys == FSTX_LOGICAL) {
         c.out = O_BOOL;
       } else {
-        // dictionary when every page in the rows read is dictionary-coded (the schema never changes between
+        // strings and binary: dictionary when every page in the rows read is dictionary-coded (the schema never changes between
         // batches) and the caller did not ask for plain strings; large_utf8 when the column's decoded text could
         // pass 2 GB in one batch (FSST expands at most 8x; shortcut: bounded by the whole column, so a big file can
         // get large_utf8 with small batches)
@@ -1015,7 +1026,7 @@ extern "C" int fstx_arrow_stream_open(const char* path, const fstx_arrow_args* A
         }
         if (c.out == O_UTF8 && ci.raw_bytes > (uint64_t)INT32_MAX / 8) c.out = O_LARGE_UTF8;
       }
-      S->bufs.push_back(c.phys == FSTX_STRING ? fstx_bufpool_new() : nullptr);
+      S->bufs.push_back(c.phys == FSTX_STRING || c.phys == FSTX_BINARY ? fstx_bufpool_new() : nullptr);
       S->cols.push_back(std::move(c));
     }
   } catch (const std::bad_alloc&) {

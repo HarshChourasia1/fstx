@@ -46,7 +46,7 @@ void rows_str_init(const ColSpec& c, RowsCol& R, uint64_t n) {
 // Sets up child array R.out for n fixed-width rows; returns where the n stored values (width of phys) go.
 void* rows_fixed_init(const ColSpec& c, RowsCol& R, uint64_t n) {
   array_init(R.out, (int64_t)n, 2);
-  const size_t w = c.phys == FSTX_FLOAT64 ? 8 : 4;
+  const size_t w = c.phys == FSTX_FLOAT64 || c.phys == FSTX_INT64 ? 8 : 4;
   // the Arrow buffer takes the stored values as they are (int32, double, int Date, factor codes shifted in place,
   // POSIXct seconds converted in place to microseconds); logical and double Dates change width: a scratch buffer
   if (c.out == O_BOOL || (c.out == O_DATE && c.phys == FSTX_FLOAT64)) {
@@ -75,7 +75,7 @@ void* rows_alloc(void* ctx, uint32_t k, uint32_t, int phys, uint64_t n) {
       R.v.reset(new Validity{R.out, n});
       return R.codes;
     }
-    if (phys == FSTX_STRING) {
+    if (phys == FSTX_STRING || phys == FSTX_BINARY) {
       rows_str_init(c, R, n);
       return R.off;
     }
@@ -167,6 +167,10 @@ void rows_finish_fixed(const ColSpec& c, RowsCol& R, uint64_t n) {
       if (x[i] == na) v.null_at(i);
       else if (x[i]) o[i >> 3] |= (uint8_t)(1u << (i & 7));
     }
+  } else if (c.phys == FSTX_INT64) {  // in place: INT64_MIN is the missing value
+    const int64_t* x = (const int64_t*)R.vals;
+    for (uint64_t i = 0; i < n; ++i)
+      if (x[i] == std::numeric_limits<int64_t>::min()) v.null_at(i);
   } else if (c.phys == FSTX_FLOAT64) {
     double* x = (double*)R.vals;
     if (c.out == O_FLOAT64) {  // R's NA_real_: a NaN whose low word is 1954; other NaN stay NaN
@@ -261,13 +265,13 @@ void* stage_alloc(void* ctx, uint32_t k, uint32_t, int phys, uint64_t n) {
       C.vals.resize((size_t)n * 4);
       return C.vals.data();
     }
-    if (phys == FSTX_STRING) {
+    if (phys == FSTX_STRING || phys == FSTX_BINARY) {
       C.str = true;
       C.off.assign((size_t)n + 1, 0);
       C.na.assign((size_t)n, 0);
       return C.off.data();
     }
-    C.vals.resize((size_t)n * (phys == FSTX_FLOAT64 ? 8 : 4));
+    C.vals.resize((size_t)n * (phys == FSTX_FLOAT64 || phys == FSTX_INT64 ? 8 : 4));
     return C.vals.data();
   } catch (const std::exception& x) {
     G.error = x.what();
@@ -379,7 +383,7 @@ void rows_from_stage(const ColSpec& c, const StageCol& C, uint64_t i0, uint64_t 
     return;
   }
   if (!C.str) {
-    const size_t w = c.phys == FSTX_FLOAT64 ? 8 : 4;
+    const size_t w = c.phys == FSTX_FLOAT64 || c.phys == FSTX_INT64 ? 8 : 4;
     void* d = rows_fixed_init(c, R, n);
     if (n) std::memcpy(d, C.vals.data() + (size_t)i0 * w, (size_t)n * w);
     rows_finish_fixed(c, R, n);
@@ -446,7 +450,7 @@ void rows_batch(Stream& S, ArrayHold* h, uint64_t a, const uint64_t* sel, uint64
     if (c.out == O_DICT_STR) {
       if (!R.has_dict) throw Fail("internal error: no dictionary for column '" + c.name + "'");
       R.v->done();
-    } else if (c.phys == FSTX_STRING) {
+    } else if (c.phys == FSTX_STRING || c.phys == FSTX_BINARY) {
       rows_finish_strings(R);
     } else {
       rows_finish_fixed(c, R, n);

@@ -220,7 +220,7 @@ void decode_dict(const fstx_colsrc& S, SrcDict& D, CodecContext& cc, std::vector
     enc::decode_str_page(b, D.page->raw_len(), D.page->chain(), D.n, enc::K_DICT, D.lens, fbuf, &bytes);
     uint64_t tot = 0;
     for (uint32_t i = 0; i < D.n; ++i) tot += (uint64_t)std::max(0, D.lens[i]);
-    check_no_nul(bytes, D.lens.data(), D.n);
+    if (S.phys == FSTX_STRING) check_no_nul(bytes, D.lens.data(), D.n);  // binary values may hold NUL
     D.own.assign((const uint8_t*)bytes, (const uint8_t*)bytes + tot);
     if (!S.read) S.F->map.release(D.page->offset(), D.page->comp_len());
   } catch (...) {
@@ -255,10 +255,13 @@ void decode_page(const fstx_colsrc& S, uint32_t p, PageData& d, void* dst, Codec
       }
       if (S.phys == FSTX_FLOAT64)
         enc::decode_dbl_page(b, len, chain, n, (double*)to);
+      else if (S.phys == FSTX_INT64)
+        enc::decode_i64_page(b, len, chain, n, (int64_t*)to);
       else
         enc::decode_int_page(b, len, chain, n, kind_of(S.phys), std::numeric_limits<int32_t>::min(), (int32_t*)to);
       if (S.nulls) {
         if (S.phys == FSTX_FLOAT64) check_nulls(pg, (const double*)to, n);
+        else if (S.phys == FSTX_INT64) check_nulls(pg, (const int64_t*)to, n);
         else check_nulls(pg, (const int32_t*)to, n, std::numeric_limits<int32_t>::min());
       }
       const uint8_t* got = to + (size_t)sp.skip * w;
@@ -327,7 +330,7 @@ void decode_page(const fstx_colsrc& S, uint32_t p, PageData& d, void* dst, Codec
         d.lens.assign(lv.begin() + sp.skip, lv.begin() + sp.skip + sp.take);
       }
       give_buf(S.bufs, &fstx_bufpool::ints, lv);
-      check_no_nul(first, d.lens.data(), sp.take);
+      if (S.phys == FSTX_STRING) check_no_nul(first, d.lens.data(), sp.take);
       const bool in_map = (const uint8_t*)bytes >= S.F->map.data() &&
                           (const uint8_t*)bytes < S.F->map.data() + S.F->map.size();
       if (in_map && !S.own_bytes) {
@@ -494,7 +497,7 @@ extern "C" int fstx_colsrc_open(const fstx_file* f, uint32_t col, uint64_t from,
     s->phys = (int)x->phys();
     s->logical = (int)x->logical();
     s->n_levels = x->levels() ? x->levels()->size() : 0;
-    s->mode = s->phys == FSTX_STRING ? FSTX_SRC_STRINGS : FSTX_SRC_FIXED;
+    s->mode = is_str(s->phys) ? FSTX_SRC_STRINGS : FSTX_SRC_FIXED;
     s->verify = (verify & FSTX_VERIFY_HASH) != 0;
     s->nulls = (verify & FSTX_VERIFY_NULLS) != 0;
     s->own_bytes = own_bytes != 0;
@@ -674,7 +677,7 @@ extern "C" int fstx_colsrc_dict(fstx_colsrc* s, uint32_t d, uint32_t* n, const i
 extern "C" int fstx_colsrc_set_codes(fstx_colsrc* s, const int32_t* const* remap, fstx_error* err) {
   set_error(err, FSTX_OK, "");
   try {
-    if (s->mode != FSTX_SRC_STRINGS) fail(FSTX_ERR_ARG, "only string columns become factor codes");
+    if (s->mode != FSTX_SRC_STRINGS || s->phys != FSTX_STRING) fail(FSTX_ERR_ARG, "only string columns become factor codes");
     for (const SrcPage& p : s->pages)
       if (p.dict < 0) fail(FSTX_ERR_ARG, "column is not dictionary-encoded in every row group");
     for (uint32_t i = 0; i < s->data.size(); ++i) free_page(*s, i);
@@ -842,7 +845,7 @@ extern "C" int fstx_colsrc_page_text(fstx_colsrc* s, uint32_t p, char* dst, size
     const fb::Page* pg = s->pages[p].page;
     try {
       enc::str_page_text(d.view, d.lens.data(), dst, slack);
-      check_no_nul(dst, d.lens.data(), d.view.n);
+      if (s->phys == FSTX_STRING) check_no_nul(dst, d.lens.data(), d.view.n);
     } catch (...) {
       rethrow_for_page(*s->F, s->col, pg);
     }

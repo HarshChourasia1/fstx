@@ -167,8 +167,9 @@ struct Col {
   int phys = 0;
   std::vector<int32_t> i;   // INT32, LOGICAL
   std::vector<double> d;    // FLOAT64
+  std::vector<int64_t> l;   // INT64
   std::vector<std::string> s;
-  std::vector<uint8_t> na;  // STRING: 1 = NA
+  std::vector<uint8_t> na;  // STRING, BINARY: 1 = NA
   std::vector<std::vector<std::string>> dicts;  // per output column: the current dictionary
 };
 
@@ -179,6 +180,7 @@ struct Table {
 };
 
 inline bool same_dbl(double a, double b) { return std::memcmp(&a, &b, 8) == 0; }
+inline bool is_strlike(int phys) { return phys == FSTX_STRING || phys == FSTX_BINARY; }
 
 // row r of column j of t equals row q of column k of u
 inline bool same_cell(const Table& t, size_t j, uint64_t r, const Table& u, size_t k, uint64_t q) {
@@ -187,7 +189,9 @@ inline bool same_cell(const Table& t, size_t j, uint64_t r, const Table& u, size
   if (a.phys != b.phys) return false;
   switch (a.phys) {
     case FSTX_FLOAT64: return same_dbl(a.d[r], b.d[q]);
-    case FSTX_STRING: return a.na[r] == b.na[q] && (a.na[r] || a.s[r] == b.s[q]);
+    case FSTX_INT64: return a.l[r] == b.l[q];
+    case FSTX_STRING:
+    case FSTX_BINARY: return a.na[r] == b.na[q] && (a.na[r] || a.s[r] == b.s[q]);
     default: return a.i[r] == b.i[q];
   }
 }
@@ -206,7 +210,11 @@ inline void* h_alloc(void* ctx, uint32_t j, uint32_t, int phys, uint64_t n) {
     c.d.assign(n, 0.0);
     return c.d.data();
   }
-  if (phys == FSTX_STRING) {
+  if (phys == FSTX_INT64) {
+    c.l.assign(n, 0);
+    return c.l.data();
+  }
+  if (is_strlike(phys)) {
     c.s.assign(n, std::string());
     c.na.assign(n, 2);  // 2 = never delivered
     return &c;
@@ -285,7 +293,7 @@ inline int run_plan(const fstx_plan* p, uint32_t ncols, Table& t, int threads, i
   const int rc = fstx_read(p, &host, threads, verify, &err);
   if (rc == FSTX_OK) {
     for (const Col& c : t.cols)
-      if (c.phys == FSTX_STRING)
+      if (is_strlike(c.phys))
         for (uint8_t x : c.na)
           if (x == 2) fail("read succeeded but a string row was never delivered");
   }

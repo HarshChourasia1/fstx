@@ -28,22 +28,31 @@ constexpr uint64_t kFsstMaxPageBytes = 1ull << 26;  // bigger pages stay plain (
 inline int bits_of(uint64_t r) { return r ? 64 - __builtin_clzll(r) : 0; }
 
 // Open-addressing table from (pointer, length) to dictionary code. The host gives the same pointer for
-// equal strings (R's global string cache); a host that does not only gets a bigger dictionary.
+// equal strings (R's global string cache); a host that does not only gets a bigger dictionary. Binary columns
+// (content = true) compare the bytes instead: R raw vectors and Arrow binary values never share a pointer. Codes
+// follow the first appearance either way, so the table's hash never changes a file.
 struct PtrDict {
   std::vector<int32_t> slot;
   uint32_t mask = 0;
   int lg = 0;
+  bool content = false;
   std::vector<const char*>* ptr;
   std::vector<int32_t>* len;
-  void init(std::vector<const char*>* p, std::vector<int32_t>* l) {
+  void init(std::vector<const char*>* p, std::vector<int32_t>* l, bool by_content) {
     ptr = p;
     len = l;
+    content = by_content;
     lg = 12;
     slot.assign(1u << lg, -1);
     mask = (1u << lg) - 1;
   }
   uint32_t hash(const char* p, int32_t l) const {
-    return (uint32_t)((((uint64_t)(uintptr_t)p >> 3) ^ ((uint64_t)(uint32_t)l << 40)) * 0x9E3779B97F4A7C15ULL >> (64 - lg));
+    const uint64_t k = content ? (l > 0 ? hash64(p, (size_t)l) : 0) : ((uint64_t)(uintptr_t)p >> 3);
+    return (uint32_t)((k ^ ((uint64_t)(uint32_t)l << 40)) * 0x9E3779B97F4A7C15ULL >> (64 - lg));
+  }
+  bool same(int32_t s, const char* p, int32_t l) const {
+    const char* q = (*ptr)[(size_t)s];
+    return (*len)[(size_t)s] == l && (q == p || (content && (l == 0 || std::memcmp(q, p, (size_t)l) == 0)));
   }
   void grow() {
     ++lg;
@@ -60,7 +69,7 @@ struct PtrDict {
     for (;;) {
       const int32_t s = slot[h];
       if (s < 0) break;
-      if ((*ptr)[(size_t)s] == p && (*len)[(size_t)s] == l) return s;
+      if (same(s, p, l)) return s;
       h = (h + 1) & mask;
     }
     const int32_t c = (int32_t)ptr->size();
@@ -426,7 +435,7 @@ int plan_str_begin(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
   PtrDict pd;
   uint64_t dict_bytes = 0;
   sc.codes.resize(n);
-  pd.init(&sc.dptr, &sc.dlen);
+  pd.init(&sc.dptr, &sc.dlen, cx.dict_by_content);
   // Pointer cache, kept only for chunks that end plain / FSST: taken from the budget when the dictionary is
   // ruled out (rows seen so far come from the codes, which hold the same pointers), never for dictionary chunks.
   bool cache = false;
