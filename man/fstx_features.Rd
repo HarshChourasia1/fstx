@@ -11,7 +11,8 @@ bits, the page codecs and the column types, each marked with whether this build 
 }
 \value{A list with \code{version}, \code{format_read}, \code{format_write}, and data frames \code{features}
 (\code{bit}, \code{name}, \code{read}), \code{codecs} (\code{id}, \code{name}, \code{read}, \code{write}) and
-\code{types} (\code{id}, \code{name}, \code{read}).}
+\code{types} (\code{id}, \code{name}, \code{read}, \code{write}). fstx 1.2 reads and writes the column
+types \code{int64} and \code{binary} and the feature bits of the same names.}
 \examples{
 fstx_features()$format_read
 }

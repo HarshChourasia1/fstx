@@ -7,7 +7,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "fstx"
-version = "1.0.0"
+version = "1.2.0"
 description = "Fast, safe column-store files (the FST-X format): Python on the fstx C++ engine"
 readme = "README.md"
 # PEP 639: an SPDX expression, and the licence files that go into the wheel's .dist-info/licenses and the
@@ -62,6 +62,12 @@ build-verbosity = 1
 test-extras = ["test"]
 # {package} is python/: its tests read the R package's format files through ../tests (conftest.py).
 test-command = "pytest {package}/tests -q -rs"
+
+# Windows wheels with clang-cl, not cl: zstd dispatches to BMI2 at run time only under clang/GCC, and the engine's
+# statistics use vector extensions cl lacks (same files byte for byte; desk A/B 27 Nov 2026: about 3 to 6% less
+# time and 10% less CPU on reads and writes). clang-cl is the LLVM component of Visual Studio / the runner image.
+[tool.cibuildwheel.windows]
+environment = { CC = "clang-cl", CXX = "clang-cl", CMAKE_GENERATOR = "Ninja" }
 
 # Intel Macs: macOS 10.15 at least (C++17 library parts; cibuildwheel's default is 10.13). ARM Macs start at 11.
 [[tool.cibuildwheel.overrides]]

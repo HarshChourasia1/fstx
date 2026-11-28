@@ -1,5 +1,6 @@
 # 1.0 format lock (WS1): format 3, feature bits, reserved numbers, limits, and every legal mix of page kind,
-# encoding, missing-value mode and codec. Synthetic data only.
+# encoding, missing-value mode and codec. fstx 1.2: int64 and binary columns (bits 16 and 17 known, page kind 7,
+# the 444 mixes). Synthetic data only.
 
 forge <- function(src, dst, ...) fstx:::.fstx_forge(src, dst, ...)
 
@@ -26,10 +27,12 @@ test_that("fstx_features() reports what this build reads and writes", {
   expect_identical(f$format_write, 3L)
   expect_identical(f$features$bit, c(16:19, 63L))
   expect_identical(f$features$name, c("int64", "binary", "zstd_dict", "pcodec", "experimental"))
-  expect_false(any(f$features$read))
+  expect_identical(f$features$read, c(TRUE, TRUE, FALSE, FALSE, FALSE))   # fstx 1.2: int64 and binary
   expect_identical(f$codecs$read, c(TRUE, TRUE, TRUE, FALSE, FALSE))
   expect_identical(f$codecs$write, c(TRUE, TRUE, TRUE, FALSE, FALSE))
-  expect_identical(f$types$read, c(TRUE, TRUE, TRUE, TRUE, FALSE, FALSE))
+  expect_identical(f$types$name, c("int32", "float64", "logical", "string", "int64", "binary"))
+  expect_identical(f$types$read, rep(TRUE, 6))
+  expect_identical(f$types$write, rep(TRUE, 6))
 })
 
 test_that("the writer takes exactly the codecs the codec layer has (codec_supported)", {
@@ -73,10 +76,17 @@ test_that("feature bits: unknown required bits are refused by name, optional one
   forge(p, q, required = c(20L, 41L), optional = 50L, names = c("first", "second", "opt"))
   expect_error(read_fstx(q), "'first' \\(bit 20\\)")
   # reserved bits are named even without a list
-  for (b in 16:19) {
+  for (b in 18:19) {
     forge(p, q, required = b)
-    nm <- c("int64", "binary", "zstd_dict", "pcodec")[b - 15L]
+    nm <- c("zstd_dict", "pcodec")[b - 17L]
     expect_error(read_fstx(q), sprintf("'%s' \\(bit %d\\).*Update fstx", nm, b), label = nm)
+  }
+  # fstx 1.2 knows bits 16 (int64) and 17 (binary): set on a file without such a column, it reads (spec 5)
+  for (b in 16:17) {
+    forge(p, q, required = b)
+    expect_identical(read_fstx(q), x, label = b)
+    forge(p, q, required = b, names = c("int64", "binary")[b - 15L])
+    expect_identical(read_fstx(q), x, label = b)
   }
   forge(p, q, required = 63L)
   expect_error(read_fstx(q), "'experimental' \\(bit 63\\).*Update fstx")
@@ -140,15 +150,14 @@ test_that("newer format versions and every reserved number get their own message
   write_fstx(small_df(), p, compress = "none")
   cases <- list(
     list(list(version = 4L), "format version 4; this reader supports up to 3. Update fstx"),
-    list(list(phys0 = 4L), "64-bit integer columns \\(column 'id', type 4\\)"),
-    list(list(phys0 = 5L), "binary columns \\(column 'id', type 5\\)"),
+    list(list(phys0 = 6L), "column type 6 \\(column 'id'\\)"),
     list(list(phys0 = 9L), "column type 9 \\(column 'id'\\)"),
     list(list(logical0 = 4L), "logical type 4 \\(column 'id'\\)"),
     list(list(codec0 = 3L), "codec 'zstd with a dictionary' \\(codec 3"),
     list(list(codec0 = 4L), "codec 'Pcodec' \\(codec 4"),
     list(list(codec0 = 77L), "uses codec 77 \\(column 'id'\\)"),
     list(list(codec0 = 200L), "experimental codec 200"),
-    list(list(kind0 = 7L), "page kind 7 \\(column 'id'\\)"),
+    list(list(kind0 = 8L), "page kind 8 \\(column 'id'\\)"),
     list(list(kind0 = 15L), "page kind 15"),
     list(list(na0 = 3L), "missing-value mode 3 \\(column 'id'\\)"),
     list(list(tag0 = 11L), "encoding 11 \\(column 'id'\\)"),
@@ -163,6 +172,48 @@ test_that("newer format versions and every reserved number get their own message
   # a forged copy with nothing changed reads the same
   forge(p, q)
   expect_identical(read_fstx(q), read_fstx(p))
+})
+
+test_that("fstx 1.2: an int64 / binary type without its bit, or with the wrong pages or a logical type, is corrupt", {
+  p <- tempfile(fileext = ".fstx")
+  p64 <- tempfile(fileext = ".fstx")
+  pb <- tempfile(fileext = ".fstx")
+  q <- tempfile(fileext = ".fstx")
+  on.exit(unlink(c(p, p64, pb, q)))
+  write_fstx(small_df(), p, compress = "none")
+  write_fstx(new_df(id = i64(1:3000)), p64, compress = "none")
+  write_fstx(new_df(id = rep(list(as.raw(1:3)), 3000)), pb, compress = "none")
+  bit16 <- "type 4 \\(64-bit integers\\) but the file does not set feature bit 16"
+  bit17 <- "type 5 \\(binary\\) but the file does not set feature bit 17"
+  page0 <- "page directory entry 0 of column 0, row group 0 is invalid"
+  combo <- "column 1 has an invalid type combination"
+  cases <- list(
+    list(p, list(phys0 = 4L), bit16),                      # golden reserved_phys4
+    list(p, list(phys0 = 5L), bit17),                      # golden reserved_phys5
+    list(p, list(kind0 = 7L), page0),                      # kind 7 under an int32 column (reserved_kind7)
+    list(p, list(phys0 = 4L, required = 16L), page0),      # int32 pages (kind 1) under an int64 column
+    list(p, list(phys0 = 5L, required = 17L), page0),      # int32 pages under a binary column
+    list(p64, list(required = integer(0)), bit16),         # the int64 column's bit cleared
+    list(p64, list(logical0 = 2L, required = 16L), combo), # Date on int64
+    list(p64, list(kind0 = 1L, required = 16L), page0),    # an int page under an int64 column
+    list(pb, list(logical0 = 3L, required = 17L), combo),  # POSIXct on binary
+    list(pb, list(required = integer(0)), bit17)           # the binary column's bit cleared
+  )
+  for (k in cases) {
+    do.call(forge, c(list(k[[1]], q), k[[2]]))
+    lab <- paste(c(c("int32", "int64", "binary")[match(k[[1]], c(p, p64, pb))], names(k[[2]]), unlist(k[[2]])),
+                 collapse = " ")
+    for (f in list(fstx_meta, read_fstx)) {
+      e <- tryCatch({ f(q); "no error" }, error = conditionMessage)
+      expect_match(e, k[[3]], label = lab)
+      expect_no_match(e, "Update fstx", label = lab)   # corrupt, not a newer file
+    }
+  }
+  # copies with their bits (a forge sets the feature fields it is given, none when not given) read
+  forge(p64, q, required = 16L)
+  expect_same(read_fstx(q), read_fstx(p64))
+  forge(pb, q, required = 17L, names = "binary")
+  expect_identical(read_fstx(q), read_fstx(pb))
 })
 
 test_that("files from fstx 0.x (format versions 1 and 2) are refused by every entry point", {
@@ -214,17 +265,24 @@ test_that("the writer refuses column names and time zones that are not UTF-8 tex
 
 # ---------------------------------------------------------------- every legal mix
 # Columns for each page kind in three missing-value shapes (none, scattered = bitmap, one long run = runs);
-# the *_k columns are constant apart from missing values, so a forced "const" applies.
+# the *_k columns are constant apart from missing values, so a forced "const" applies. fstx 1.2: int64 (q) and
+# binary (b) columns.
 mix_df <- function(n = 5000) {
   set.seed(5)
   sc <- sample.int(n, n %/% 10)
   run <- 1001:2500
-  na_as <- function(v, at) { v[at] <- NA; v }
+  na_as <- function(v, at) {
+    if (is.list(v)) v[at] <- list(NULL) else if (inherits(v, "integer64")) v[at] <- i64_na else v[at] <- NA
+    v
+  }
+  bins <- list(charToRaw("alpha"), as.raw(c(0, 1, 0)), raw(0), as.raw(0:255), charToRaw("caf\u00e9"))
   base <- list(
     i = sample(1:40, n, TRUE), ik = rep(7L, n),
     d = sample(c(0.5, 1.25, 3, 100.75, -2), n, TRUE), dk = rep(2.5, n),
     l = sample(c(TRUE, FALSE), n, TRUE), lk = rep(TRUE, n),
-    s = sample(c("alpha", "beta", "café", "delta-a-bit-longer", ""), n, TRUE), sk = rep("same", n)
+    s = sample(c("alpha", "beta", "café", "delta-a-bit-longer", ""), n, TRUE), sk = rep("same", n),
+    q = col_take(i64_c(i64(c(-3, 0, 5, 2^40)), i64_parts(2^21, 1)), sample.int(5, n, TRUE)), qk = i64_rep(i64(9), n),
+    b = bins[sample.int(5, n, TRUE)], bk = rep(list(as.raw(c(7, 0))), n)
   )
   out <- list()
   for (nm in names(base)) {
@@ -233,10 +291,10 @@ mix_df <- function(n = 5000) {
     out[[paste0(nm, "_r")]] <- na_as(base[[nm]], run)
   }
   out$f <- factor(sample(c("x", "y", NA), n, TRUE))
-  as.data.frame(out, stringsAsFactors = FALSE)
+  list2DF(out)
 }
 
-test_that("every legal mix of kind, encoding, missing-value mode and codec round-trips", {
+test_that("every legal mix of kind, encoding, missing-value mode and codec round-trips (444 mixes)", {
   x <- mix_df()
   files <- character(0)
   on.exit(unlink(files))
@@ -250,27 +308,24 @@ test_that("every legal mix of kind, encoding, missing-value mode and codec round
         p <- tempfile(fileext = ".fstx")  # a new file each time: a lazy result keeps its file mapped
         files <- c(files, p)
         write_fstx(x, p, compress = codec, .encoding = enc, threads = 2)
-        expect_identical(read_fstx(p), x, label = lab)
-        expect_identical(read_fstx(p, lazy = TRUE), x, label = paste(lab, "lazy"))
-        expect_identical(read_fstx(p, strings = "deferred"), x, label = paste(lab, "deferred"))
+        expect_same(read_fstx(p), x, label = lab)
+        expect_same(read_fstx(p, lazy = TRUE), x, label = paste(lab, "lazy"))
+        expect_same(read_fstx(p, strings = "deferred"), x, label = paste(lab, "deferred"))
         r <- c(1, 2, 1023, 1024, 1025, 2000, 4999, 5000)
-        y <- read_fstx(p, rows = r)
-        rownames(y) <- NULL
-        z <- x[r, ]
-        rownames(z) <- NULL
-        expect_identical(y, z, label = paste(lab, "rows"))
-        w <- read_fstx(p, where = i_b > 20)
-        rownames(w) <- NULL
-        z <- x[!is.na(x$i_b) & x$i_b > 20, ]
-        rownames(z) <- NULL
-        expect_identical(w, z, label = paste(lab, "where int"))
-        w <- read_fstx(p, where = s_b == "café")
-        rownames(w) <- NULL
-        z <- x[!is.na(x$s_b) & x$s_b == "café", ]
-        rownames(z) <- NULL
-        expect_identical(w, z, label = paste(lab, "where string"))
+        expect_same(read_fstx(p, rows = r), df_take(x, r), label = paste(lab, "rows"))
+        expect_same(read_fstx(p, rows = rev(r)), df_take(x, rev(r)), label = paste(lab, "rows reversed"))
+        expect_same(read_fstx(p, where = i_b > 20), df_take(x, which(x$i_b > 20)), label = paste(lab, "where int"))
+        expect_same(read_fstx(p, where = s_b == "café"), df_take(x, which(x$s_b == "café")),
+                    label = paste(lab, "where string"))
+        nb <- vapply(x$b_r, is.null, NA)
+        expect_same(read_fstx(p, where = is.na(b_r)), df_take(x, which(nb)), label = paste(lab, "where binary"))
+        if (fstx_drop2) {   # int64 filters: engine drop 2
+          q5 <- i64_hex(x$q_b) == i64_hex(i64(5))
+          expect_same(read_fstx(p, where = q_b == 5L), df_take(x, which(q5)), label = paste(lab, "where int64"))
+        }
         pg <- fstx_pages(p)
-        seen <- union(seen, unique(paste(pg$kind, pg$encoding, pg$na, pg$codec)))
+        bin <- fstx_meta(p)$columns$type[pg$column] == "binary"   # binary pages are string kinds
+        seen <- union(seen, unique(paste0(ifelse(bin, "binary ", ""), paste(pg$kind, pg$encoding, pg$na, pg$codec))))
         invisible(gc())
       }
     }
@@ -283,8 +338,14 @@ test_that("every legal mix of kind, encoding, missing-value mode and codec round
     as.vector(outer(outer(paste("codes", int_encs), nas, paste), codecs, paste)),
     as.vector(outer(outer(paste("double", c(int_encs, "alp", "alprd")), nas, paste), codecs, paste)),
     as.vector(outer(outer(paste("string", c("plain", "fsst")), nas, paste), codecs, paste)),
-    as.vector(outer(paste("dictionary", c("plain", "fsst"), "none"), codecs, paste))
+    as.vector(outer(paste("dictionary", c("plain", "fsst"), "none"), codecs, paste)),
+    # fstx 1.2: int64 pages, and binary columns on the string kinds
+    as.vector(outer(outer(paste("int64", int_encs), nas, paste), codecs, paste)),
+    as.vector(outer(outer(paste("binary codes", int_encs), nas, paste), codecs, paste)),
+    as.vector(outer(outer(paste("binary string", c("plain", "fsst")), nas, paste), codecs, paste)),
+    as.vector(outer(paste("binary dictionary", c("plain", "fsst"), "none"), codecs, paste))
   )
+  expect_identical(length(want), 444L)
   missing <- setdiff(want, seen)
   expect_identical(missing, character(0))
 })

@@ -8,6 +8,8 @@
 #   double    sprintf("%.17g"), or "NaN", "Inf", "-Inf"
 #   integer64 as.character()
 #   character the string; over 2,000 bytes "<bytes>:<md5 of the UTF-8 bytes>"
+#   list      (fstx 1.2 binary columns: raw vectors) lowercase hex of the bytes ("" for raw(0)), NULL = NA; over
+#             2,000 bytes "<bytes>:<md5 of the bytes>"
 #   factor    the 1-based code (a number)
 #   Date      "YYYY-MM-DD" of the whole day (floor)
 #   POSIXct   "YYYY-MM-DD hh:mm:ss.uuuuuu +hh:mm": the clock time and UTC offset in the column's own time zone
@@ -68,6 +70,16 @@ rv_chr <- function(v) {
   }, "", USE.NAMES = FALSE)
 }
 
+rv_raw <- function(v) {
+  v <- unclass(v)
+  attributes(v) <- NULL
+  vapply(v, function(e) {
+    if (is.null(e)) return(NA_character_)
+    if (length(e) > 2000L) sprintf("%d:%s", length(e), unname(tools::md5sum(bytes = e)))
+    else paste(as.character(e), collapse = "")
+  }, "", USE.NAMES = FALSE)
+}
+
 rview_col <- function(x, name) {
   cls <- oldClass(x)
   out <- list(name = name, typeof = typeof(x), class = as.list(if (is.null(cls)) character(0) else cls),
@@ -87,6 +99,7 @@ rview_col <- function(x, name) {
     integer = as.character(unclass(x)),
     double = rv_dbl(x),
     character = rv_chr(x),
+    list = rv_raw(x),
     stop("rview: no view for a ", typeof(x), " column"))
   out$values <- as.list(unname(vals))
   out

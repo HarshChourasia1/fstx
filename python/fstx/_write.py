@@ -1,16 +1,18 @@
 """write_fstx: a pyarrow.Table (or a pandas / polars DataFrame) into an fstx file.
 
 Everything about types is decided here with pyarrow (DESIGN.md sections 3 to 5); ``_core.write`` receives, per
-column, the stored definition (spec 4.2) and Arrow arrays that are already what the engine takes: one int32 or
-float64 array with R's missing values filled in, or the string chunks (dictionary-coded when the column repeats
-its values, so that equal strings share one pointer as in R: ``_text_chunks``).
+column, the stored definition (spec 4.2) and Arrow arrays that the binding hands to the engine: the chunks of a
+number column as they are (``_Num``: the binding widens them and writes R's missing values a page at a time,
+as the engine asks for them, so no joined copy of the column is made), or the string chunks (dictionary-coded
+when the column repeats its values, so that equal strings share one pointer as in R: ``_text_chunks``).
 
 Metadata the reader left on a table says how R held a column and is used when it still fits the data
 (keys and helpers in ``_meta.py``; a column without any of it is written as the plain data it is):
 
     field  b"fstx.r"            JSON: {"phys": "double", "logical": "Date", "class": ["Date"], "tzone": ""}
-                                (phys integer / double / logical / character; logical none / factor / Date /
-                                POSIXct; class = R's class vector, absent for none; tzone absent = no attribute)
+                                (phys integer / double / logical / character, and int64 / binary since fstx 1.2;
+                                logical none / factor / Date / POSIXct; class = R's class vector, absent for none;
+                                tzone absent = no attribute)
     field  b"fstx.attrs"        the column's attribute blob (spec 9.4), base64 (raw bytes are taken too)
     schema b"fstx.table_attrs"  the table's attribute blob, base64 (raw bytes are taken too)
     schema b"fstx.nrow"         rows of the table when it was read (decimal text); only looked at for a table
@@ -42,9 +44,10 @@ from ._meta import arrow_tz as _arrow_tz
 from ._meta import blob as _b
 from ._meta import r_tzone as _r_tzone
 
-_INT32, _FLOAT64, _LOGICAL, _STRING = 0, 1, 2, 3
+_INT32, _FLOAT64, _LOGICAL, _STRING, _INT64, _BINARY = 0, 1, 2, 3, 4, 5
 _NONE, _FACTOR, _DATE, _POSIXCT = 0, 1, 2, 3
-_PHYS = {"integer": _INT32, "double": _FLOAT64, "logical": _LOGICAL, "character": _STRING}
+_PHYS = {"integer": _INT32, "double": _FLOAT64, "logical": _LOGICAL, "character": _STRING, "int64": _INT64,
+         "binary": _BINARY}
 _PHYS_NAME = {v: k for k, v in _PHYS.items()}
 _LT = {"none": _NONE, "factor": _FACTOR, "Date": _DATE, "POSIXct": _POSIXCT}
 _PROFILES = {"fast": 0, "balanced": 1, "small": 2}
@@ -52,7 +55,12 @@ _CODECS = {"none": 0, "lz4": 1, "zstd": 2}
 _BALANCED_LEVEL, _SMALL_LEVEL = 3, 9  # as R/fstx.R
 
 _NA_INT = -(2**31)
-_NA_INT64 = -(2**63)  # bit64's NA
+_NA_INT64 = -(2**63)  # bit64's NA, and the missing value of an int64 column (fstx 1.2)
+_INT64_MODES = ("auto", "native", "integer64", "double")
+# What int64="auto" does with a column that does not fit int32: "native" (fstx 1.2: an int64 column, which fstx 1.0
+# cannot read) or "integer64" (the 1.0 layout: bit64 bits in a double column). The one place this is decided.
+_AUTO_WIDE = "native"
+_CLASS64 = {"class": fxa.character(["integer64"])}
 _UNITS = {"s": 1.0, "ms": 1e3, "us": 1e6, "ns": 1e9}
 _DATA_FRAME = {"class": fxa.character(["data.frame"])}
 
@@ -68,7 +76,7 @@ class _Col:
         self.levels = levels
         self.tzone = tzone
         self.attrs = attrs
-        self.data = data  # list of pyarrow arrays
+        self.data = data  # numbers: a _Num; strings: list of pyarrow arrays
 
     def r_class(self) -> Optional[List[str]]:
         """R's class vector for the column ([] = none), or None when an R-serialization blob hides it."""
@@ -112,6 +120,20 @@ def _one(col) -> pa.Array:
     return pa.concat_arrays(col.chunks)
 
 
+class _Num:
+    """A number column as the engine's binding hands it over, a page of rows at a time: the Arrow chunks as they are
+    (int8, int16, int32, uint8, uint16, int64, bool, date32, float32 or float64; int64 alone for an int64 column; no
+    joined copy of the column), missing values left as nulls (the binding writes R's NA, or INT64_MIN, in their
+    place). ``add`` is added to every value (factor codes from 0-based indices); ``bits``: int64 values kept bit for
+    bit in a double (integer64)."""
+    __slots__ = ("chunks", "add", "bits")
+
+    def __init__(self, col, add: int = 0, bits: bool = False):
+        self.chunks = list(col.chunks) if isinstance(col, pa.ChunkedArray) else [col]
+        self.add = add
+        self.bits = bits
+
+
 def _valid(arr) -> int:
     return len(arr) - arr.null_count
 
@@ -134,14 +156,15 @@ def _pool() -> ThreadPoolExecutor:
 def _text_chunks(col: pa.ChunkedArray, threads: int = 0) -> List[pa.Array]:
     """The chunks of a string column as the engine takes them. The engine's string dictionary keys on pointers
     (R's string cache gives equal strings one pointer), so a column that repeats its values goes as int32 codes
-    into one dictionary shared by every chunk: equal strings then reach it as one pointer and are dictionary-coded
-    as R codes them. A column of mostly distinct values (more than half of its first 65,536 rows, where the
+    into dictionaries (one per slice coded): the binding gives equal strings one pointer, so they are
+    dictionary-coded as R codes them. A column of mostly distinct values (more than half of its first 65,536 rows, where the
     engine would give up) goes as it is. Long columns are coded in `threads` slices at once (0 = all cores)."""
     n = len(col)
     if n < 2 or col.null_count >= n - 1:
         return list(col.chunks)
-    head = col.slice(0, _DICT_SAMPLE)
-    if n > _DICT_SAMPLE and pc.count_distinct(head).as_py() * 2 > len(head):
+    # (count_distinct(head) * 2 > len(head), answered by the binding as soon as it is known)
+    if n > _DICT_SAMPLE and _core.over_half_distinct([c.__arrow_c_array__()
+                                                      for c in col.slice(0, _DICT_SAMPLE).chunks]):
         return list(col.chunks)
     parts = min(threads or os.cpu_count() or 1, n // _DICT_SAMPLE)
     if parts > 1:  # pyarrow codes on one thread: code slices in parallel, then give them one dictionary
@@ -151,45 +174,85 @@ def _text_chunks(col: pa.ChunkedArray, threads: int = 0) -> List[pa.Array]:
                                   for c in part.chunks], pa.dictionary(pa.int32(), col.type))
     else:
         coded = col.dictionary_encode()
-    if len({c.dictionary.buffers()[1].address for c in coded.chunks}) > 1:
-        coded = coded.unify_dictionaries()
+    # (no unify_dictionaries: the binding gives equal strings in different dictionaries one pointer)
     return list(coded.chunks)
 
 
-def _int32(arr: pa.Array, name: str) -> pa.Array:
-    """int32 with NA_integer_ for nulls. A value that is itself R's NA cannot be stored."""
-    if arr.type != pa.int32():
+# Arrow types the binding turns into int32 (with `add`) or float64 itself; anything else is cast first
+_AS_INT32 = (pt.is_int8, pt.is_int16, pt.is_int32, pt.is_uint8, pt.is_uint16, pt.is_boolean, pt.is_date32)
+_AS_DOUBLE = (pt.is_float64, pt.is_float32, pt.is_int32, pt.is_date32, pt.is_int64)
+
+
+def _int32(arr, name: str, add: int = 0) -> _Num:
+    """int32 with NA_integer_ for nulls. A value that is itself R's NA cannot be stored: the binding looks for one
+    in int32 / date32 columns (on all threads, before the file is touched) and refuses the write."""
+    if not any(f(arr.type) for f in _AS_INT32):
         arr = arr.cast(pa.int32())
-    if _valid(arr) and pc.min(arr).as_py() == _NA_INT:
-        raise ValueError(f"write_fstx: column '{name}' holds -2147483648, which is R's missing integer and "
-                         "cannot be stored as a value (cast the column to int64 or float64)")
-    return arr if arr.null_count == 0 else pc.fill_null(arr, pa.scalar(_NA_INT, pa.int32()))
+    return _Num(arr, add)
 
 
-def _double(arr: pa.Array) -> pa.Array:
+def _double(arr) -> _Num:
     """float64 with NA_real_ for nulls; every other value keeps its bits (NaN stays NaN)."""
-    if arr.type != pa.float64():
+    if not any(f(arr.type) for f in _AS_DOUBLE):
         arr = arr.cast(pa.float64(), safe=False)
-    if arr.null_count == 0:
-        return arr
-    bits = pc.fill_null(arr.view(pa.int64()), pa.scalar(fxa.NA_REAL_BITS, pa.int64()))
-    return bits.view(pa.float64())
+    return _Num(arr)
 
 
-def _int64_bits(arr: pa.Array, name: str) -> pa.Array:
-    """bit64 integer64: the int64 bit patterns in a float64 array, NA = INT64_MIN."""
+def _as_int64(arr, name: str):
+    """The column as int64 values; uint64 past INT64_MAX and a non-null INT64_MIN (the missing value) are refused."""
     if arr.type != pa.int64():
         try:
             arr = arr.cast(pa.int64())
         except pa.ArrowInvalid:
-            raise ValueError(f"write_fstx: column '{name}' holds values above 9223372036854775807, which "
-                             "integer64 cannot store") from None
+            raise ValueError(f"write_fstx: column '{name}' holds values above 9223372036854775807, which a 64-bit "
+                             "integer cannot store (write it with int64=\"double\" or cast it to string)") from None
     if _valid(arr) and pc.min(arr).as_py() == _NA_INT64:
-        raise ValueError(f"write_fstx: column '{name}' holds -9223372036854775808, which is integer64's "
-                         "missing value and cannot be stored as a value")
-    if arr.null_count:
-        arr = pc.fill_null(arr, pa.scalar(_NA_INT64, pa.int64()))
-    return arr.view(pa.float64())
+        raise ValueError(f"write_fstx: column '{name}' holds -9223372036854775808, which is the missing value of "
+                         "64-bit integers (integer64's NA) and cannot be stored as a value")
+    return arr
+
+
+def _int64_bits(arr, name: str) -> _Num:
+    """bit64 integer64 in the fstx 1.0 layout: the int64 bit patterns in a float64 column, NA = INT64_MIN."""
+    return _Num(_as_int64(arr, name), bits=True)
+
+
+def _int64_native(arr, name: str) -> _Num:
+    """An int64 column (fstx 1.2, physical type 4), NA = INT64_MIN."""
+    return _Num(_as_int64(arr, name))
+
+
+def _blob_with_class64(name: str, blob: Optional[bytes]) -> bytes:
+    """The attribute blob of a 1.0-layout integer64 column: the column's own attributes plus class integer64."""
+    if blob is None:
+        return fxa.encode(_CLASS64)
+    if not fxa.is_fxa1(blob):
+        _warn(f"column '{name}': its R-serialized attributes cannot be combined with the integer64 class and "
+              "are dropped")
+        return fxa.encode(_CLASS64)
+    a = fxa.parse(blob)
+    cl = a.get("class")
+    if cl is not None and "integer64" in cl.values:
+        return blob
+    a["class"] = fxa.character((list(cl.values) if cl is not None else []) + ["integer64"])
+    return fxa.encode(a)
+
+
+def _blob_without_class64(blob: Optional[bytes]) -> Optional[bytes]:
+    """The attribute blob of an int64 column: R's integer64 class is not stored (the type says it); the other
+    attributes are."""
+    if blob is None or not fxa.is_fxa1(blob):
+        return blob
+    a = fxa.parse(blob)
+    cl = a.get("class")
+    if cl is None or "integer64" not in cl.values:
+        return blob
+    rest = [c for c in cl.values if c != "integer64"]
+    if rest:
+        a["class"] = fxa.character(rest, cl.attrs)
+    else:
+        del a["class"]
+    return fxa.encode(a) if a else None
 
 
 def _is_view(t) -> bool:
@@ -199,6 +262,11 @@ def _is_view(t) -> bool:
 
 def _is_text(t) -> bool:
     return pt.is_string(t) or pt.is_large_string(t) or _is_view(t)
+
+
+def _is_binary(t) -> bool:
+    f = getattr(pt, "is_binary_view", None)
+    return pt.is_binary(t) or pt.is_large_binary(t) or pt.is_fixed_size_binary(t) or bool(f and f(t))
 
 
 def _refuse(name: str, t, hint: str = "") -> TypeError:
@@ -233,22 +301,23 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
             return natural("attributes only")
         if not (native or in_blob):
             return natural(described())
-        arr = _one(col.unify_dictionaries() if col.num_chunks > 1 else col)
-        levels = arr.dictionary.cast(pa.string()).to_pylist()
+        u = col.unify_dictionaries() if col.num_chunks > 1 else col
+        dic = u.chunk(0).dictionary if u.num_chunks else pa.array([], t.value_type)
+        levels = dic.cast(pa.string()).to_pylist()
         if len(set(levels)) != len(levels):
             raise ValueError(f"write_fstx: column '{name}' has a dictionary with repeated values, which cannot "
                              "be factor levels")
         if any(lv is not None and "\x00" in lv for lv in levels):
             raise ValueError(f"write_fstx: column '{name}' has a level with a NUL character")
-        codes = arr.indices
+        codes = pa.chunked_array([c.indices for c in u.chunks], t.index_type)
         if base_levels is not None and None not in levels and native and levels != base_levels:
             if t.ordered:
                 raise ValueError(f"write_fstx: ordered factor '{name}' must keep the file's levels")
             levels = base_levels + [lv for lv in levels if lv not in set(base_levels)]
-            codes = pc.index_in(arr.cast(pa.string()), value_set=pa.array(levels, pa.string()))
-        codes = _int32(pc.add(codes.cast(pa.int32()), pa.scalar(1, pa.int32())), name)
+            codes = pc.index_in(u.cast(pa.string()), value_set=pa.array(levels, pa.string()))
+        codes = _int32(codes, name, add=1)  # R's codes count from 1
         if native and None not in levels:
-            return _Col(name, _INT32, [codes], _FACTOR, bool(t.ordered), levels, attrs=blob)
+            return _Col(name, _INT32, codes, _FACTOR, bool(t.ordered), levels, attrs=blob)
         # a class of its own or NA as a level: plain integer codes, levels and class in the blob, as R writes it
         attrs: Dict[str, fxa.Vec] = {}
         if blob is not None:
@@ -262,7 +331,7 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
         attrs["levels"] = fxa.character(levels)
         if not in_blob:
             attrs["class"] = fxa.character(["ordered", "factor"] if t.ordered else ["factor"])
-        return _Col(name, _INT32, [codes], attrs=fxa.encode(attrs))
+        return _Col(name, _INT32, codes, attrs=fxa.encode(attrs))
 
     if pt.is_date(t):
         native = r is None or (rlog == "Date" and rphys in ("double", "integer"))
@@ -271,14 +340,12 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
             return natural("attributes only")
         if not (native or in_blob):
             return natural(described())
-        arr = _one(col)
-        if pt.is_date32(t):
-            days = arr.cast(pa.int32())
-            data, phys = (_int32(days, name), _INT32) if rphys == "integer" else (_double(days), _FLOAT64)
+        if pt.is_date32(t):  # days
+            data, phys = (_int32(col, name), _INT32) if rphys == "integer" else (_double(col), _FLOAT64)
         else:  # date64: milliseconds; a time of day becomes a fraction of a day
-            ms = arr.cast(pa.int64()).cast(pa.float64(), safe=False)
+            ms = col.cast(pa.int64()).cast(pa.float64(), safe=False)
             data, phys = _double(pc.divide(ms, pa.scalar(86400000.0))), _FLOAT64
-        return _Col(name, phys, [data], _DATE if native else _NONE, attrs=blob)
+        return _Col(name, phys, data, _DATE if native else _NONE, attrs=blob)
 
     if pt.is_timestamp(t):
         tz = t.tz or None
@@ -302,65 +369,78 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
             if not ((tz and (rtz in (tz, _r_tzone(tz)) or zero)) or (not tz and rtz in (None, ""))):
                 return natural(f"time zone {rtz!r}")
             tzone = rtz if logical == _POSIXCT else None
-        arr = _one(col)
-        secs = arr.cast(pa.int64()).cast(pa.float64(), safe=False)
+        secs = col.cast(pa.int64()).cast(pa.float64(), safe=False)
         if t.unit != "s":
             secs = pc.divide(secs, pa.scalar(_UNITS[t.unit]))
         if rphys == "integer" and _valid(secs):  # R held whole seconds in an integer vector: keep that if it fits
             mm = pc.min_max(secs).as_py()
             if pc.all(pc.equal(secs, pc.floor(secs))).as_py() and mm["min"] > _NA_INT and mm["max"] < 2**31:
-                return _Col(name, _INT32, [_int32(secs.cast(pa.int32()), name)], attrs=blob)
+                return _Col(name, _INT32, _int32(secs.cast(pa.int32()), name), attrs=blob)
         elif rphys == "integer":
-            return _Col(name, _INT32, [_int32(secs.cast(pa.int32()), name)], attrs=blob)
-        return _Col(name, phys, [_double(secs)], logical, tzone=tzone, attrs=blob)
+            return _Col(name, _INT32, _int32(secs.cast(pa.int32()), name), attrs=blob)
+        return _Col(name, phys, _double(secs), logical, tzone=tzone, attrs=blob)
 
     if pt.is_time(t) or pt.is_duration(t):
         if r is not None or blob is not None:
             return natural(described())
-        arr = _one(col)
-        secs = arr.cast(pa.int32() if pt.is_time32(t) else pa.int64()).cast(pa.float64(), safe=False)
+        secs = col.cast(pa.int32() if pt.is_time32(t) else pa.int64()).cast(pa.float64(), safe=False)
         if t.unit != "s":
             secs = pc.divide(secs, pa.scalar(_UNITS[t.unit]))
         if pt.is_time(t):  # as hms::hms()
             attrs = {"units": fxa.character(["secs"]), "class": fxa.character(["hms", "difftime"])}
         else:
             attrs = {"class": fxa.character(["difftime"]), "units": fxa.character(["secs"])}
-        return _Col(name, _FLOAT64, [_double(secs)], attrs=fxa.encode(attrs))
+        return _Col(name, _FLOAT64, _double(secs), attrs=fxa.encode(attrs))
 
     if pt.is_boolean(t):
         if r is not None and not (rphys == "logical" and rlog == "none"):
             return natural(described())
-        return _Col(name, _LOGICAL, [_int32(_one(col), name)], attrs=blob)
+        return _Col(name, _LOGICAL, _int32(col, name), attrs=blob)
 
     if pt.is_integer(t):
-        if t.bit_width < 32 or t == pa.int32():
+        # how R holds it: integer64 in the fstx 1.0 layout (a double column with the class in the blob), or an
+        # int64 column (fstx 1.2)
+        is64 = r is not None and rphys == "double" and rlog == "none" and "integer64" in cls
+        native64 = r is not None and rphys == "int64" and rlog == "none"
+        if (t.bit_width < 32 or t == pa.int32()) and not native64:
             if r is not None and not (rphys == "integer" and rlog in ("none", "Date")):
                 return natural(described())
-            return _Col(name, _INT32, [_int32(_one(col), name)], _DATE if rlog == "Date" else _NONE, attrs=blob)
-        is64 = r is not None and rphys == "double" and rlog == "none" and "integer64" in cls
-        if (r is not None or blob is not None) and not is64:
+            return _Col(name, _INT32, _int32(col, name), _DATE if rlog == "Date" else _NONE, attrs=blob)
+        if (r is not None or blob is not None) and not (is64 or native64):
             return natural(described())
-        arr = _one(col)
-        mm = pc.min_max(arr).as_py() if _valid(arr) else {"min": 0, "max": 0}
-        fits = mm["min"] > _NA_INT and mm["max"] < 2**31
-        if is64 or int64 == "integer64" or (int64 == "auto" and not fits):
-            return _Col(name, _FLOAT64, [_int64_bits(arr, name)],
-                        attrs=blob if is64 else fxa.encode({"class": fxa.character(["integer64"])}))
-        if int64 == "auto":
-            return _Col(name, _INT32, [_int32(arr, name)])
+        arr = col
+        # a column that came from R keeps its layout unless int64= asks for the other one; read-then-write
+        # never upgrades a 1.0-layout column silently
+        if is64:
+            mode = "native" if int64 == "native" else "integer64"
+        elif native64:
+            mode = "integer64" if int64 == "integer64" else "native"
+        else:
+            mode = int64
+        if mode in ("auto", "double"):
+            mm = pc.min_max(arr).as_py() if _valid(arr) else {"min": 0, "max": 0}
+            if mode == "auto":
+                mode = "int32" if mm["min"] > _NA_INT and mm["max"] < 2**31 else _AUTO_WIDE
+        if mode == "native":
+            return _Col(name, _INT64, _int64_native(arr, name), attrs=_blob_without_class64(blob))
+        if mode == "integer64":
+            return _Col(name, _FLOAT64, _int64_bits(arr, name), attrs=_blob_with_class64(name, blob))
+        if mode == "int32":
+            # every value fits: int64 is narrowed by the binding, the rest cast here
+            return _Col(name, _INT32, _Num(arr) if pt.is_int64(t) else _int32(arr, name))
         if mm["min"] < -(2**53) or mm["max"] > 2**53:
             raise ValueError(f"write_fstx: column '{name}' holds whole numbers past 2^53, which a double cannot "
-                             "store exactly (use int64='integer64' or 'auto')")
-        return _Col(name, _FLOAT64, [_double(arr)])
+                             "store exactly (use int64='native', 'integer64' or 'auto')")
+        return _Col(name, _FLOAT64, _double(arr))
 
     if pt.is_floating(t):
         if r is not None and not (rphys == "double" and "integer64" not in cls and rlog in ("none", "Date", "POSIXct")):
             return natural(described())
         try:
-            data = _double(_one(col))
+            data = _double(col)
         except pa.ArrowNotImplementedError:
             raise _refuse(name, t, " (cast it to float64 first)") from None
-        return _Col(name, _FLOAT64, [data], _LT.get(rlog, _NONE),
+        return _Col(name, _FLOAT64, data, _LT.get(rlog, _NONE),
                     tzone=r.get("tzone") if rlog == "POSIXct" else None, attrs=blob)
 
     if _is_text(t):
@@ -370,12 +450,17 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
             col = col.cast(pa.large_string())
         return _Col(name, _STRING, _text_chunks(col, threads), attrs=blob)
 
-    if pt.is_binary(t) or pt.is_large_binary(t):
-        # fstx has no binary type; the one binary column it takes is text it handed out itself as bytes
-        # (read_fstx(invalid_utf8="binary")), which goes back as the same bytes
-        if r is not None and rphys == "character" and rlog == "none":
-            return _Col(name, _STRING, _text_chunks(col, threads), attrs=blob)
-        raise _refuse(name, t, " (fstx 1.0 has no binary type)")
+    if _is_binary(t):
+        if pt.is_binary(t) or pt.is_large_binary(t):
+            # text fstx handed out itself as bytes (read_fstx(invalid_utf8="binary")) goes back as the same text
+            if r is not None and rphys == "character" and rlog == "none":
+                return _Col(name, _STRING, _text_chunks(col, threads), attrs=blob)
+        if r is not None and not (rphys == "binary" and rlog == "none"):
+            return natural(described())
+        if not (pt.is_binary(t) or pt.is_large_binary(t)):  # binary_view, fixed_size_binary (its width is not kept)
+            col = col.cast(pa.large_binary())
+        # a binary column (fstx 1.2, physical type 5): any bytes, kept as they are
+        return _Col(name, _BINARY, _text_chunks(col, threads), attrs=blob)
 
     if pt.is_null(t) and r is not None:
         # nothing but missing values, so the data has no type of its own (pandas hands over an all-None date
@@ -388,11 +473,13 @@ def _column(name: str, col: pa.ChunkedArray, r: Optional[dict], blob: Optional[b
             as_type = pa.timestamp("us", _arrow_tz(r.get("tzone")) or None)
         else:
             as_type = {"integer": pa.int32(), "double": pa.float64(), "logical": pa.bool_(),
-                       "character": pa.string()}[rphys]
+                       "character": pa.string(), "int64": pa.int64(), "binary": pa.binary()}[rphys]
+            if rphys == "double" and "integer64" in ((r or {}).get("class") or []):
+                as_type = pa.int64()
         typed = pa.chunked_array([pa.nulls(len(col), as_type)])
         return _column(name, typed, r, blob, int64, quiet, base_levels, threads)
     if pt.is_null(t):  # an all-null column: logical NA, R's default
-        return _Col(name, _LOGICAL, [_int32(pa.nulls(len(col), pa.int32()), name)])
+        return _Col(name, _LOGICAL, _int32(pa.nulls(len(col), pa.int32()), name))
 
     if pt.is_decimal(t):
         raise _refuse(name, t, " (cast it to float64 or string first)")
@@ -686,18 +773,24 @@ def write_fstx(data, path, *, profile: Optional[str] = None, compress: Optional[
     threads   worker threads; None = all cores.
     append    True adds the rows to an existing file (same columns, types and classes; factor levels may grow
               at the end; same time zone; no row names). A file that does not exist is simply written.
-    int64     how 64-bit integers (and uint32 / uint64) are stored: "auto" = R integer when every value fits
-              int32, else bit64 integer64; "integer64" = always integer64; "double" = double (refused past 2^53).
+    int64     how 64-bit integers (and uint32 / uint64) are stored: "auto" (the default) = R integer when every
+              value fits int32, else an int64 column (R: bit64 integer64; such a file needs fstx 1.2 to read);
+              "native" = always an int64 column; "integer64" = bit64 integer64 in the fstx 1.0 layout (a double
+              column holding the bits; for files fstx 1.0 must read); "double" = double (refused past 2^53).
+              A column read from an fstx file keeps its layout (1.0-layout integer64 stays so unless
+              int64="native"; an int64 column stays one unless int64="integer64"); an append follows the file.
 
-    Types fstx 1.0 cannot store (binary, decimal, list, struct, map, extension types) raise TypeError naming
-    the column; values it cannot store (INT32_MIN in an integer column, a NUL inside a string) raise ValueError.
+    binary, large_binary, binary_view and fixed_size_binary columns are stored as binary (fstx 1.2; the width of
+    fixed_size_binary is not kept). Types fstx cannot store (decimal, list, struct, map, extension types) raise
+    TypeError naming the column; values it cannot store (INT32_MIN in an integer column, INT64_MIN or a uint64
+    above INT64_MAX in a 64-bit one, a NUL inside a string) raise ValueError.
     """
     if profile is not None and profile not in _PROFILES:
         raise ValueError("write_fstx: 'profile' should be one of \"balanced\", \"fast\", \"small\"")
     if compress is not None and compress not in _CODECS:
         raise ValueError("write_fstx: 'compress' should be one of \"zstd\", \"lz4\", \"none\"")
-    if int64 not in ("auto", "integer64", "double"):
-        raise ValueError("write_fstx: 'int64' should be one of \"auto\", \"integer64\", \"double\"")
+    if int64 not in _INT64_MODES:
+        raise ValueError("write_fstx: 'int64' should be one of \"auto\", \"native\", \"integer64\", \"double\"")
     if level is not None and (isinstance(level, bool) or not isinstance(level, int)):
         raise ValueError("write_fstx: 'level' must be a single whole number")
     if threads is not None and (isinstance(threads, bool) or not isinstance(threads, int) or threads < 1):
@@ -748,14 +841,24 @@ def _write(p: str, table: pa.Table, row_names, profile, compress, level, threads
                 quiet = True
             if fc.logical == "factor":
                 base = list(fc.levels)
-        col = _column(field.name, table.column(i), r, blob, int64, quiet, base, threads or 0)
+        mode = int64
+        if plan is not None:  # an append follows the file's column type, whatever int64 says
+            fc = plan["meta"].columns[i]
+            if fc.phys == "int64":
+                mode = "native"
+            elif fc.phys == "double" and "integer64" in (_blob_class(fc.attrs) or []):
+                mode = "integer64"
+        col = _column(field.name, table.column(i), r, blob, mode, quiet, base, threads or 0)
         if plan is not None:
             _check_append(col, plan["meta"].columns[i])
         cols.append(col)
 
     table_attrs = plan["table_attrs"] if plan is not None else _table_blob(table, row_names)
-    spec = [(c.name, c.phys, c.logical, c.ordered, c.levels, c.tzone, c.attrs,
-             [a.__arrow_c_array__() for a in c.data]) for c in cols]
+    spec = []
+    for c in cols:
+        parts, add, bits = (c.data.chunks, c.data.add, c.data.bits) if isinstance(c.data, _Num) else (c.data, 0, False)
+        spec.append((c.name, c.phys, c.logical, c.ordered, c.levels, c.tzone, c.attrs,
+                     [a.__arrow_c_array__() for a in parts], add, bits))
     with _ENGINE_LOCK:
         _core.write(p, spec, table_attrs, table.num_rows, _CODECS[compress], level, threads or 0,
                     _PROFILES[profile], keep_pct, plan is not None)

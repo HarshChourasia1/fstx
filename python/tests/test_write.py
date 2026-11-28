@@ -16,7 +16,7 @@ import pyarrow as pa
 import pytest
 
 import fstx
-from conftest import CASES, GOLDEN, ids, quiet
+from conftest import CASES, DROP2, GOLDEN, ids, quiet
 from fstx import _fxa1 as fxa
 
 to_pandas = fstx.to_pandas
@@ -258,9 +258,9 @@ def test_native_types():
     for name in ("i8", "i16", "u8", "u16", "i32", "u32_small", "i64_small", "dint"):
         assert k[name] == ("integer", "none"), name
         assert c[name].attrs is None
-    for name in ("u32_big", "i64_big", "u64"):
-        assert k[name] == ("double", "none"), name
-        assert attrs(c[name]) == {"class": fxa.character(["integer64"])}
+    for name in ("u32_big", "i64_big", "u64"):  # fstx 1.2: int64="auto" stores values past int32 as int64
+        assert k[name] == ("int64", "none"), name
+        assert c[name].attrs is None
     assert k["f32"] == k["f64"] == ("double", "none")
     assert k["s"] == k["ls"] == ("character", "none")
     assert k["d32"] == k["d64"] == ("double", "Date")
@@ -301,7 +301,92 @@ def test_chunked_and_sliced():
     assert kinds(m)["s"] == kinds(m)["ls"] == ("character", "none")
 
 
-@pytest.mark.parametrize("opts", [{}, {"compress": "lz4"}, {"compress": "none"}, {"profile": "small", "threads": 1},
+def test_number_chunks_over_row_groups(tmp_path):
+    # number columns go to the engine a row group at a time, straight from their chunks (widened, NA written for
+    # nulls): chunks that cross the row group edge, sliced chunks, an empty chunk and nulls in every type give the
+    # same file as one array per column
+    import numpy as np
+
+    n = 1_048_576 + 70_001
+    rng = np.random.default_rng(7)
+    nulls = rng.random(n) < 0.1
+    big = rng.integers(-2**40, 2**40, n)
+
+    def arr(values, typ, with_nulls=True):
+        return pa.array(values, typ, mask=nulls if with_nulls else None)
+
+    cols = {
+        "i8": arr(rng.integers(-100, 100, n), pa.int8()),
+        "i16": arr(rng.integers(-3000, 3000, n), pa.int16()),
+        "u8": arr(rng.integers(0, 250, n), pa.uint8()),
+        "u16": arr(rng.integers(0, 60000, n), pa.uint16()),
+        "i32": arr(rng.integers(-2**31 + 1, 2**31, n), pa.int32()),
+        "i64_small": arr(rng.integers(-2**31 + 1, 2**31, n), pa.int64()),
+        "i64_big": arr(big, pa.int64()),
+        "b": arr(rng.random(n) < 0.5, pa.bool_()),
+        "d32": arr(rng.integers(-30000, 30000, n).astype("int32"), pa.int32()).cast(pa.date32()),
+        "f32": arr(rng.standard_normal(n).astype("float32"), pa.float32()),
+        "f64": arr(rng.standard_normal(n), pa.float64()),
+        "f64_full": arr(rng.standard_normal(n), pa.float64(), with_nulls=False),
+        "i32_full": arr(rng.integers(-2**31 + 1, 2**31, n), pa.int32(), with_nulls=False),
+        "fac": pa.DictionaryArray.from_arrays(arr(rng.integers(0, 3, n), pa.int8()), pa.array(["x", "y", "z"])),
+    }
+    one = pa.table(cols)
+    cuts = [0, 3, 65_536, 65_536, 1_000_000, 1_048_577, n]  # an empty chunk, a chunk over the row group edge
+
+    def chunked(a):
+        return pa.chunked_array([a.slice(cuts[k], cuts[k + 1] - cuts[k]) for k in range(len(cuts) - 1)], a.type)
+
+    many = pa.table({k: chunked(v) for k, v in cols.items()})
+    p, q = tmp_path / "one.fstx", tmp_path / "many.fstx"
+    for threads in (1, None):
+        fstx.write_fstx(one, p, threads=threads)
+        fstx.write_fstx(many, q, threads=threads)
+        assert p.read_bytes() == q.read_bytes()
+    m = fstx.metadata(q)
+    assert m.row_groups == 2 and kinds(m)["i64_big"] == ("int64", "none")
+    if not DROP2:  # reading the int64 column back waits for the engine's drop 2
+        return
+    got = fstx.read_fstx(q)
+    for name, a in cols.items():
+        g = got.column(name).combine_chunks()
+        want = a.dictionary_decode() if name == "fac" else a
+        if name == "fac":
+            g = g.dictionary_decode()
+        assert g.equals(want.cast(g.type)), name
+
+
+@pytest.mark.parametrize("profile", ["balanced", "fast"])
+def test_string_prep_on_many_threads(profile, tmp_path):
+    # the engine reads a row group's strings on many threads once its dictionary is ruled out: dictionaries ruled
+    # out early and late, kept, missing values, FSST and plain chunks give the same file on 1 thread and on all
+    import numpy as np
+
+    n = 1_048_576 + 300_001
+    rng = np.random.default_rng(11)
+    words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa"]
+    late = [words[i % 10] if i < 100_000 else f"late-{i}" for i in range(n)]
+    nul = [None if r < 0.4 else f"n{i}" for i, r in enumerate(rng.random(n))]
+    lens = rng.integers(0, 300, n)
+    noise = [("x" * int(k)) if k % 3 else "".join(chr(97 + int(c)) for c in rng.integers(0, 26, int(k) % 40))
+             for k in lens[:200_000]]
+    t = pa.table({
+        "distinct": [f"row{i}" for i in range(n)],
+        "late": late,
+        "low": [words[i % 7] for i in range(n)],
+        "nulls": nul,
+        "long": noise * (n // 200_000) + noise[: n % 200_000],
+    })
+    p, q = tmp_path / "one.fstx", tmp_path / "all.fstx"
+    fstx.write_fstx(t, p, threads=1, profile=profile)
+    fstx.write_fstx(t, q, threads=None, profile=profile)
+    assert p.read_bytes() == q.read_bytes()
+    back = fstx.read_fstx(q)
+    for name in t.column_names:
+        assert back.column(name).combine_chunks().equals(t.column(name).combine_chunks()), name
+
+
+@pytest.mark.parametrize("opts", [{}, {"compress": "lz4"},{"compress": "none"}, {"profile": "small", "threads": 1},
                                   {"profile": "fast"}, {"compress": "zstd", "level": 1}],
                          ids=["default", "lz4", "none", "small_1thread", "fast", "zstd1"])
 def test_many_rows(opts, request):
@@ -358,10 +443,12 @@ def test_int64_modes():
     small = pa.table({"a": pa.array([1, 2, None], pa.int64())})
     big = pa.table({"a": pa.array([1, 2**40, None], pa.int64())})
     assert kinds(write(small, NATIVE / "int64_auto_small.fstx")) == {"a": ("integer", "none")}
-    m = write(big, NATIVE / "int64_auto_big.fstx")
+    m = write(big, NATIVE / "int64_auto_big.fstx")  # fstx 1.2: an int64 column
+    assert kinds(m) == {"a": ("int64", "none")} and m.columns[0].attrs is None
+    m = write(small, NATIVE / "int64_native.fstx", int64="native")
+    assert kinds(m) == {"a": ("int64", "none")} and m.columns[0].attrs is None
+    m = write(big, NATIVE / "int64_integer64.fstx", int64="integer64")  # the fstx 1.0 layout
     assert kinds(m) == {"a": ("double", "none")} and attrs(m.columns[0])["class"].values == ["integer64"]
-    m = write(small, NATIVE / "int64_integer64.fstx", int64="integer64")
-    assert attrs(m.columns[0])["class"].values == ["integer64"]
     m = write(big, NATIVE / "int64_double.fstx", int64="double")
     assert kinds(m) == {"a": ("double", "none")} and m.columns[0].attrs is None
     with pytest.raises(ValueError, match="2\\^53"):
@@ -372,8 +459,6 @@ def test_int64_modes():
 
 # ---------------------------------------------------------------- refusals
 @pytest.mark.parametrize("arr,exc,match", [
-    (pa.array([b"ab"], pa.binary()), TypeError, "binary"),
-    (pa.array([b"ab"], pa.large_binary()), TypeError, "binary"),
     (pa.array([1], pa.int64()).cast(pa.decimal128(25, 2)), TypeError, "decimal"),
     (pa.array([[1, 2]], pa.list_(pa.int32())), TypeError, "list"),
     (pa.array([{"a": 1}], pa.struct([("a", pa.int32())])), TypeError, "struct"),
@@ -384,7 +469,7 @@ def test_int64_modes():
     (pa.array(["a\x00b"]), ValueError, "bad"),
     (pa.DictionaryArray.from_arrays(pa.array([0, 1], pa.int8()), pa.array(["a", "a"])), ValueError, "repeated"),
     (pa.DictionaryArray.from_arrays(pa.array([0], pa.int8()), pa.array(["a\x00"])), ValueError, "NUL"),
-], ids=["binary", "large_binary", "decimal", "list", "struct", "map", "int32_min", "int64_min", "uint64_big",
+], ids=["decimal", "list", "struct", "map", "int32_min", "int64_min", "uint64_big",
         "nul_in_string", "repeated_levels", "nul_in_level"])
 def test_refused(arr, exc, match, tmp_path):
     p = tmp_path / "refused.fstx"
@@ -418,6 +503,182 @@ def test_refused_string_in_a_repeated_column(chunks, row, match, tmp_path):
         fstx.write_fstx(pa.table({"txt": pa.chunked_array(arrs)}), p)
     assert "(row %d)" % row in str(e.value)
     assert not p.exists()
+
+
+@pytest.mark.parametrize("case", ["distinct", "same", "half", "half_plus_one", "nulls", "empty_strings", "large",
+                                  "binary", "sliced_chunks", "all_null", "long_values"])
+def test_over_half_distinct_is_count_distinct(case):
+    # write_fstx's dictionary choice for a string column: the binding's answer is pyarrow's count_distinct
+    from fstx import _core
+    import pyarrow.compute as pc
+
+    n = 65_536
+    vals = {
+        "distinct": [f"d{i}" for i in range(n)],
+        "same": ["x"] * n,
+        "half": [f"h{i % (n // 2)}" for i in range(n)],
+        "half_plus_one": [f"h{i % (n // 2)}" for i in range(n - 1)] + ["new"],
+        "nulls": [None if i % 3 else f"n{i}" for i in range(n)],
+        "empty_strings": ["" if i % 2 else f"e{i}" for i in range(n)],
+        "large": [f"l{i % 40_000}" for i in range(n)],
+        "binary": [f"b{i % 30_000}" for i in range(n)],
+        "sliced_chunks": [f"s{i % 33_000}" for i in range(n)],
+        "all_null": [None] * n,
+        "long_values": [("v" * 50) + str(i % 32_769) for i in range(n)],
+    }[case]
+    a = pa.array(vals, pa.large_string() if case == "large" else pa.binary() if case == "binary" else pa.string())
+    col = pa.chunked_array([a.slice(0, 7), a.slice(7, 30_000), a.slice(30_007)]) if case == "sliced_chunks" \
+        else pa.chunked_array([a])
+    want = pc.count_distinct(col).as_py() * 2 > len(col)
+    assert _core.over_half_distinct([c.__arrow_c_array__() for c in col.chunks]) == want
+
+
+def test_refused_damaged_offsets_in_a_long_column(tmp_path):
+    # offsets that go backwards, past the first 65,536 rows' distinct count and into the string check
+    import numpy as np
+
+    n = 70_000
+    offs = np.arange(n + 1, dtype="int32") * 2
+    offs[40_000] = 5  # value 39,999 ends before it starts
+    data = pa.py_buffer(b"ab" * n)
+    bad = pa.Array.from_buffers(pa.string(), n, [None, pa.py_buffer(offs.tobytes()), data])
+    p = tmp_path / "bad.fstx"
+    with pytest.raises(ValueError, match="damaged string offsets") as e:
+        fstx.write_fstx(pa.table({"s": bad}), p)
+    assert "(row 39999)" in str(e.value)
+    assert not p.exists()
+
+
+def test_refused_int32_na_value_anywhere(tmp_path):
+    # R's NA_integer_ as a value is looked for in every chunk, on all threads, before the file is touched; under
+    # a missing value it does not count
+    import numpy as np
+
+    p = tmp_path / "kept.fstx"
+    fstx.write_fstx(pa.table({"x": pa.array([1, 2], pa.int32())}), p)
+    before = p.read_bytes()
+    v = np.arange(3_000_000, dtype="int32")
+    v[2_500_000] = -2**31
+    chunks = [pa.array(v[a:a + 700_000]) for a in range(0, len(v), 700_000)]
+    for threads in (1, None):
+        with pytest.raises(ValueError, match="'x' holds -2147483648"):
+            fstx.write_fstx(pa.table({"ok": pa.array(v.astype("float64")), "x": pa.chunked_array(chunks)}), p,
+                            threads=threads)
+        assert p.read_bytes() == before
+    masked = pa.array(v, mask=v == -2**31)
+    fstx.write_fstx(pa.table({"x": masked}), p)
+    got = fstx.read_fstx(p).column("x")
+    assert got.null_count == 1 and got[2_500_000].as_py() is None and got[2_499_999].as_py() == 2_499_999
+
+
+def test_refused_strings_checked_on_many_threads(tmp_path):
+    # the string check runs in slices of 65,536 values on all threads: the error still names the first column
+    # with a problem and its first row, whatever slice found it
+    n = 300_000
+    plain = [f"v{i}" for i in range(n)]
+    plain[140_001] = b"\xff"  # not UTF-8, in a later slice ...
+    plain[70_000] = "a\x00b"  # ... than this NUL
+    vals = [f"k{i % 9}" for i in range(n)]  # 9 values: goes to the engine dictionary-coded
+    vals[100_500] = "bad\x00"
+
+    def text(values):
+        return pa.array([v.encode() if isinstance(v, str) else v for v in values], pa.binary()).view(pa.string())
+
+    bad_plain, rep, good = text(plain), text(vals), pa.array([f"g{i}" for i in range(n)])
+    p = tmp_path / "refused.fstx"
+    for cols, name, row in (({"good": good, "a": bad_plain, "b": rep}, "a", 70_000),
+                            ({"good": good, "b": rep, "a": bad_plain}, "b", 100_500)):
+        for threads in (1, None):
+            with pytest.raises(ValueError, match="NUL") as e:
+                fstx.write_fstx(pa.table(cols), p, threads=threads)
+            assert f"column '{name}'" in str(e.value) and f"(row {row})" in str(e.value), str(e.value)
+            assert not p.exists()
+
+
+def test_number_pages_in_place_and_filled(tmp_path):
+    # the engine asks for number rows a page at a time: pages inside one chunk of the stored type go in place,
+    # pages over a chunk edge, with nulls or of another type are filled; the file is the same as from one array
+    import numpy as np
+
+    n = 700_001
+    rng = np.random.default_rng(3)
+    vals = {
+        "i32": pa.array(rng.integers(-2**31 + 1, 2**31, n).astype("int32")),
+        "f64": pa.array(rng.standard_normal(n)),
+        "i16": pa.array(rng.integers(-3000, 3000, n).astype("int16")),
+        "i64": pa.array(rng.integers(-2**62, 2**62, n)),  # fstx 1.2: an int64 column (int64="auto", past int32)
+    }
+    nulls = np.zeros(n, bool)
+    nulls[300_000:300_010] = True
+    vals["f64_na"] = pa.array(rng.standard_normal(n), mask=nulls)
+    vals["i64_na"] = pa.array(rng.integers(-2**62, 2**62, n), mask=nulls)
+    one = pa.table(vals)
+    p = tmp_path / "one.fstx"
+    fstx.write_fstx(one, p, threads=1)
+    assert [c.phys for c in fstx.metadata(p).columns][-3:] == ["int64", "double", "int64"]
+    for size in (65_536, 40_000, 32_768, 1):
+        cuts = list(range(0, n, size if size > 1 else 99_999)) + [n]
+        many = pa.table({k: pa.chunked_array([v.slice(a, b - a) for a, b in zip(cuts, cuts[1:])], v.type)
+                         for k, v in vals.items()})
+        for threads in (1, None):
+            q = tmp_path / f"many_{size}_{threads}.fstx"
+            fstx.write_fstx(many, q, threads=threads)
+            assert p.read_bytes() == q.read_bytes(), (size, threads)
+    assert fstx.read_fstx(p, columns=["f64_na"]).column("f64_na").null_count == 10
+    if DROP2:
+        got = fstx.read_fstx(p, columns=["i64", "i64_na"])
+        assert got.column("i64").equals(pa.chunked_array([vals["i64"]])) and got.column("i64_na").null_count == 10
+        assert got.column("i64_na").equals(pa.chunked_array([vals["i64_na"]]))
+
+
+def test_one_thread_team_for_every_step(tmp_path):
+    # the checks and the window fills of one write share its threads (started once): any thread count gives the
+    # same file over many windows, and a write refused on a worker leaves the next write working
+    import numpy as np
+
+    n = 3 * 1_048_576  # whole row groups: a short last one could go plain (see STATUS-FIX, read side)
+    rng = np.random.default_rng(5)
+    nulls = rng.random(n) < 0.2
+    t = pa.table({
+        "i": pa.array(rng.integers(-1000, 1000, n).astype("int32"), mask=nulls),
+        "d": pa.array(rng.standard_normal(n), mask=~nulls),
+        "s": pa.array([f"s{i % 5000}" for i in range(n)]),
+    })
+    p, q = tmp_path / "one.fstx", tmp_path / "many.fstx"
+    fstx.write_fstx(t, p, threads=1)
+    bad = pa.table({"s": pa.array([b"ok"] * 200_000 + [b"\xff"], pa.binary()).view(pa.string())})
+    for threads in (2, 3, 8, None):
+        with pytest.raises(ValueError, match="UTF-8"):
+            fstx.write_fstx(bad, q, threads=threads)
+        fstx.write_fstx(t, q, threads=threads)
+        assert p.read_bytes() == q.read_bytes(), threads
+    assert fstx.read_fstx(q).equals(t.cast(fstx.read_fstx(q).schema))
+
+
+def test_repeated_strings_in_many_dictionaries(tmp_path):
+    # a repeating column is coded in slices on many threads, each with its own dictionary; equal strings still
+    # reach the engine as one pointer: the same file as one dictionary (one thread), and as chunks that each
+    # bring a dictionary of their own (other values, other order, missing values, a value missing from some)
+    n = 1_200_000
+    vals = [None if i % 97 == 0 else f"code-{(i * 7919) % 300:03d}" for i in range(n)]
+    plain = pa.array(vals)
+    p, q, r = tmp_path / "one.fstx", tmp_path / "many.fstx", tmp_path / "own.fstx"
+    fstx.write_fstx(pa.table({"s": plain}), p, threads=1)
+    fstx.write_fstx(pa.table({"s": plain}), q, threads=None)
+    assert p.read_bytes() == q.read_bytes()
+    cuts = [0, 5, 70_000, 600_000, 1_100_000, n]
+    own = pa.chunked_array([plain.slice(a, b - a).dictionary_encode() for a, b in zip(cuts, cuts[1:])])
+    assert len({c.dictionary.buffers()[2].address for c in own.chunks}) == len(cuts) - 1
+    # (a dictionary-typed column is a factor; as text it goes through the string path of the binding directly)
+    from fstx import _write as W
+    col = W._Col("s", W._STRING, list(own.chunks))
+    spec = [(col.name, col.phys, col.logical, col.ordered, col.levels, col.tzone, col.attrs,
+             [a.__arrow_c_array__() for a in col.data], 0, False)]
+    from fstx import _core
+    _core.write(str(r), spec, W._table_blob(pa.table({"s": plain}), W._NO_INDEX), n, _core.CODEC_ZSTD, 3, 0, 1, 10,
+                False)
+    assert r.read_bytes() == p.read_bytes()
+    assert fstx.read_fstx(r).column("s").combine_chunks().equals(plain)
 
 
 def test_repeated_strings_are_dictionary_coded(tmp_path):
@@ -714,4 +975,4 @@ def test_polars_native():
     assert k["f"] == ("double", "none") and k["s"] == ("character", "none") and k["b"] == ("logical", "none")
     assert k["d"] == ("double", "Date") and k["t"] == ("double", "POSIXct") and c["t"].tzone == "UTC"
     assert k["c"] == ("integer", "factor") and set(c["c"].levels) >= {"x", "y"}
-    assert attrs(c["u64"])["class"].values == ["integer64"]
+    assert k["u64"] == ("int64", "none") and c["u64"].attrs is None  # fstx 1.2: past int32, an int64 column

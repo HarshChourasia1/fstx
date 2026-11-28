@@ -66,3 +66,78 @@ read_outcome <- function(p, ...) {
     if (is.data.frame(y)) "data" else "other"
   }, error = function(e) "error")
 }
+
+# ---------------------------------------------------------------- fstx 1.2: int64 and binary columns
+# Tests that need the engine's drop 2 (exact int64 filters, Arrow stream types) are skipped until
+# this is TRUE (switch it on here once drop 2 is merged, or for one run with the environment variable
+# FSTX_TEST_DROP2=true); the rest of the 1.2 tests need drop 1 (types, pages, read / write).
+fstx_drop2 <- TRUE || identical(Sys.getenv("FSTX_TEST_DROP2"), "true")
+skip_until_drop2 <- function() skip_if_not(fstx_drop2, "needs the fstx 1.2 engine drop 2 (int64 filters, Arrow types)")
+
+# integer64 vectors without bit64: from the high 32 bits (signed) and the low 32 bits (unsigned), as doubles
+to_i32 <- function(v) as.integer(ifelse(v == -2^31, NA, v))   # NA_integer_ has the bits of -2^31
+i64_parts <- function(hi, lo) {
+  lo <- ifelse(lo >= 2^31, lo - 2^32, lo)
+  b <- writeBin(to_i32(as.vector(rbind(lo, hi))), raw(), size = 4L, endian = "little")
+  structure(readBin(b, "double", length(hi), size = 8L, endian = "little"), class = "integer64")
+}
+# whole numbers (exact doubles) as integer64; NA gives integer64's NA (INT64_MIN)
+i64 <- function(d) {
+  na <- is.na(d)
+  d[na] <- 0
+  hi <- floor(d / 2^32)
+  lo <- d - hi * 2^32
+  hi[na] <- -2^31
+  lo[na] <- 0
+  i64_parts(hi, lo)
+}
+i64_na <- i64_parts(-2^31, 0)
+i64_min <- i64_parts(-2^31, 1)              # INT64_MIN + 1, the smallest value a file can hold
+i64_max <- i64_parts(2^31 - 1, 2^32 - 1)    # INT64_MAX
+i64_c <- function(...) structure(unlist(lapply(list(...), unclass)), class = "integer64")
+# the values' bits as hex strings (integer64 holds them in doubles, so identical() cannot tell NaN patterns apart)
+i64_hex <- function(v) {
+  if (!length(v)) return(character(0))
+  m <- matrix(as.character(writeBin(as.vector(unclass(v)), raw(), size = 8L, endian = "big")), nrow = 8L)
+  apply(m, 2L, paste, collapse = "")
+}
+# integer64 columns (or a vector) with their values as hex strings, every attribute kept
+unbit <- function(x) {
+  f <- function(v) {
+    if (!inherits(v, "integer64")) return(v)
+    a <- attributes(v)
+    h <- i64_hex(v)
+    a$class <- c("i64hex", a$class)
+    attributes(h) <- a
+    h
+  }
+  if (is.data.frame(x)) {
+    x[] <- lapply(x, f)
+    x
+  } else f(x)
+}
+expect_same <- function(object, expected, ...) expect_identical(unbit(object), unbit(expected), ...)
+
+# a binary value of n bytes (all 256 byte values, NUL included)
+raw_n <- function(n, seed = 1) {
+  set.seed(seed)
+  as.raw(sample.int(256L, n, TRUE) - 1L)
+}
+
+# Data frames with integer64 or binary columns, built and cut without data.frame() / `[` (which, without bit64,
+# cannot take integer64 columns or drop their class)
+new_df <- function(...) list2DF(list(...))
+i64_rep <- function(x, ...) structure(rep(as.vector(unclass(x)), ...), class = "integer64")
+col_take <- function(v, r) {
+  a <- attributes(v)
+  out <- unclass(v)[r]
+  if (!is.null(a)) attributes(out) <- a
+  out
+}
+df_take <- function(x, r) list2DF(lapply(x, col_take, r))   # rows r, automatic row names
+df_rbind <- function(x, y) list2DF(Map(function(u, v) {
+  a <- attributes(u)
+  out <- c(unclass(u), unclass(v))
+  if (!is.null(a)) attributes(out) <- a
+  out
+}, x, y))

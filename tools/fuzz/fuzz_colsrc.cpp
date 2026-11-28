@@ -9,6 +9,8 @@ void check_fixed(const void* vals, int phys, const fz::Table& a, uint32_t col, u
     const uint64_t r = row0 + i;
     if (phys == FSTX_FLOAT64) {
       if (!fz::same_dbl(((const double*)vals)[i], a.cols[col].d[r])) fz::fail("colsrc double differs");
+    } else if (phys == FSTX_INT64) {
+      if (((const int64_t*)vals)[i] != a.cols[col].l[r]) fz::fail("colsrc int64 differs");
     } else if (((const int32_t*)vals)[i] != a.cols[col].i[r]) {
       fz::fail("colsrc int differs");
     }
@@ -86,7 +88,7 @@ void one_column(fstx_file* f, uint32_t col, const fz::Table& a, bool have_a, uin
   // load all pages at once
   const int threads = c.bit(2, 3) ? 2 : 1;
   if (in.mode == FSTX_SRC_FIXED) {
-    std::vector<uint8_t> dst((size_t)in.rows * (in.phys == FSTX_FLOAT64 ? 8 : 4));
+    std::vector<uint8_t> dst((size_t)in.rows * (in.phys == FSTX_FLOAT64 || in.phys == FSTX_INT64 ? 8 : 4));
     if (fstx_colsrc_load(s, dst.data(), threads, &err) == FSTX_OK && have_a) check_fixed(dst.data(), in.phys, a, col, from, (uint32_t)in.rows);
   } else if (fstx_colsrc_load(s, nullptr, threads, &err) == FSTX_OK) {
     if (c.bit(2, 4)) fstx_colsrc_detach(s, &err);

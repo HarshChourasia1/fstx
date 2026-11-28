@@ -5,9 +5,12 @@
 #include <cstring>
 #include <limits>
 
+#include "core_internal.h"  // kDefaultPageBytes, CodecContext
 #include "enc.h"
 #include "fsst.h"
 #include "libfsst.hpp"
+#define ZSTD_STATIC_LINKING_ONLY  // ZSTD_getCParams, ZSTD_CCtx_setCParams
+#include "vendor/zstd/zstd.h"
 
 namespace fstx {
 namespace enc {
@@ -25,22 +28,31 @@ constexpr uint64_t kFsstMaxPageBytes = 1ull << 26;  // bigger pages stay plain (
 inline int bits_of(uint64_t r) { return r ? 64 - __builtin_clzll(r) : 0; }
 
 // Open-addressing table from (pointer, length) to dictionary code. The host gives the same pointer for
-// equal strings (R's global string cache); a host that does not only gets a bigger dictionary.
+// equal strings (R's global string cache); a host that does not only gets a bigger dictionary. Binary columns
+// (content = true) compare the bytes instead: R raw vectors and Arrow binary values never share a pointer. Codes
+// follow the first appearance either way, so the table's hash never changes a file.
 struct PtrDict {
   std::vector<int32_t> slot;
   uint32_t mask = 0;
   int lg = 0;
+  bool content = false;
   std::vector<const char*>* ptr;
   std::vector<int32_t>* len;
-  void init(std::vector<const char*>* p, std::vector<int32_t>* l) {
+  void init(std::vector<const char*>* p, std::vector<int32_t>* l, bool by_content) {
     ptr = p;
     len = l;
+    content = by_content;
     lg = 12;
     slot.assign(1u << lg, -1);
     mask = (1u << lg) - 1;
   }
   uint32_t hash(const char* p, int32_t l) const {
-    return (uint32_t)((((uint64_t)(uintptr_t)p >> 3) ^ ((uint64_t)(uint32_t)l << 40)) * 0x9E3779B97F4A7C15ULL >> (64 - lg));
+    const uint64_t k = content ? (l > 0 ? hash64(p, (size_t)l) : 0) : ((uint64_t)(uintptr_t)p >> 3);
+    return (uint32_t)((k ^ ((uint64_t)(uint32_t)l << 40)) * 0x9E3779B97F4A7C15ULL >> (64 - lg));
+  }
+  bool same(int32_t s, const char* p, int32_t l) const {
+    const char* q = (*ptr)[(size_t)s];
+    return (*len)[(size_t)s] == l && (q == p || (content && (l == 0 || std::memcmp(q, p, (size_t)l) == 0)));
   }
   void grow() {
     ++lg;
@@ -57,7 +69,7 @@ struct PtrDict {
     for (;;) {
       const int32_t s = slot[h];
       if (s < 0) break;
-      if ((*ptr)[(size_t)s] == p && (*len)[(size_t)s] == l) return s;
+      if (same(s, p, l)) return s;
       h = (h + 1) & mask;
     }
     const int32_t c = (int32_t)ptr->size();
@@ -349,7 +361,50 @@ size_t fsst_encode(const void* enc, size_t n, const size_t* len, const unsigned 
 
 }  // namespace
 
-int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const EncCtx& cx, int force, StrChunk& sc) {
+namespace {
+
+// ZSTD -1 size of a sample of n bytes that stands for pages of about `page` bytes. zstd picks its tables by the
+// input's size (up to 16 KB, 128 KB, 256 KB, more), so a sample smaller than the page it stands for was judged with
+// smaller tables than the page gets: mixed.comment's FSST samples (about 107 KB) took the 128 KB tables while its
+// FSST pages (about 136 KB) get the 256 KB ones and come out 4% smaller than estimated, so the chooser kept plain
+// pages that were 3% bigger. The estimate now takes the parameters zstd picks for the page size.
+size_t zstd_est_page(const EncCtx& cx, const uint8_t* p, size_t n, uint64_t page) {
+  if (!cx.cc || n == 0) return n;
+  FSTX_PROF_SCOPE(W_ZSTD_EST);
+  CodecContext& cc = *cx.cc;
+  if (!cc.zc) {
+    cc.zc = ZSTD_createCCtx();
+    if (!cc.zc) fail(FSTX_ERR_MEMORY, "cannot create a ZSTD context");
+  }
+  ZSTD_CCtx* z = (ZSTD_CCtx*)cc.zc;
+  std::vector<uint8_t> tmp(ZSTD_compressBound(n));
+  ZSTD_CCtx_reset(z, ZSTD_reset_session_and_parameters);
+  size_t r = ZSTD_CCtx_setCParams(z, ZSTD_getCParams(-1, page ? page : n, 0));
+  if (!ZSTD_isError(r)) r = ZSTD_compress2(z, tmp.data(), tmp.size(), p, n);
+  // compress_page (ZSTD_compressCCtx) ignores these parameters; reset them anyway so the context carries nothing
+  ZSTD_CCtx_reset(z, ZSTD_reset_session_and_parameters);
+  if (ZSTD_isError(r)) fail(FSTX_ERR_INTERNAL, "ZSTD estimate failed: %s", ZSTD_getErrorName(r));
+  return r;
+}
+
+// The pointer cache for a chunk that ends plain / FSST, from the write's budget (false when it ran out).
+bool take_cache(const EncCtx& cx, uint64_t n, StrChunk& sc) {
+  const uint64_t need = 12 * n;
+  if (!cx.str_cache) return false;
+  uint64_t left = cx.str_cache->load();
+  while (left >= need)
+    if (cx.str_cache->compare_exchange_weak(left, left - need)) {
+      sc.cptr.resize(n);
+      sc.clen.resize(n);
+      return true;
+    }
+  return false;
+}
+
+}  // namespace
+
+int plan_str_begin(const fstx_column_data& d, uint64_t r0, uint64_t r1, const EncCtx& cx, int force, StrChunk& sc,
+                   StrPrep& p) {
   const uint64_t n = r1 - r0;
   const uint64_t nv = (n + kV - 1) / kV;
   sc.mode = T_PLAIN;
@@ -360,31 +415,30 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
   sc.vsizes.assign(nv, 0);
   sc.cptr.clear();
   sc.clen.clear();
+  p = StrPrep();
   const bool dict_fsst = (force & F_DICT_FSST) != 0;  // tests: FSST-code the dictionary page
   force &= 0xff;
+  p.force = force;
+  if (nv <= kStrSampleVectors) {
+    for (uint64_t v = 0; v < nv; ++v) p.svec.push_back(v);
+  } else {
+    for (uint64_t k = 0; k < kStrSampleVectors; ++k) p.svec.push_back(k * (nv - 1) / (kStrSampleVectors - 1));
+  }
+  p.sp2.resize(p.svec.size());
+  p.sl2.resize(p.svec.size());
 
   bool dict = force == 0 || force == T_DICT;
+  if (!dict) {  // nothing needs the rows in order: all of them go to plan_str_vectors
+    take_cache(cx, n, sc);
+    return 0;
+  }
   PtrDict pd;
   uint64_t dict_bytes = 0;
-  if (dict) {
-    sc.codes.resize(n);
-    pd.init(&sc.dptr, &sc.dlen);
-  }
+  sc.codes.resize(n);
+  pd.init(&sc.dptr, &sc.dlen, cx.dict_by_content);
   // Pointer cache, kept only for chunks that end plain / FSST: taken from the budget when the dictionary is
   // ruled out (rows seen so far come from the codes, which hold the same pointers), never for dictionary chunks.
   bool cache = false;
-  auto take_cache = [&]() {
-    const uint64_t need = 12 * n;
-    if (!cx.str_cache) return false;
-    uint64_t left = cx.str_cache->load();
-    while (left >= need)
-      if (cx.str_cache->compare_exchange_weak(left, left - need)) {
-        sc.cptr.resize(n);
-        sc.clen.resize(n);
-        return true;
-      }
-    return false;
-  };
   auto codes_to_cache = [&](uint64_t rows) {
     for (uint64_t i = 0; i < rows; ++i) {
       const int32_t c = sc.codes[i];
@@ -392,17 +446,8 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
       sc.clen[i] = c < 0 ? -1 : sc.dlen[(size_t)c];
     }
   };
-  if (!dict) cache = take_cache();
-  std::vector<uint64_t> svec;  // sample vectors, ascending
-  if (nv <= kStrSampleVectors) {
-    for (uint64_t v = 0; v < nv; ++v) svec.push_back(v);
-  } else {
-    for (uint64_t k = 0; k < kStrSampleVectors; ++k) svec.push_back(k * (nv - 1) / (kStrSampleVectors - 1));
-  }
   size_t si = 0;
-  std::vector<const unsigned char*> sp;
-  std::vector<size_t> sl;
-  uint64_t sbytes = 0, plain_bytes = 0;
+  uint64_t plain_bytes = 0;
   const char* ptrs[kV];
   int32_t lens[kV];
 
@@ -415,37 +460,39 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
       if (lens[i] > 0) s += (uint64_t)lens[i];
     sc.vsizes[v] = s;
     plain_bytes += s - 4ull * m;
-    if (dict) {
-      int32_t* codes = sc.codes.data() + v * kV;
-      for (uint32_t i = 0; i < m; ++i) codes[i] = lens[i] < 0 ? -1 : pd.code(ptrs[i], lens[i], dict_bytes);
-      const uint64_t seen = v * kV + m;
-      // Checked from 65,536 rows on: earlier checks gave up on medium-cardinality columns (50k product codes
-      // with skewed popularity pass rows / 2 distinct values in the first 16k rows).
-      if ((force != T_DICT && seen >= 65536 && sc.dptr.size() * 2 > seen) || sc.dptr.size() > (1u << 24) ||
-          dict_bytes + 8 * sc.dptr.size() > kMaxRawPage / 2) {
-        dict = false;  // too many distinct strings: stop paying for the hashing
-        if ((cache = take_cache())) codes_to_cache(v * kV);  // this vector is copied below
-        std::vector<int32_t>().swap(sc.codes);
-        std::vector<const char*>().swap(sc.dptr);
-        std::vector<int32_t>().swap(sc.dlen);
-      }
+    int32_t* codes = sc.codes.data() + v * kV;
+    for (uint32_t i = 0; i < m; ++i) codes[i] = lens[i] < 0 ? -1 : pd.code(ptrs[i], lens[i], dict_bytes);
+    const uint64_t seen = v * kV + m;
+    // Checked from 65,536 rows on: earlier checks gave up on medium-cardinality columns (50k product codes
+    // with skewed popularity pass rows / 2 distinct values in the first 16k rows).
+    if ((force != T_DICT && seen >= 65536 && sc.dptr.size() * 2 > seen) || sc.dptr.size() > (1u << 24) ||
+        dict_bytes + 8 * sc.dptr.size() > kMaxRawPage / 2) {
+      dict = false;  // too many distinct strings: stop paying for the hashing
+      if ((cache = take_cache(cx, n, sc))) codes_to_cache(v * kV);  // this vector is copied below
+      std::vector<int32_t>().swap(sc.codes);
+      std::vector<const char*>().swap(sc.dptr);
+      std::vector<int32_t>().swap(sc.dlen);
     }
-    if (si < svec.size() && svec[si] == v) {
+    if (si < p.svec.size() && p.svec[si] == v) {
       ++si;
       for (uint32_t i = 0; i < m; ++i)
         if (lens[i] >= 0) {
-          sp.push_back((const unsigned char*)(lens[i] > 0 ? ptrs[i] : ""));
-          sl.push_back((size_t)lens[i]);
-          sbytes += (uint64_t)lens[i];
+          p.sp.push_back((const unsigned char*)(lens[i] > 0 ? ptrs[i] : ""));
+          p.sl.push_back((size_t)lens[i]);
         }
     }
     if (cache) {
       std::memcpy(sc.cptr.data() + v * kV, ptrs, m * sizeof(const char*));
       std::memcpy(sc.clen.data() + v * kV, lens, m * sizeof(int32_t));
     }
+    if (!dict) {  // the rest of the rows in any order
+      p.next_v = v + 1;
+      return 0;
+    }
   }
+  p.next_v = nv;
 
-  if (dict && !sc.dptr.empty()) {
+  if (!sc.dptr.empty()) {
     const uint64_t nd = sc.dptr.size();
     const double dict_raw = (double)dict_bytes + (double)nd + (double)n * bits_of(nd - 1) / 8.0;
     const double plain_raw = (double)plain_bytes + (double)n;
@@ -466,51 +513,125 @@ int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const En
         ft->blob.assign(buf, buf + len);
         sc.fsst = std::move(ft);
       }
+      p.done = true;
       return 0;
     }
   }
-  if (dict && !cache && (cache = take_cache())) codes_to_cache(n);  // a dictionary was kept up but not chosen
+  if (take_cache(cx, n, sc)) codes_to_cache(n);  // a dictionary was kept up but not chosen
   std::vector<int32_t>().swap(sc.codes);
   std::vector<const char*>().swap(sc.dptr);
   std::vector<int32_t>().swap(sc.dlen);
+  return 0;
+}
 
-  if (force == T_PLAIN || sp.empty() || sbytes == 0) return 0;
-  if (force != T_FSST && sbytes < 4096) return 0;  // too little text to be worth a symbol table
+int plan_str_vectors(const fstx_column_data& d, uint64_t r0, uint64_t r1, uint64_t v0, uint64_t v1, StrChunk& sc,
+                     StrPrep& p) {
+  const uint64_t n = r1 - r0;
+  const bool cache = !sc.cptr.empty();
+  size_t si = (size_t)(std::lower_bound(p.svec.begin(), p.svec.end(), v0) - p.svec.begin());
+  const char* ptrs[kV];
+  int32_t lens[kV];
+  for (uint64_t v = v0; v < v1; ++v) {
+    const uint32_t m = (uint32_t)std::min<uint64_t>(kV, n - v * kV);
+    const int rc = d.get_strings(d.ctx, r0 + v * kV, m, ptrs, lens);
+    if (rc != 0) return rc;
+    uint64_t s = 4ull * m;
+    for (uint32_t i = 0; i < m; ++i)
+      if (lens[i] > 0) s += (uint64_t)lens[i];
+    sc.vsizes[v] = s;
+    if (si < p.svec.size() && p.svec[si] == v) {
+      for (uint32_t i = 0; i < m; ++i)
+        if (lens[i] >= 0) {
+          p.sp2[si].push_back((const unsigned char*)(lens[i] > 0 ? ptrs[i] : ""));
+          p.sl2[si].push_back((size_t)lens[i]);
+        }
+      ++si;
+    }
+    if (cache) {
+      std::memcpy(sc.cptr.data() + v * kV, ptrs, m * sizeof(const char*));
+      std::memcpy(sc.clen.data() + v * kV, lens, m * sizeof(int32_t));
+    }
+  }
+  return 0;
+}
+
+void plan_str_finish(const EncCtx& cx, StrChunk& sc, StrPrep& p) {
+  if (p.done) return;
+  std::vector<const unsigned char*>& sp = p.sp;  // begin's samples, then the others in row order
+  std::vector<size_t>& sl = p.sl;
+  for (size_t k = 0; k < p.sp2.size(); ++k) {
+    sp.insert(sp.end(), p.sp2[k].begin(), p.sp2[k].end());
+    sl.insert(sl.end(), p.sl2[k].begin(), p.sl2[k].end());
+  }
+  uint64_t sbytes = 0;
+  for (size_t l : sl) sbytes += (uint64_t)l;
+  const int force = p.force;
+  p.done = true;
+
+  if (force == T_PLAIN || sp.empty() || sbytes == 0) return;
+  if (force != T_FSST && sbytes < 4096) return;  // too little text to be worth a symbol table
 
   std::unique_ptr<FsstTable> ft(new FsstTable());
   FSTX_PROF_BEGIN(prof_tab, W_FSST_TABLE);
   ft->enc = fsst_create(sp.size(), sl.data(), sp.data(), 0);
   FSTX_PROF_END(prof_tab);
   if (!ft->enc) fail(FSTX_ERR_MEMORY, "cannot create an FSST symbol table");
-  bool use = force == T_FSST;
-  if (!use) {
-    FSTX_PROF_SCOPE(W_STR_CHOOSE);
-    std::unique_ptr<uint8_t[]> fo(new uint8_t[2 * sbytes + 16]);
-    std::vector<size_t> lo(sp.size());
-    {
-      size_t fbytes = fsst_encode(ft->enc, sp.size(), sl.data(), sp.data(), fo.get(), lo.data());
-      fbytes += FSST_MAXHEADER / 2;  // the symbol table goes into every page
-      if (cx.codec == FSTX_CODEC_NONE) {
-        use = fbytes * 100 < sbytes * 85;
-      } else {
-        std::vector<uint8_t> cat;
-        cat.reserve(sbytes);
-        for (size_t k = 0; k < sp.size(); ++k) cat.insert(cat.end(), sp[k], sp[k] + sl[k]);
-        const size_t zp = zstd_est(cx, cat.data(), cat.size());
-        // FSST output is contiguous in fo
-        const size_t zf = std::min(fbytes, zstd_est(cx, fo.get(), fbytes - FSST_MAXHEADER / 2) + FSST_MAXHEADER / 2);
-        use = zf < zp;
-      }
-    }
-  }
-  if (use) {
+  {
     unsigned char buf[FSST_MAXHEADER];
     const unsigned int len = fsst_export((fsst_encoder_t*)ft->enc, buf);
     ft->blob.assign(buf, buf + len);
+  }
+  bool use = force == T_FSST;
+  if (!use && cx.codec == FSTX_CODEC_NONE) {
+    FSTX_PROF_SCOPE(W_STR_CHOOSE);
+    std::unique_ptr<uint8_t[]> fo(new uint8_t[2 * sbytes + 16]);
+    std::vector<size_t> lo(sp.size());
+    size_t fbytes = fsst_encode(ft->enc, sp.size(), sl.data(), sp.data(), fo.get(), lo.data());
+    fbytes += FSST_MAXHEADER / 2;  // the symbol table goes into every page
+    use = fbytes * 100 < sbytes * 85;
+  } else if (!use) {
+    FSTX_PROF_SCOPE(W_STR_CHOOSE);
+    // The samples as one page in each encoding (lengths included: FSST pages store the encoded lengths), each
+    // compressed as a page of the size it stands for. The writer cuts a page at the first 1,024-row vector that
+    // takes it to kDefaultPageBytes of plain size (4 x rows + text), so a page holds about vpp vectors of the
+    // chunk's average size (all of a smaller chunk) and page_text bytes of text; a page in either encoding is then
+    // about page_text / sbytes times the sample's page. From the whole chunk's sizes, not the sample's: the
+    // samples leave out missing rows and their share of them varies (integers: the same choice on every build).
+    std::vector<const char*> pp(sp.size());
+    std::vector<int32_t> ll(sp.size());
+    for (size_t k = 0; k < sp.size(); ++k) {
+      pp[k] = (const char*)sp[k];
+      ll[k] = (int32_t)sl[k];
+    }
+    Buf bp, bf;
+    encode_str_page(K_STR, pp.data(), ll.data(), (uint32_t)sp.size(), T_PLAIN, nullptr, cx, bp);
+    encode_str_page(K_STR, pp.data(), ll.data(), (uint32_t)sp.size(), T_FSST, ft.get(), cx, bf);
+    uint64_t all = 0;
+    for (uint64_t s : sc.vsizes) all += s;
+    const uint64_t nv = sc.vsizes.size(), avg = all / nv, lens = 4ull * kV * nv;  // lens: 4 x rows, to within a vector
+    const uint64_t vpp = avg ? std::min<uint64_t>(nv, (kDefaultPageBytes + avg - 1) / avg) : nv;
+    const uint64_t page_text = all > lens ? vpp * ((all - lens) / nv) : 0;
+    auto as_page = [&](size_t m) -> uint64_t {
+      if (!page_text) return m;
+      if (m >= (1ull << 31) || page_text >= (1ull << 32)) return std::max<uint64_t>(m, page_text);  // past 256 KB
+      return (uint64_t)m * page_text / sbytes;
+    };
+    const size_t zp = std::min(bp.size(), zstd_est_page(cx, bp.v.data(), bp.size(), as_page(bp.size())));
+    const size_t zf = std::min(bf.size(), zstd_est_page(cx, bf.v.data(), bf.size(), as_page(bf.size())));
+    use = zf < zp;
+  }
+  if (use) {
     sc.fsst = std::move(ft);
     sc.mode = T_FSST;
   }
-  return 0;
+}
+
+int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const EncCtx& cx, int force, StrChunk& sc) {
+  StrPrep p;
+  int rc = plan_str_begin(d, r0, r1, cx, force, sc, p);
+  if (rc == 0 && !p.done) rc = plan_str_vectors(d, r0, r1, p.next_v, sc.vsizes.size(), sc, p);
+  if (rc == 0) plan_str_finish(cx, sc, p);
+  return rc;
 }
 
 uint32_t encode_str_page(int kind, const char* const* ptrs, const int32_t* lens, uint32_t n, int mode,
@@ -585,8 +706,8 @@ uint32_t encode_str_page(int kind, const char* const* ptrs, const int32_t* lens,
   return make_chain(kind, na, tags);
 }
 
-void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, int kind,
-                     std::vector<int32_t>& lens, std::vector<uint8_t>& buf, const char** bytes) {
+void open_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, int kind, int32_t* lens,
+                   StrPageView& v) {
   check_str_header(body, len, chain, n, kind);
   Rd rd{body + 8, body + len};
   Blk nb{};
@@ -595,11 +716,12 @@ void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n
   if (rd.peek() != chain_tag(chain, 0)) corrupt("encoding does not match the page directory");
   Blk vb = rd.next();
   if (!rd.done()) corrupt("trailing bytes");
-  lens.resize(n);
+  v = StrPageView();
+  v.n = n;
   if (vb.tag == T_PLAIN) {
     Cur c(vb);
     Rd in = c.rest();
-    decode_int32_blk(in, lens.data(), n, 1);
+    decode_int32_blk(in, lens, n, 1);
     Blk bb = in.next();
     if (bb.tag != T_PLAIN) corrupt("string bytes");
     uint64_t tot = 0;
@@ -608,7 +730,167 @@ void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n
       tot += (uint64_t)lens[i];
     }
     if (tot != bb.len) corrupt("string lengths do not match the bytes");
-    *bytes = (const char*)bb.p;
+    v.src = bb.p;
+    v.total = tot;
+  } else if (vb.tag == T_FSST) {
+    Cur c(vb);
+    const uint64_t total = get_u64(c.take(8));
+    Rd in = c.rest();
+    Blk tb = in.next();
+    if (tb.tag != T_PLAIN || !fsst_table_ok(tb.p, tb.len)) corrupt("FSST symbol table");
+    Blk bb = in.next();
+    if (bb.tag != T_PLAIN) corrupt("FSST bytes");
+    decode_int32_blk(in, lens, n, 1);
+    uint64_t csum = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+      if (lens[i] < 0) corrupt("FSST length");
+      csum += (uint64_t)lens[i];
+    }
+    if (csum != bb.len || total > 8 * csum || total > kMaxRawPage) corrupt("FSST sizes");
+    v.fsst = true;
+    v.src = bb.p;
+    v.table = tb.p;
+    v.total = total;
+  } else {
+    corrupt("unknown string encoding");
+  }
+  if (na) {
+    const int32_t zero = 0;
+    na_apply_i32(nb, na, n, lens, -1, &zero);
+  }
+}
+
+// One string's codes [in, end) to out, a symbol at a time with an 8-byte store each (out needs room for 8 bytes
+// per code): the page's strings are decoded in one loop instead of one fsst_decompress call each. 4 codes at a time
+// while none is the escape (255); a lone escape at the end was ruled out by the caller.
+inline uint8_t* fsst_codes(const fsst_decoder_t& dec, const uint8_t* in, const uint8_t* end, uint8_t* out) {
+  const unsigned long long* sym = dec.symbol;
+  const unsigned char* len = dec.len;
+  while (end - in >= 4) {
+    uint32_t w;
+    std::memcpy(&w, in, 4);
+    const uint32_t v = ~w;  // a byte of w is 255 where a byte of v is 0
+    if (((v - 0x01010101u) & ~v & 0x80808080u) == 0) {
+      for (int k = 0; k < 4; ++k) {
+        const uint32_t c = in[k];
+        std::memcpy(out, &sym[c], 8);
+        out += len[c];
+      }
+      in += 4;
+      continue;
+    }
+    const uint32_t c = *in++;
+    if (c != 255) {
+      std::memcpy(out, &sym[c], 8);
+      out += len[c];
+    } else {
+      *out++ = *in++;
+    }
+  }
+  while (in < end) {
+    const uint32_t c = *in++;
+    if (c != 255) {
+      std::memcpy(out, &sym[c], 8);
+      out += len[c];
+    } else {
+      *out++ = *in++;
+    }
+  }
+  return out;
+}
+
+void str_page_text(const StrPageView& v, int32_t* lens, char* dst, size_t slack) {
+  if (!v.fsst) {
+    if (v.total) std::memcpy(dst, v.src, (size_t)v.total);
+    return;
+  }
+  fsst_decoder_t dec;
+  std::memset(&dec, 0, sizeof(dec));  // codes the table does not define decode to nothing
+  if (fsst_import(&dec, v.table) == 0) corrupt("FSST symbol table");
+  const unsigned char* src = v.src;
+  const uint64_t total = v.total;
+  unsigned char* out = (unsigned char*)dst;
+  uint64_t pos = 0;
+  for (uint32_t i = 0; i < v.n; ++i) {
+    if (lens[i] <= 0) continue;  // NA (-1) or empty: no codes
+    const size_t cl = (size_t)lens[i];
+    // A code string never ends in a lone escape (255): the decoder would read symbol[255], past its table.
+    // Only a string ending in 255 is looked at: the trailing run of 255s starts at a code boundary, so an odd
+    // run means a lone escape.
+    if (src[cl - 1] == 255) {
+      size_t esc = 1;
+      while (esc < cl && src[cl - 1 - esc] == 255) ++esc;
+      if (esc & 1) corrupt("FSST escape at the end of a string");
+    }
+    const uint64_t room = total - pos + slack;
+    size_t got;
+    if (room >= 8 * (uint64_t)cl + 8)  // every code's 8-byte store fits
+      got = (size_t)(fsst_codes(dec, src, src + cl, out + pos) - (out + pos));
+    else  // the page's last strings: the library's decoder never writes past room
+      got = fsst_decompress(&dec, cl, src, (size_t)room, out + pos);
+    if (got > total - pos) corrupt("FSST string longer than the page");
+    lens[i] = (int32_t)got;
+    pos += got;
+    src += cl;
+  }
+  if (pos != total) corrupt("FSST total length");
+}
+
+void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, int kind,
+                     std::vector<int32_t>& lens, std::vector<uint8_t>& buf, const char** bytes) {
+  lens.resize(n);
+  StrPageView v;
+  open_str_page(body, len, chain, n, kind, lens.data(), v);
+  if (!v.fsst) {
+    *bytes = (const char*)v.src;
+    return;
+  }
+  if (buf.size() < v.total + 64) buf.resize((size_t)v.total + 64);
+  str_page_text(v, lens.data(), (char*)buf.data(), 32);
+  *bytes = (const char*)buf.data();
+}
+
+// Rows plans (reads of scattered rows): only the strings at positions idx[0..cnt) of a K_STR page (ascending,
+// repeats allowed). Every length is decoded and checked as in decode_str_page; FSST pages decompress only the
+// strings asked for (the page's total decoded size is then not checked: the page checksum covers a corrupt page).
+void decode_str_page_rows(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, const uint32_t* idx,
+                          uint32_t cnt, std::vector<int32_t>& all, std::vector<int32_t>& lens, std::vector<char>& out) {
+  check_str_header(body, len, chain, n, K_STR);
+  Rd rd{body + 8, body + len};
+  Blk nb{};
+  const int na = body[1];
+  if (na) nb = rd.next();
+  if (rd.peek() != chain_tag(chain, 0)) corrupt("encoding does not match the page directory");
+  Blk vb = rd.next();
+  if (!rd.done()) corrupt("trailing bytes");
+  all.resize(n);
+  lens.resize(cnt);
+  out.clear();
+  for (uint32_t k = 1; k < cnt; ++k)
+    if (idx[k] < idx[k - 1]) corrupt("internal: rows out of order");
+  if (cnt && idx[cnt - 1] >= n) corrupt("internal: row outside the page");
+  const int32_t zero = 0;
+  if (vb.tag == T_PLAIN) {
+    Cur c(vb);
+    Rd in = c.rest();
+    decode_int32_blk(in, all.data(), n, 1);
+    Blk bb = in.next();
+    if (bb.tag != T_PLAIN) corrupt("string bytes");
+    uint64_t tot = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+      if (all[i] < 0) corrupt("string length");
+      tot += (uint64_t)all[i];
+    }
+    if (tot != bb.len) corrupt("string lengths do not match the bytes");
+    if (na) na_apply_i32(nb, na, n, all.data(), -1, &zero);
+    uint64_t off = 0;
+    uint32_t i = 0;
+    for (uint32_t k = 0; k < cnt; ++k) {
+      for (; i < idx[k]; ++i) off += (uint64_t)std::max(0, all[i]);
+      const int32_t l = all[i];
+      lens[k] = l;
+      if (l > 0) out.insert(out.end(), (const char*)bb.p + off, (const char*)bb.p + off + l);
+    }
   } else if (vb.tag == T_FSST) {
     Cur c(vb);
     const uint64_t total = get_u64(c.take(8));
@@ -619,43 +901,38 @@ void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n
     if (fsst_import(&dec, tb.p) == 0) corrupt("FSST symbol table");
     Blk bb = in.next();
     if (bb.tag != T_PLAIN) corrupt("FSST bytes");
-    decode_int32_blk(in, lens.data(), n, 1);
+    decode_int32_blk(in, all.data(), n, 1);
     uint64_t csum = 0;
     for (uint32_t i = 0; i < n; ++i) {
-      if (lens[i] < 0) corrupt("FSST length");
-      csum += (uint64_t)lens[i];
+      if (all[i] < 0) corrupt("FSST length");
+      csum += (uint64_t)all[i];
     }
     if (csum != bb.len || total > 8 * csum || total > kMaxRawPage) corrupt("FSST sizes");
-    if (buf.size() < total + 64) buf.resize((size_t)total + 64);
+    if (na) na_apply_i32(nb, na, n, all.data(), -1, &zero);
     const unsigned char* src = bb.p;
-    uint64_t pos = 0;
-    for (uint32_t i = 0; i < n; ++i) {
-      const size_t cl = (size_t)lens[i];
-      size_t got = 0;
-      if (cl) {
-        // A code string never ends in a lone escape (255): the decoder would read symbol[255], past its table.
-        // Only a string ending in 255 is looked at: the trailing run of 255s starts at a code boundary, so an odd
-        // run means a lone escape.
-        if (src[cl - 1] == 255) {
-          size_t esc = 1;
-          while (esc < cl && src[cl - 1 - esc] == 255) ++esc;
-          if (esc & 1) corrupt("FSST escape at the end of a string");
-        }
-        got = fsst_decompress(&dec, cl, src, (size_t)(total - pos) + 32, buf.data() + pos);
-        if (got > total - pos) corrupt("FSST string longer than the page");
+    uint32_t i = 0;
+    for (uint32_t k = 0; k < cnt; ++k) {
+      for (; i < idx[k]; ++i) src += (size_t)std::max(0, all[i]);
+      const int32_t cl0 = all[i];
+      if (cl0 <= 0) {
+        lens[k] = cl0 < 0 ? -1 : 0;
+        continue;
       }
-      lens[i] = (int32_t)got;
-      pos += got;
-      src += cl;
+      const size_t cl = (size_t)cl0;
+      if (src[cl - 1] == 255) {  // a lone escape at the end (see decode_str_page)
+        size_t esc = 1;
+        while (esc < cl && src[cl - 1 - esc] == 255) ++esc;
+        if (esc & 1) corrupt("FSST escape at the end of a string");
+      }
+      const size_t at = out.size(), cap = 8 * cl + 32;  // a code expands to at most 8 bytes
+      out.resize(at + cap);
+      const size_t got = fsst_decompress(&dec, cl, src, cap, (unsigned char*)out.data() + at);
+      if (got > total || got > 8 * cl) corrupt("FSST string longer than the page");
+      out.resize(at + got);
+      lens[k] = (int32_t)got;
     }
-    if (pos != total) corrupt("FSST total length");
-    *bytes = (const char*)buf.data();
   } else {
     corrupt("unknown string encoding");
-  }
-  if (na) {
-    const int32_t zero = 0;
-    na_apply_i32(nb, na, n, lens.data(), -1, &zero);
   }
 }
 

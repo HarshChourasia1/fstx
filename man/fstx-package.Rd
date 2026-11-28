@@ -41,13 +41,19 @@ column are made on first use; \code{as_factor = TRUE} turns dictionary-coded col
 interrupted append leaves the old table readable. \code{fstx_compact(path)} removes what appends leave
 behind, and \code{merge = TRUE} also merges small row groups into full ones.
 
+\strong{64-bit integers and binary values.} \code{bit64::integer64} columns are stored as int64
+columns and list columns of raw vectors (also \code{blob} objects) as binary columns; see the \code{int64}
+arguments of \code{\link{write_fstx}} and \code{\link{read_fstx}}. A file with either type needs fstx 1.2 or
+later to read.
+
 \strong{Arrow.} \code{fstx_arrow_stream()} hands the data to Arrow-based tools without making R
 strings; see its help page.
 
-\strong{File format.} Files are written in fstx format 1.0 (format version 3 inside the file). Its
+\strong{File format.} Files are written in fstx format 1.2 (format version 3 inside the file), which is
+format 1.0 plus the int64 and binary column types; files with those types need fstx 1.2 or later. The
 specification ships with the package:
-\code{system.file("spec", "fstx-format-1.0.md", package = "fstx")}. Files from fstx 0.x development
-versions are not read. A file from a later fstx that needs something this version does not know is refused with a message that
+\code{system.file("spec", "fstx-format-1.2.md", package = "fstx")} (\code{fstx-format-1.0.md} is the
+1.0 text). Files from fstx 0.x development versions are not read. A file from a later fstx that needs something this version does not know is refused with a message that
 names it and ends "Update fstx".
 }
 \section{Options}{

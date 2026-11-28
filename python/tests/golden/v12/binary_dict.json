@@ -1,0 +1,170 @@
+{
+  "file": "binary_dict.fstx",
+  "about": "binary columns with few distinct values (dictionary pages), one of class AsIs",
+  "fstx": "1.2.0",
+  "write_args": [],
+  "nrow": 2000,
+  "ncol": 3,
+  "profile": "balanced",
+  "row_groups": 1,
+  "file_bytes": 1240,
+  "table": {
+    "class": [
+      "data.frame"
+    ],
+    "blob": "FXA1",
+    "row_names": "automatic",
+    "blob_hex": "465841010100000005000000636c61737304000000010000000a000000646174612e6672616d6500000000"
+  },
+  "columns": [
+    {
+      "name": "id",
+      "r_typeof": "integer",
+      "r_class": [],
+      "stored": {
+        "phys": "integer",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "int32",
+      "n": 2000,
+      "nulls": 0,
+      "md5": "0a9458259826ac1420e00455f5ab202d",
+      "values": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 2000,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "int",
+          "na": "none",
+          "encoding": "delta"
+        }
+      ],
+      "values_truncated": true
+    },
+    {
+      "name": "rep",
+      "r_typeof": "list",
+      "r_class": [],
+      "stored": {
+        "phys": "binary",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "none"
+      },
+      "arrow_type": "binary",
+      "n": 2000,
+      "nulls": 500,
+      "md5": "688b11c0c4bb339eebc58177d7e73385",
+      "values": [
+        "010203",
+        "00",
+        null,
+        "616263",
+        "010203",
+        "00",
+        null,
+        "616263",
+        "010203",
+        "00",
+        null,
+        "616263"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": true,
+          "rows": 3,
+          "nulls": 0,
+          "codec": "zstd",
+          "kind": "dictionary",
+          "na": "none",
+          "encoding": "plain"
+        },
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 2000,
+          "nulls": 500,
+          "codec": "zstd",
+          "kind": "codes",
+          "na": "bitmap",
+          "encoding": "for"
+        }
+      ],
+      "values_truncated": true
+    },
+    {
+      "name": "asis",
+      "r_typeof": "list",
+      "r_class": [
+        "AsIs"
+      ],
+      "stored": {
+        "phys": "binary",
+        "logical": "none",
+        "tzone_present": false,
+        "blob": "FXA1",
+        "blob_hex": "465841010100000005000000636c6173730400000001000000040000004173497300000000"
+      },
+      "arrow_type": "binary",
+      "n": 2000,
+      "nulls": 0,
+      "md5": "72dbf79d9d7b1805188107747d60e3db",
+      "values": [
+        "78",
+        "0000",
+        "78",
+        "0000",
+        "78",
+        "0000",
+        "78",
+        "0000",
+        "78",
+        "0000",
+        "78",
+        "0000"
+      ],
+      "pages": [
+        {
+          "row_group": 1,
+          "dictionary": true,
+          "rows": 2,
+          "nulls": 0,
+          "codec": "none",
+          "kind": "dictionary",
+          "na": "none",
+          "encoding": "plain"
+        },
+        {
+          "row_group": 1,
+          "dictionary": false,
+          "rows": 2000,
+          "nulls": 0,
+          "codec": "zstd",
+          "kind": "codes",
+          "na": "none",
+          "encoding": "for"
+        }
+      ],
+      "values_truncated": true
+    }
+  ]
+}

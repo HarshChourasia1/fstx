@@ -4,8 +4,12 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <new>
 
+#include "arrow_abi.h"
 #include "core_file.h"
+#include "vendor/zstd/zstd.h"
 
 namespace fb = fstx::fb;
 
@@ -34,8 +38,21 @@ struct PageData {
   const char* bytes = nullptr;
   uint64_t mem = 0;
   uint64_t tick = 0;
+  // fstx_colsrc_open_page: the page is read and checked, its text not yet decoded (own holds the body unless it is
+  // in the mapping; lens the stored lengths)
+  bool opened = false;
+  fstx::enc::StrPageView view;
 };
 }  // namespace
+
+// Buffers of decoded string pages kept for the next batch of a stream (arrow_abi.h: fstx_bufpool_*), so that a
+// read does not map, fault in and free the same amount of memory once per batch.
+struct fstx_bufpool {
+  std::mutex m;
+  std::vector<std::vector<uint8_t>> bytes;
+  std::vector<std::vector<int32_t>> ints;
+  uint64_t kept = 0;  // the process's spare pool (spare_bufs): bytes held
+};
 
 struct fstx_colsrc {
   const fstx_file* F = nullptr;
@@ -63,13 +80,113 @@ struct fstx_colsrc {
   std::vector<std::vector<uint8_t>> pool;
   std::unique_ptr<fstx::CodecContext> cc{new fstx::CodecContext()};
   std::vector<uint8_t> scratch, scratch2;
+  std::mutex count_m;  // the counters above, when pages are loaded from several threads (fstx_colsrc_load_page)
+  fstx_bufpool* bufs = nullptr;  // string page buffers come from here and go back here (not owned)
+  bool read = false;  // pages are copied out of the file (page_body_read), not touched in the mapping
   std::string name() const { return F ? F->col_name(col) : std::string("(in memory)"); }
+};
+
+// One worker's decode state for fstx_run_tasks / fstx_colsrc_load_page (arrow_abi.h).
+struct fstx_scratch {
+  fstx::CodecContext* cc;
+  std::vector<uint8_t>* a;
+  std::vector<uint8_t>* b;
+  std::vector<uint8_t>* host;  // the caller's buffer (fstx_scratch_buffer): kept with a scratch set, else per task
+};
+
+// Decode state per worker kept between fstx_run_tasks calls (a stream's batches): codec contexts and the page
+// buffers they decompress into are made once, not once per batch.
+struct fstx_scratchset {
+  std::vector<std::unique_ptr<fstx::CodecContext>> cc;
+  std::vector<std::vector<uint8_t>> a, b, host;
+  void ensure(size_t k) {  // before the workers start
+    while (cc.size() < k) cc.emplace_back(new fstx::CodecContext());
+    if (a.size() < k) a.resize(k);
+    if (b.size() < k) b.resize(k);
+    if (host.size() < k) host.resize(k);
+  }
 };
 
 namespace fstx {
 namespace {
 
+// As page_body, but the stored bytes are copied out of the file (MappedFile::read_at) instead of touched in the
+// mapping: the stored bytes go to buf (no codec) or to in and the body to buf (codec). Only the caller's buffers and
+// codec context: these run on threads that may end (a stream pulled from a thread that is not R's).
+const uint8_t* page_body_copy(const fstx_colsrc& S, const fb::Page* p, CodecContext& cc, std::vector<uint8_t>& buf,
+                              std::vector<uint8_t>& in) {
+  const fstx_file& F = *S.F;
+  const size_t cl = (size_t)p->comp_len();
+  const bool none = p->codec() == fb::Codec::None;
+  std::vector<uint8_t>& got = none ? buf : in;
+  if (got.size() < cl) got.resize(cl);
+  F.map.read_at(p->offset(), got.data(), cl);
+  if (S.verify && hash64(got.data(), cl) != p->hash())
+    fail(FSTX_ERR_CHECKSUM, "page checksum mismatch in column '%s' (rows %llu to %llu): the file is corrupt",
+         F.col_name(S.col).c_str(), (unsigned long long)p->first_row() + 1,
+         (unsigned long long)(p->first_row() + p->row_count()));
+  if (none) return buf.data();
+  const size_t raw = p->raw_len();
+  if (p->codec() == fb::Codec::ZSTD && ZSTD_getFrameContentSize(in.data(), cl) != raw)
+    fail(FSTX_ERR_CORRUPT, "column '%s' (rows %llu to %llu): the page size does not match its ZSTD frame: the file is "
+         "corrupt", F.col_name(S.col).c_str(), (unsigned long long)p->first_row() + 1,
+         (unsigned long long)(p->first_row() + p->row_count()));
+  if (buf.size() < raw) buf.resize(raw);
+  decompress_page(cc, (int)p->codec(), in.data(), cl, buf.data(), raw);
+  return buf.data();
+}
+
+const uint8_t* body_of(const fstx_colsrc& S, const fb::Page* p, CodecContext& cc, std::vector<uint8_t>& buf,
+                       std::vector<uint8_t>& in) {
+  return S.read ? page_body_copy(S, p, cc, buf, in) : page_body(*S.F, S.col, p, S.verify, cc, buf);
+}
+
 int width_mode(const fstx_colsrc& S) { return S.mode == FSTX_SRC_CODES ? 4 : width_of(S.phys); }
+
+// Buffers and decode state kept from one stream for the next (a process's reads): string page buffers of freed
+// pools, up to kSpareBytes (buffers of up to kSpareBuf each), and up to kSpareSets workers' scratch sets. Without
+// them every read faults in its page buffers and sets up a ZSTD context per worker again.
+constexpr uint64_t kSpareBytes = 64ull << 20;
+constexpr size_t kSpareBuf = 8u << 20;
+constexpr size_t kSpareSets = 4;
+fstx_bufpool& spare_bufs() {
+  static fstx_bufpool* p = new fstx_bufpool();  // never freed: no order of destruction at exit
+  return *p;
+}
+
+// String page buffers: from the source's pool when it has one (any contents, any size), then from the process's
+// spare buffers, else new.
+template <typename T>
+std::vector<T> take_buf(fstx_bufpool* P, std::vector<std::vector<T>> fstx_bufpool::*which) {
+  std::vector<T> v;
+  if (P) {
+    {
+      std::lock_guard<std::mutex> g(P->m);
+      std::vector<std::vector<T>>& l = P->*which;
+      if (!l.empty()) {
+        v.swap(l.back());
+        l.pop_back();
+        return v;
+      }
+    }
+    fstx_bufpool& sp = spare_bufs();
+    std::lock_guard<std::mutex> g(sp.m);
+    std::vector<std::vector<T>>& l = sp.*which;
+    if (!l.empty()) {
+      v.swap(l.back());
+      l.pop_back();
+      sp.kept -= v.capacity() * sizeof(T);
+    }
+  }
+  return v;
+}
+template <typename T>
+void give_buf(fstx_bufpool* P, std::vector<std::vector<T>> fstx_bufpool::*which, std::vector<T>& v) {
+  if (!P || !v.capacity()) return;
+  std::lock_guard<std::mutex> g(P->m);
+  (P->*which).push_back(std::move(v));
+  v = std::vector<T>();
+}
 
 void free_page(fstx_colsrc& S, uint32_t p) {
   PageData& d = S.data[p];
@@ -81,11 +198,14 @@ void free_page(fstx_colsrc& S, uint32_t p) {
   } else {
     std::vector<uint8_t>().swap(d.vals);
   }
+  give_buf(S.bufs, &fstx_bufpool::ints, d.lens);
+  give_buf(S.bufs, &fstx_bufpool::bytes, d.own);
   std::vector<int32_t>().swap(d.lens);
   std::vector<uint8_t>().swap(d.own);
   d.bytes = nullptr;
   d.mem = 0;
   d.ready = false;
+  d.opened = false;
   --S.ready_count;
 }
 
@@ -93,15 +213,16 @@ void decode_dict(const fstx_colsrc& S, SrcDict& D, CodecContext& cc, std::vector
   if (D.ready) return;
   if (!S.F || !D.page) fail(FSTX_ERR_INTERNAL, "dictionary is not loaded");
   try {
-    const uint8_t* b = page_body(*S.F, S.col, D.page, S.verify, cc, buf);
+    std::vector<uint8_t> in;
+    const uint8_t* b = body_of(S, D.page, cc, buf, in);
     std::vector<uint8_t> fbuf;
     const char* bytes = nullptr;
     enc::decode_str_page(b, D.page->raw_len(), D.page->chain(), D.n, enc::K_DICT, D.lens, fbuf, &bytes);
     uint64_t tot = 0;
     for (uint32_t i = 0; i < D.n; ++i) tot += (uint64_t)std::max(0, D.lens[i]);
-    check_no_nul(bytes, D.lens.data(), D.n);
+    if (S.phys == FSTX_STRING) check_no_nul(bytes, D.lens.data(), D.n);  // binary values may hold NUL
     D.own.assign((const uint8_t*)bytes, (const uint8_t*)bytes + tot);
-    S.F->map.release(D.page->offset(), D.page->comp_len());
+    if (!S.read) S.F->map.release(D.page->offset(), D.page->comp_len());
   } catch (...) {
     rethrow_for_page(*S.F, S.col, D.page);
   }
@@ -117,7 +238,7 @@ void decode_page(const fstx_colsrc& S, uint32_t p, PageData& d, void* dst, Codec
   const fb::Page* pg = sp.page;
   const uint32_t n = sp.n;
   try {
-    const uint8_t* b = page_body(*S.F, S.col, pg, S.verify, cc, buf);
+    const uint8_t* b = body_of(S, pg, cc, buf, tmp);
     const size_t len = pg->raw_len();
     const uint32_t chain = pg->chain();
     if (S.mode == FSTX_SRC_FIXED) {
@@ -134,10 +255,13 @@ void decode_page(const fstx_colsrc& S, uint32_t p, PageData& d, void* dst, Codec
       }
       if (S.phys == FSTX_FLOAT64)
         enc::decode_dbl_page(b, len, chain, n, (double*)to);
+      else if (S.phys == FSTX_INT64)
+        enc::decode_i64_page(b, len, chain, n, (int64_t*)to);
       else
         enc::decode_int_page(b, len, chain, n, kind_of(S.phys), std::numeric_limits<int32_t>::min(), (int32_t*)to);
       if (S.nulls) {
         if (S.phys == FSTX_FLOAT64) check_nulls(pg, (const double*)to, n);
+        else if (S.phys == FSTX_INT64) check_nulls(pg, (const int64_t*)to, n);
         else check_nulls(pg, (const int32_t*)to, n, std::numeric_limits<int32_t>::min());
       }
       const uint8_t* got = to + (size_t)sp.skip * w;
@@ -156,7 +280,8 @@ void decode_page(const fstx_colsrc& S, uint32_t p, PageData& d, void* dst, Codec
       }
     } else if (sp.dict >= 0) {  // dictionary codes: strings mode keeps codes, codes mode maps them to levels
       const SrcDict& D = S.dicts[(size_t)sp.dict];
-      std::vector<int32_t> codes(n);
+      std::vector<int32_t> codes = take_buf(S.bufs, &fstx_bufpool::ints);
+      codes.resize(n);
       enc::decode_int_page(b, len, chain, n, enc::K_CODES, -1, codes.data());
       if (S.nulls) check_nulls(pg, codes.data(), n, -1);
       const int32_t nd = (int32_t)D.n;
@@ -177,14 +302,20 @@ void decode_page(const fstx_colsrc& S, uint32_t p, PageData& d, void* dst, Codec
           out[i] = k < 0 ? std::numeric_limits<int32_t>::min() : D.remap[(size_t)k];
         }
       } else {
-        d.lens.assign(codes.begin() + sp.skip, codes.begin() + sp.skip + sp.take);
+        if (sp.skip == 0 && sp.take == n) {
+          d.lens.swap(codes);
+        } else {
+          d.lens = take_buf(S.bufs, &fstx_bufpool::ints);
+          d.lens.assign(codes.begin() + sp.skip, codes.begin() + sp.skip + sp.take);
+        }
         d.bytes = nullptr;
         d.mem = d.lens.size() * 4;
       }
+      give_buf(S.bufs, &fstx_bufpool::ints, codes);
     } else {  // plain or FSST strings
       if (S.mode != FSTX_SRC_STRINGS) fail(FSTX_ERR_INTERNAL, "string page in a non-string source");
-      std::vector<int32_t> lv;
-      std::vector<uint8_t> fbuf;
+      std::vector<int32_t> lv = take_buf(S.bufs, &fstx_bufpool::ints);
+      std::vector<uint8_t> fbuf = take_buf(S.bufs, &fstx_bufpool::bytes);
       const char* bytes = nullptr;
       enc::decode_str_page(b, len, chain, n, enc::K_STR, lv, fbuf, &bytes);
       if (S.nulls) check_nulls(pg, lv.data(), n, -1);
@@ -192,8 +323,14 @@ void decode_page(const fstx_colsrc& S, uint32_t p, PageData& d, void* dst, Codec
       for (uint32_t i = 0; i < sp.skip; ++i) skip_bytes += (uint64_t)std::max(0, lv[i]);
       for (uint32_t i = 0; i < sp.take; ++i) take_bytes += (uint64_t)std::max(0, lv[sp.skip + i]);
       const char* first = bytes + skip_bytes;
-      d.lens.assign(lv.begin() + sp.skip, lv.begin() + sp.skip + sp.take);
-      check_no_nul(first, d.lens.data(), sp.take);
+      if (sp.skip == 0 && sp.take == n) {
+        d.lens.swap(lv);
+      } else {
+        d.lens = take_buf(S.bufs, &fstx_bufpool::ints);
+        d.lens.assign(lv.begin() + sp.skip, lv.begin() + sp.skip + sp.take);
+      }
+      give_buf(S.bufs, &fstx_bufpool::ints, lv);
+      if (S.phys == FSTX_STRING) check_no_nul(first, d.lens.data(), sp.take);
       const bool in_map = (const uint8_t*)bytes >= S.F->map.data() &&
                           (const uint8_t*)bytes < S.F->map.data() + S.F->map.size();
       if (in_map && !S.own_bytes) {
@@ -202,12 +339,14 @@ void decode_page(const fstx_colsrc& S, uint32_t p, PageData& d, void* dst, Codec
         d.own.swap(fbuf);
         d.bytes = (const char*)d.own.data() + skip_bytes;
       } else {
+        d.own = take_buf(S.bufs, &fstx_bufpool::bytes);
         d.own.assign((const uint8_t*)first, (const uint8_t*)first + take_bytes);
         d.bytes = (const char*)d.own.data();
       }
+      give_buf(S.bufs, &fstx_bufpool::bytes, fbuf);  // empty when it became the page's own bytes
       d.mem = d.lens.size() * 4 + d.own.size();
     }
-    if (!(S.mode == FSTX_SRC_STRINGS && !S.own_bytes && sp.dict < 0 && pg->codec() == fb::Codec::None))
+    if (!S.read && !(S.mode == FSTX_SRC_STRINGS && !S.own_bytes && sp.dict < 0 && pg->codec() == fb::Codec::None))
       S.F->map.release(pg->offset(), pg->comp_len());
   } catch (...) {
     rethrow_for_page(*S.F, S.col, pg);
@@ -246,6 +385,7 @@ void trim_cache(fstx_colsrc& S, uint32_t keep_lo, uint32_t keep_hi) {
 
 void make_ready(fstx_colsrc& S, uint32_t p) {
   PageData& d = S.data[p];
+  if (d.opened) fail(FSTX_ERR_INTERNAL, "page was opened for fstx_colsrc_page_text");
   if (d.ready) {
     d.tick = ++S.tick;
     return;
@@ -262,13 +402,20 @@ void make_ready(fstx_colsrc& S, uint32_t p) {
   trim_cache(S, p, p + 1);
 }
 
-// Runs fn(i) for i in [0, n) on up to `threads` workers (on this thread when the pool is busy).
+// Runs fn(i) for i in [0, n) on up to `threads` workers (on this thread when the pool is busy). ss: the workers'
+// decode state to use (else made for this call).
 void parallel_for(int64_t n, int threads, const std::function<void(int64_t, CodecContext&, std::vector<uint8_t>&,
-                                                                    std::vector<uint8_t>&)>& fn) {
+                                                                    std::vector<uint8_t>&)>& fn,
+                  fstx_scratchset* ss = nullptr) {
   if (n <= 0) return;
   int k = (int)std::min<int64_t>(resolve_threads(threads), n);
   ThreadPool& pool = ThreadPool::instance();
   if (k <= 1 || pool.busy()) {
+    if (ss) {
+      ss->ensure(1);
+      for (int64_t i = 0; i < n; ++i) fn(i, *ss->cc[0], ss->a[0], ss->b[0]);
+      return;
+    }
     CodecContext cc;
     std::vector<uint8_t> a, b;
     for (int64_t i = 0; i < n; ++i) fn(i, cc, a, b);
@@ -277,15 +424,20 @@ void parallel_for(int64_t n, int threads, const std::function<void(int64_t, Code
   std::atomic<int64_t> next(0);
   std::atomic<bool> stop(false);
   std::vector<std::unique_ptr<CodecContext>> ctxs;
-  for (int i = 0; i < k; ++i) ctxs.emplace_back(new CodecContext());
+  if (ss) ss->ensure((size_t)k);
+  else
+    for (int i = 0; i < k; ++i) ctxs.emplace_back(new CodecContext());
   pool.start(k, [&](int id) {
-    std::vector<uint8_t> a, b;
+    std::vector<uint8_t> la, lb;
+    std::vector<uint8_t>& a = ss ? ss->a[(size_t)id] : la;
+    std::vector<uint8_t>& b = ss ? ss->b[(size_t)id] : lb;
+    CodecContext& cc = ss ? *ss->cc[(size_t)id] : *ctxs[(size_t)id];
     for (;;) {
       if (stop.load()) return;
       const int64_t i = next.fetch_add(1);
       if (i >= n) return;
       try {
-        fn(i, *ctxs[(size_t)id], a, b);
+        fn(i, cc, a, b);
       } catch (...) {
         stop.store(true);
         throw;
@@ -345,7 +497,7 @@ extern "C" int fstx_colsrc_open(const fstx_file* f, uint32_t col, uint64_t from,
     s->phys = (int)x->phys();
     s->logical = (int)x->logical();
     s->n_levels = x->levels() ? x->levels()->size() : 0;
-    s->mode = s->phys == FSTX_STRING ? FSTX_SRC_STRINGS : FSTX_SRC_FIXED;
+    s->mode = is_str(s->phys) ? FSTX_SRC_STRINGS : FSTX_SRC_FIXED;
     s->verify = (verify & FSTX_VERIFY_HASH) != 0;
     s->nulls = (verify & FSTX_VERIFY_NULLS) != 0;
     s->own_bytes = own_bytes != 0;
@@ -439,7 +591,39 @@ extern "C" int fstx_colsrc_from_strings(uint64_t n, const int32_t* lens, const c
   }
 }
 
-extern "C" void fstx_colsrc_free(fstx_colsrc* s) { delete s; }
+extern "C" void fstx_colsrc_free(fstx_colsrc* s) {
+  if (s && s->bufs)
+    for (PageData& d : s->data) {
+      give_buf(s->bufs, &fstx_bufpool::bytes, d.own);
+      give_buf(s->bufs, &fstx_bufpool::ints, d.lens);
+    }
+  delete s;
+}
+
+extern "C" fstx_bufpool* fstx_bufpool_new(void) { return new (std::nothrow) fstx_bufpool(); }
+namespace {
+template <typename T>
+void spare_some(fstx_bufpool& sp, std::vector<std::vector<T>>& from, std::vector<std::vector<T>> fstx_bufpool::*which) {
+  for (std::vector<T>& v : from) {
+    const uint64_t b = v.capacity() * sizeof(T);
+    if (b == 0 || b > kSpareBuf || sp.kept + b > kSpareBytes) continue;
+    (sp.*which).push_back(std::move(v));
+    sp.kept += b;
+  }
+}
+}  // namespace
+extern "C" void fstx_bufpool_free(fstx_bufpool* p) {
+  if (!p) return;
+  {
+    fstx_bufpool& sp = spare_bufs();
+    std::lock_guard<std::mutex> g(sp.m);
+    spare_some(sp, p->bytes, &fstx_bufpool::bytes);
+    spare_some(sp, p->ints, &fstx_bufpool::ints);
+  }
+  delete p;  // with the buffers that did not fit
+}
+extern "C" void fstx_colsrc_set_bufpool(fstx_colsrc* s, fstx_bufpool* p) { s->bufs = p; }
+extern "C" void fstx_colsrc_set_read(fstx_colsrc* s, int read) { s->read = read != 0; }
 
 extern "C" void fstx_colsrc_info_get(const fstx_colsrc* s, fstx_colsrc_info* o) {
   std::memset(o, 0, sizeof(*o));
@@ -493,7 +677,7 @@ extern "C" int fstx_colsrc_dict(fstx_colsrc* s, uint32_t d, uint32_t* n, const i
 extern "C" int fstx_colsrc_set_codes(fstx_colsrc* s, const int32_t* const* remap, fstx_error* err) {
   set_error(err, FSTX_OK, "");
   try {
-    if (s->mode != FSTX_SRC_STRINGS) fail(FSTX_ERR_ARG, "only string columns become factor codes");
+    if (s->mode != FSTX_SRC_STRINGS || s->phys != FSTX_STRING) fail(FSTX_ERR_ARG, "only string columns become factor codes");
     for (const SrcPage& p : s->pages)
       if (p.dict < 0) fail(FSTX_ERR_ARG, "column is not dictionary-encoded in every row group");
     for (uint32_t i = 0; i < s->data.size(); ++i) free_page(*s, i);
@@ -546,6 +730,155 @@ extern "C" int fstx_colsrc_str_page(fstx_colsrc* s, uint32_t p, const int32_t** 
   }
 }
 
+// Thread-safe for distinct pages of one source, once its dictionaries are decoded (fstx_colsrc_dict).
+extern "C" int fstx_colsrc_load_page(fstx_colsrc* s, uint32_t p, fstx_scratch* w, const int32_t** lens,
+                                     const char** bytes, int32_t* dict, fstx_error* err) {
+  set_error(err, FSTX_OK, "");
+  try {
+    if (p >= s->pages.size()) fail(FSTX_ERR_ARG, "page index out of range");
+    if (s->mode != FSTX_SRC_STRINGS) fail(FSTX_ERR_ARG, "not a string source");
+    const SrcPage& sp = s->pages[p];
+    if (sp.dict >= 0 && !s->dicts[(size_t)sp.dict].ready) fail(FSTX_ERR_INTERNAL, "dictionary is not decoded");
+    PageData& d = s->data[p];
+    if (d.opened) fail(FSTX_ERR_INTERNAL, "page was opened for fstx_colsrc_page_text");
+    if (!d.ready) {
+      if (w) {
+        decode_page(*s, p, d, nullptr, *w->cc, *w->a, *w->b);
+      } else {
+        CodecContext cc;
+        std::vector<uint8_t> a, b;
+        decode_page(*s, p, d, nullptr, cc, a, b);
+      }
+      std::lock_guard<std::mutex> g(s->count_m);
+      d.ready = true;
+      d.tick = ++s->tick;
+      ++s->ready_count;
+      s->cache_bytes += d.mem;
+    }
+    *lens = d.lens.data();
+    *bytes = d.bytes;
+    *dict = sp.dict;
+    return FSTX_OK;
+  } catch (...) {
+    return to_error(err);
+  }
+}
+
+// Thread-safe for distinct pages of one source: the page's buffers are freed outside the counters' lock.
+extern "C" void fstx_colsrc_drop_page(fstx_colsrc* s, uint32_t p) {
+  if (p >= s->data.size()) return;
+  PageData& d = s->data[p];
+  if (!d.ready) return;
+  std::vector<uint8_t> own, vals;
+  std::vector<int32_t> lens;
+  own.swap(d.own);
+  vals.swap(d.vals);
+  lens.swap(d.lens);
+  give_buf(s->bufs, &fstx_bufpool::bytes, own);
+  give_buf(s->bufs, &fstx_bufpool::ints, lens);
+  const uint64_t mem = d.mem;
+  d.bytes = nullptr;
+  d.mem = 0;
+  d.opened = false;
+  std::lock_guard<std::mutex> g(s->count_m);
+  d.ready = false;
+  s->cache_bytes -= mem;
+  --s->ready_count;
+}
+
+extern "C" int fstx_colsrc_open_page(fstx_colsrc* s, uint32_t p, fstx_scratch* w, int* direct, uint64_t* text,
+                                     uint32_t* nas, fstx_error* err) {
+  set_error(err, FSTX_OK, "");
+  *direct = 0;
+  *text = 0;
+  *nas = 0;
+  try {
+    if (p >= s->pages.size()) fail(FSTX_ERR_ARG, "page index out of range");
+    if (s->mode != FSTX_SRC_STRINGS) fail(FSTX_ERR_ARG, "not a string source");
+    const SrcPage& sp = s->pages[p];
+    PageData& d = s->data[p];
+    if (sp.dict >= 0 || sp.skip != 0 || sp.take != sp.n || !s->F || !sp.page || d.ready) return FSTX_OK;
+    const fb::Page* pg = sp.page;
+    const uint32_t n = sp.n;
+    std::vector<uint8_t> body = take_buf(s->bufs, &fstx_bufpool::bytes);
+    std::vector<int32_t> lens = take_buf(s->bufs, &fstx_bufpool::ints);
+    CodecContext cc0;
+    std::vector<uint8_t> in0;
+    CodecContext& cc = w ? *w->cc : cc0;
+    std::vector<uint8_t>& in = w ? *w->b : in0;
+    try {
+      const uint8_t* b = body_of(*s, pg, cc, body, in);
+      lens.resize(n);
+      enc::open_str_page(b, pg->raw_len(), pg->chain(), n, enc::K_STR, lens.data(), d.view);
+      if (s->nulls) check_nulls(pg, lens.data(), n, -1);
+    } catch (...) {
+      rethrow_for_page(*s->F, s->col, pg);
+    }
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < n; ++i) k += lens[i] < 0;
+    d.own.swap(body);  // the buffer moves, the view's pointers into it stay valid
+    d.lens.swap(lens);
+    give_buf(s->bufs, &fstx_bufpool::bytes, body);
+    give_buf(s->bufs, &fstx_bufpool::ints, lens);
+    d.opened = true;
+    d.mem = d.lens.size() * 4 + d.own.size();
+    *direct = 1;
+    *text = d.view.total;
+    *nas = k;
+    std::lock_guard<std::mutex> g(s->count_m);
+    d.ready = true;
+    d.tick = ++s->tick;
+    ++s->ready_count;
+    s->cache_bytes += d.mem;
+    return FSTX_OK;
+  } catch (...) {
+    return to_error(err);
+  }
+}
+
+extern "C" int fstx_colsrc_page_text(fstx_colsrc* s, uint32_t p, char* dst, size_t slack, const int32_t** lens,
+                                     fstx_error* err) {
+  set_error(err, FSTX_OK, "");
+  try {
+    if (p >= s->pages.size() || !s->data[p].opened) fail(FSTX_ERR_INTERNAL, "page is not opened");
+    PageData& d = s->data[p];
+    const fb::Page* pg = s->pages[p].page;
+    try {
+      enc::str_page_text(d.view, d.lens.data(), dst, slack);
+      if (s->phys == FSTX_STRING) check_no_nul(dst, d.lens.data(), d.view.n);
+    } catch (...) {
+      rethrow_for_page(*s->F, s->col, pg);
+    }
+    if (!s->read) s->F->map.release(pg->offset(), pg->comp_len());
+    *lens = d.lens.data();
+    return FSTX_OK;
+  } catch (...) {
+    return to_error(err);
+  }
+}
+
+extern "C" int fstx_run_tasks(int64_t n, int threads, fstx_task_fn fn, void* ctx, fstx_scratchset* ss,
+                              fstx_error* err) {
+  set_error(err, FSTX_OK, "");
+  try {
+    parallel_for(
+        n, threads,
+        [&](int64_t i, CodecContext& cc, std::vector<uint8_t>& a, std::vector<uint8_t>& b) {
+          // the worker's own buffer from the scratch set (a is that worker's slot), else one for this task
+          std::vector<uint8_t> own;
+          std::vector<uint8_t>* host = &own;
+          if (ss && !ss->a.empty() && &a >= ss->a.data() && &a < ss->a.data() + ss->a.size())
+            host = &ss->host[(size_t)(&a - ss->a.data())];
+          fstx_scratch w{&cc, &a, &b, host};
+          if (fn(ctx, i, &w) != 0) fail(FSTX_ERR_INTERNAL, "a task failed");
+        },
+        ss);
+    return FSTX_OK;
+  } catch (...) {
+    return to_error(err);
+  }
+}
+
 extern "C" void fstx_colsrc_set_threads(fstx_colsrc* s, int threads) { s->threads = threads; }
 
 extern "C" void fstx_colsrc_drop(fstx_colsrc* s, uint32_t p) {
@@ -556,8 +889,14 @@ extern "C" void fstx_colsrc_drop(fstx_colsrc* s, uint32_t p) {
   }
 }
 
-extern "C" int fstx_colsrc_load(fstx_colsrc* s, void* dst, int threads, fstx_error* err) {
+// fstx_colsrc_load on `threads` workers, or on this thread with a worker's decode state w.
+static int colsrc_load(fstx_colsrc* s, void* dst, int threads, fstx_scratch* w, fstx_error* err) {
   set_error(err, FSTX_OK, "");
+  using Fn = std::function<void(int64_t, CodecContext&, std::vector<uint8_t>&, std::vector<uint8_t>&)>;
+  auto parallel_for = [w](int64_t n, int threads, const Fn& fn) {
+    if (!w) return fstx::parallel_for(n, threads, fn);
+    for (int64_t i = 0; i < n; ++i) fn(i, *w->cc, *w->a, *w->b);
+  };
   try {
     if (s->mode != FSTX_SRC_STRINGS && !dst) fail(FSTX_ERR_ARG, "fixed-width sources load into a buffer");
     if (s->mode == FSTX_SRC_CODES) {
@@ -603,6 +942,58 @@ extern "C" int fstx_colsrc_load(fstx_colsrc* s, void* dst, int threads, fstx_err
   } catch (...) {
     return to_error(err);
   }
+}
+
+extern "C" int fstx_colsrc_load(fstx_colsrc* s, void* dst, int threads, fstx_error* err) {
+  return colsrc_load(s, dst, threads, nullptr, err);
+}
+
+extern "C" int fstx_colsrc_load_with(fstx_colsrc* s, void* dst, fstx_scratch* w, fstx_error* err) {
+  return colsrc_load(s, dst, 1, w, err);
+}
+
+extern "C" void* fstx_scratch_buffer(fstx_scratch* w, size_t bytes) {
+  try {
+    if (w->host->size() < bytes) w->host->resize(bytes);
+    return w->host->data();
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+namespace {
+std::mutex g_sets_m;
+std::vector<fstx_scratchset*>& spare_sets() {
+  static std::vector<fstx_scratchset*>* v = new std::vector<fstx_scratchset*>();  // never freed (see spare_bufs)
+  return *v;
+}
+}  // namespace
+extern "C" fstx_scratchset* fstx_scratchset_new(void) {
+  {
+    std::lock_guard<std::mutex> g(g_sets_m);
+    std::vector<fstx_scratchset*>& v = spare_sets();
+    if (!v.empty()) {
+      fstx_scratchset* ss = v.back();
+      v.pop_back();
+      return ss;
+    }
+  }
+  return new (std::nothrow) fstx_scratchset();
+}
+extern "C" void fstx_scratchset_free(fstx_scratchset* ss) {
+  if (!ss) return;
+  for (auto* l : {&ss->a, &ss->b, &ss->host})
+    for (std::vector<uint8_t>& v : *l)
+      if (v.capacity() > kSpareBuf) std::vector<uint8_t>().swap(v);
+  {
+    std::lock_guard<std::mutex> g(g_sets_m);
+    std::vector<fstx_scratchset*>& v = spare_sets();
+    if (v.size() < kSpareSets) {
+      v.push_back(ss);
+      return;
+    }
+  }
+  delete ss;
 }
 
 extern "C" int fstx_colsrc_detach(fstx_colsrc* s, fstx_error* err) {

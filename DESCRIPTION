@@ -1,7 +1,7 @@
 Package: fstx
 Type: Package
 Title: Fast, Safe Column-Store Files for R Data Frames
-Version: 1.0.2
+Version: 1.2.0
 Authors@R: c(
     person("Harsh", "Chourasia", role = c("aut", "cre"), email = "31harshchourasia@gmail.com"),
     person("Meta Platforms, Inc. and affiliates", role = "cph", comment = "bundled 'Zstandard' library"),
@@ -20,14 +20,16 @@ Description: Reads and writes data frames in a column-store file format built
     Supports lazy 'ALTREP' columns over the memory-mapped file, character
     columns whose R strings are made on first use, factors built from string
     dictionaries, partial reads by row list, filters that skip pages by their
-    statistics, crash-safe appends and compaction. The file format ('fstx'
-    format 1.0) is written down in a specification shipped with the package.
+    statistics, crash-safe appends and compaction. Columns can also hold
+    64-bit integers ('bit64' integer64 vectors) and binary values (lists of
+    raw vectors). The file format ('fstx' format 1.2) is written down in a
+    specification shipped with the package.
 License: MIT + file LICENSE
 URL: https://github.com/HarshChourasia1/fstx
 BugReports: https://github.com/HarshChourasia1/fstx/issues
 Encoding: UTF-8
 Depends: R (>= 4.4.0)
 LinkingTo: cpp11
-Suggests: testthat (>= 3.0.0), data.table, tibble, dplyr, nanoarrow
+Suggests: testthat (>= 3.0.0), data.table, tibble, dplyr, nanoarrow, bit64, blob
 Config/testthat/edition: 3
 SystemRequirements: C++17

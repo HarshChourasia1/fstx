@@ -7,7 +7,10 @@
 //     feature bits with and without names, reserved bits 16-19 and 63, profile 3-255, format 2 (must be refused), reserved type,
 //     logical type, codec, page kind, encoding tag and NA mode numbers;
 //   - an interrupted append (committed end in the header, junk after it), factor levels that are not UTF-8 or hold
-//     a NUL, an empty table.
+//     a NUL, an empty table;
+//   - fstx 1.2: int64 (page kind 7) and binary columns under every forced encoding x codec x NA mode, with
+//     FOR width 64, DELTA that wraps, 64-bit dictionaries, binary values holding NUL (plain, FSST, dictionaries),
+//     and forged 1.2 files (types 4 / 5 without their bits, a logical type on int64, kind 1 under int64).
 #include <sys/stat.h>
 
 #include <cstdio>
@@ -100,6 +103,102 @@ Data make(uint64_t n, int na, int pat) {
 }
 
 std::string path_of(const std::string& name) { return g_out + "/" + name + ".fstx"; }
+
+// ---------------------------------------------------------------- fstx 1.2: int64 and binary
+struct Data12 {
+  uint64_t n = 0;
+  std::vector<int64_t> l;
+  std::vector<int32_t> i;
+  std::vector<std::string> b;
+  std::vector<uint8_t> b_na;
+};
+
+int get_b(void* ctx, uint64_t row, uint32_t n, const char** p, int32_t* lens) {
+  const Data12* x = (const Data12*)ctx;
+  for (uint32_t k = 0; k < n; ++k) {
+    p[k] = x->b[row + k].data();
+    lens[k] = x->b_na[row + k] ? -1 : (int32_t)x->b[row + k].size();
+  }
+  return 0;
+}
+
+// int64 pattern: 0 sequence near 2^62 (DELTA), 1 full range (FOR / plain width 64), 2 runs (RLE), 3 few distinct
+// full-width values (64-bit DICT), 4 alternating extremes (DELTA that wraps). Binary: NUL inside values, random
+// 16-byte values, few distinct values (dictionaries), values that are not UTF-8 or empty.
+Data12 make12(uint64_t n, int na, int pat) {
+  Data12 x;
+  x.n = n;
+  const int64_t few[] = {INT64_MAX, INT64_MIN + 1, 0, 1LL << 62, -(1LL << 53) - 1};
+  for (uint64_t r = 0; r < n; ++r) {
+    const uint32_t z = next();
+    const bool isna = na == 1 ? (z % 7 == 0) : na == 2 ? ((r / 40) % 3 == 1) : false;
+    int64_t v;
+    switch (pat % 5) {
+      case 0: v = (1LL << 62) + (int64_t)r * 3; break;
+      case 1:
+        v = (int64_t)((uint64_t)next() << 32 | z);
+        if (v == INT64_MIN) v = 0;
+        break;
+      case 2: v = (int64_t)((r / 64) % 5) * 4000000000LL; break;
+      case 3: v = few[z % 5]; break;
+      default: v = (r & 1) ? INT64_MAX - (int64_t)(z % 3) : INT64_MIN + 1 + (int64_t)(z % 3); break;
+    }
+    x.l.push_back(isna ? INT64_MIN : v);
+    x.i.push_back(isna ? kNaI : (int32_t)(z % 1000));
+    std::string bv;
+    switch (pat % 4) {
+      case 0: bv = std::string("a\0b", 3) + std::to_string(z % 13) + std::string(1, '\0'); break;
+      case 1:
+        for (int k = 0; k < 16; ++k) bv.push_back((char)(next() & 0xff));
+        break;
+      case 2: bv = std::string(1 + z % 3, (char)(z % 4)); break;  // NUL runs among a few values
+      default:
+        if (z % 5) bv = "\xff\xfe" + std::to_string(z % 50);  // not UTF-8; some empty
+        break;
+    }
+    x.b_na.push_back(isna ? 1 : 0);
+    x.b.push_back(isna ? std::string() : bv);
+  }
+  return x;
+}
+
+bool write12(const std::string& file, const Data12& x, int codec, int force, uint64_t rg = 1024) {
+  struct C {
+    const char* name;
+    int phys;
+  } defs[] = {{"l", FSTX_INT64}, {"b", FSTX_BINARY}, {"i", FSTX_INT32}};
+  fstx_write_column wc[3];
+  fstx_column_data cd[3];
+  std::memset(wc, 0, sizeof wc);
+  std::memset(cd, 0, sizeof cd);
+  for (int j = 0; j < 3; ++j) {
+    wc[j].name = defs[j].name;
+    wc[j].name_len = (uint32_t)std::strlen(defs[j].name);
+    wc[j].phys = defs[j].phys;
+    cd[j].ctx = (void*)&x;
+  }
+  cd[0].data = x.l.data();
+  cd[1].get_strings = get_b;
+  cd[2].data = x.i.data();
+  fstx_write_options o;
+  std::memset(&o, 0, sizeof o);
+  o.codec = codec;
+  o.level = 3;
+  o.threads = 1;
+  o.row_group_size = rg;
+  o.page_bytes = 4096;
+  o.profile = codec == 0 ? 0 : 1;
+  o.keep_pct = 0;
+  o.force_encoding = force;
+  fstx_writer* w = nullptr;
+  fstx_error err;
+  if (fstx_writer_open(file.c_str(), wc, 3, nullptr, 0, &o, &w, &err) != FSTX_OK ||
+      fstx_writer_append(w, cd, x.n, &err) != FSTX_OK || fstx_writer_close(w, &err) != FSTX_OK) {
+    std::fprintf(stderr, "write %s: %s\n", file.c_str(), err.message);
+    return false;
+  }
+  return true;
+}
 
 bool write(const std::string& file, const Data& x, int codec, int force, uint64_t rg = 1024,
            const std::vector<std::string>* levels = nullptr, bool append_crash = false) {
@@ -274,6 +373,54 @@ int main(int argc, char** argv) {
   g = F(); g.tag0 = 11; forged(base, "tag11", g);
   g = F(); g.na0 = 3; forged(base, "na3", g);
   std::remove(base.c_str());
+
+  // fstx 1.2: every forced encoding x codec x NA mode, the int64 / binary patterns cycling
+  for (int e = 0, m = 0; e < 14; ++e)
+    for (int codec = 0; codec < 3; ++codec)
+      for (int na = 0; na < 3; ++na, ++m) {
+        const Data12 y = make12(300, na, m);
+        const std::string name = std::string("v12_") + fnames[e] + "_" + cnames[codec] + "_na" + std::to_string(na);
+        if (write12(path_of(name), y, codec, forces[e])) seal(path_of(name), "seed_" + name);
+      }
+  {  // the named edge cases: FOR width 64, DELTA wrap, 64-bit DICT, binary NUL in plain / FSST / dictionaries
+    struct N {
+      const char* name;
+      int pat, force;
+    } cases[] = {{"i64_for64", 1, 3},       {"i64_deltawrap", 4, 4}, {"i64_dict64", 3, 6},
+                 {"i64_rle", 2, 5},         {"bin_nul_plain", 0, 1}, {"bin_nul_fsst", 0, 10},
+                 {"bin_dict", 2, 6 | 256},  {"bin_fsstdict", 0, 6 | 512}, {"bin_rand16", 1, 0}};
+    for (const N& c : cases)
+      for (int codec = 0; codec < 3; ++codec) {
+        const Data12 y = make12(2600, codec, c.pat);
+        const std::string name = std::string(c.name) + "_" + cnames[codec];
+        if (write12(path_of(name), y, codec, c.force)) seal(path_of(name), "seed_" + name);
+      }
+  }
+  {  // forged 1.2 files: column 0 is the int64 column
+    const Data12 y = make12(300, 1, 1);
+    const std::string base12 = path_of("forge_base12");
+    if (write12(base12, y, 0, 0)) {
+      const uint64_t bits12 = (1ull << 16) | (1ull << 17);
+      g = F(); forged(base12, "v12_nobits", g);
+      g = F(); g.req = 1ull << 17; g.names = {"binary"}; forged(base12, "v12_no_int64_bit", g);
+      g = F(); g.req = bits12; g.names = {"int64", "binary"}; forged(base12, "v12_named", g);
+      g = F(); g.req = bits12; g.logical0 = 1; forged(base12, "v12_int64_logical1", g);
+      g = F(); g.req = bits12; g.kind0 = 1; forged(base12, "v12_int64_kind1", g);
+      g = F(); g.req = bits12; g.kind0 = 8; forged(base12, "v12_kind8", g);
+      g = F(); g.req = bits12; g.phys0 = 6; forged(base12, "v12_phys6", g);
+      g = F(); g.req = bits12; g.phys0 = 5; forged(base12, "v12_int64_as_binary", g);
+      g = F(); g.req = bits12; g.nulls0 = 0; forged(base12, "v12_nulls0", g);
+      std::remove(base12.c_str());
+    }
+    // a 1.0 table whose int32 column 0 is relabelled int64 / binary with its bit: type 4 / 5 over page kind 1
+    const Data x0 = make(300, 0, 1);
+    const std::string b0 = path_of("forge_base_i32");
+    if (write(b0, x0, 0, 0)) {
+      g = F(); g.phys0 = 4; g.req = 1ull << 16; forged(b0, "phys4_kind1", g);
+      g = F(); g.phys0 = 5; g.req = 1ull << 17; forged(b0, "phys5_kind1", g);
+      std::remove(b0.c_str());
+    }
+  }
   std::printf("mkseeds: %d seeds in %s\n", g_count, g_out.c_str());
   return 0;
 }

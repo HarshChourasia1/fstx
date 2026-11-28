@@ -48,13 +48,27 @@ constexpr uint32_t kMaxDictEntries = 1u << 25;  // entries in one string diction
 
 // Feature bits (format 3: footer required_features / optional_features). Bits 0-15 are for features that change
 // how the header, tail or footer are read; they are also in header bytes 6-7, so a reader refuses them before it
-// reads the footer. Bits 16-63 are for everything else (types, codecs, encodings). This build uses none; the
-// named ones are reserved for later versions.
+// reads the footer. Bits 16-63 are for everything else (types, codecs, encodings). This build reads and writes
+// bits 16 (int64 columns) and 17 (binary columns), set exactly when the file has such a column; the other named
+// ones are reserved for later versions.
 enum : int { kFeatInt64 = 16, kFeatBinary = 17, kFeatZstdDict = 18, kFeatPcodec = 19, kFeatExperimental = 63 };
 constexpr uint64_t kFeatHeaderMask = 0xffffu;
 const char* feature_name(int bit);  // reserved name of a bit, or nullptr
 uint64_t features_known();          // bits this build can read
 bool valid_utf8(const char* s, size_t n);  // well-formed UTF-8 (no overlongs, surrogates or values past U+10FFFF)
+
+// -1, 0, 1 as d <, ==, > v exactly; d is not NaN. No long double (MSVC makes it a double).
+inline int cmp_d_i64(double d, int64_t v) {
+  if (d >= 9223372036854775808.0) return 1;
+  if (d < -9223372036854775808.0) return -1;
+  const int64_t t = (int64_t)d;  // d in [-2^63, 2^63): truncation toward 0, exact
+  if (t != v) return t < v ? -1 : 1;
+  const double f = d - (double)t;  // exact: |d| >= 2^53 is a whole number (f = 0); below, t is exact as a double
+  return f > 0 ? 1 : f < 0 ? -1 : 0;
+}
+// int64 page statistics (spec 4.5): the largest double not above v, and the smallest double not below v
+double i64_floor_d(int64_t v);
+double i64_ceil_d(int64_t v);
 
 // ---------------------------------------------------------------- errors
 struct Error : public std::exception {
@@ -127,6 +141,9 @@ class MappedFile {
   // Drops the OS pages under [off, off + n) from the process working set once a page is decoded. The data
   // stays mapped (a later touch is a soft fault from the file cache), so this only lowers reported RAM.
   void release(uint64_t off, uint64_t n) const;
+  // Copies [off, off + n) into dst with a positional read of the same open file (no page faults on the mapping,
+  // which the OS serialises per process); falls back to copying from the mapping. Safe from several threads.
+  void read_at(uint64_t off, void* dst, size_t n) const;
   const FileId& id() const { return id_; }
 
  private:
@@ -136,6 +153,9 @@ class MappedFile {
 #ifdef _WIN32
   void* file_ = nullptr;
   void* mapping_ = nullptr;
+  void* rfile_ = nullptr;  // the same file reopened for overlapped (positional, concurrent) reads; null: none
+  mutable std::mutex ev_m_;            // read_at's wait events, one per concurrent read, made on demand and kept
+  mutable std::vector<void*> ev_free_;  // here (not thread_local: a thread may end, see page_body_read)
 #else
   int fd_ = -1;
 #endif
@@ -180,30 +200,109 @@ class OutFile {
 // ---------------------------------------------------------------- thread pool
 // Persistent worker pool. start() hands a job to k workers and returns at once, so the calling thread
 // can do its own part (the writer thread on write, building strings on read); wait() joins the job.
+// A job is k slots, job(0) .. job(k-1), each run once by whichever thread claims it first: a worker that is up,
+// or the caller in wait() (slots nobody has claimed yet). Threads are made in the background by a spawner thread
+// (asked by warm() at the first open, or by start() when a job wants more than there are; it stays up, parked, until
+// shutdown() joins it), so no call waits for a thread to be created or to start: the first read of a process no
+// longer pays for it (0.5-3.6 ms with 14 threads on the desk).
 class ThreadPool {
  public:
   static ThreadPool& instance();
   void start(int k, std::function<void(int)> job);
+  void warm(int k);  // make up to k workers in the background (returns at once)
   bool busy();  // a job is running (callers then work on their own thread)
-  void wait();  // rethrows the first exception a worker raised
+  void wait();  // runs unclaimed slots, then waits for the others; rethrows the first exception a slot raised
   void shutdown();
+  void after_fork();  // POSIX: the child of fork() forgets the parent's threads (pthread_atfork)
   ~ThreadPool();
 
  private:
-  void worker_main(int id);
+  void worker_main();
+  void run_slots(std::unique_lock<std::mutex>& lk);  // claims and runs slots of the current job (m_ held)
+  void grow(int k);                                    // m_ held: ask the spawner for k threads
+  void spawn_loop();
   std::mutex m_;
-  std::condition_variable cv_work_, cv_done_;
+  std::condition_variable cv_work_, cv_done_, cv_spawn_;
   std::vector<std::thread> threads_;
+  std::thread spawner_;
   std::function<void(int)> job_;
   uint64_t generation_ = 0;
-  int active_ = 0;
-  int remaining_ = 0;
+  int active_ = 0;     // slots of the current job
+  int next_slot_ = 0;  // first slot not claimed yet
+  int remaining_ = 0;  // slots not finished yet
+  int want_ = 0;       // threads the spawner makes
   bool stop_ = false;
   bool running_ = false;
   std::exception_ptr error_;
 };
 
 int resolve_threads(int threads);
+
+// ---------------------------------------------------------------- decode state kept between reads
+// Workers' decode state (codec contexts, page buffers) kept by the process between calls, not by a thread: made
+// afresh per call, its buffers were page faults on every worker; kept in thread_local storage, a thread that ends
+// (a stream pulled from a thread that is not R's) crashed in the MinGW build. A call leases one object per worker
+// and gives them back at its end (T::trim() then caps what is kept). The store itself is never freed (no
+// destructor runs at exit or at unload).
+template <typename T>
+class Kept {
+ public:
+  static Kept& store() {
+    static Kept* k = new Kept();
+    return *k;
+  }
+  T* take() {
+    {
+      std::lock_guard<std::mutex> g(m_);
+      if (!free_.empty()) {
+        T* t = free_.back();
+        free_.pop_back();
+        return t;
+      }
+    }
+    return new T();
+  }
+  void give(T* t) {
+    if (!t) return;
+    t->trim();
+    std::lock_guard<std::mutex> g(m_);
+    try {
+      free_.push_back(t);
+    } catch (...) {
+      delete t;
+    }
+  }
+
+ private:
+  std::mutex m_;
+  std::vector<T*> free_;
+};
+
+// k objects of Kept<T> for one call, given back when it ends.
+template <typename T>
+class Lease {
+ public:
+  explicit Lease(size_t k) {
+    v_.reserve(k);
+    for (size_t i = 0; i < k; ++i) v_.push_back(Kept<T>::store().take());
+  }
+  ~Lease() {
+    for (T* t : v_) Kept<T>::store().give(t);
+  }
+  Lease(const Lease&) = delete;
+  Lease& operator=(const Lease&) = delete;
+  T& operator[](size_t i) { return *v_[i]; }
+  size_t size() const { return v_.size(); }
+
+ private:
+  std::vector<T*> v_;
+};
+
+// Shrinks a kept buffer that grew past `keep` bytes.
+template <typename V>
+inline void trim_kept(V& v, size_t keep = (size_t)4 << 20) {
+  if (v.capacity() * sizeof(typename V::value_type) > keep) V().swap(v);
+}
 
 }  // namespace fstx
 

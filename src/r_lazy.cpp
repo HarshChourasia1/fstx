@@ -580,6 +580,7 @@ Rboolean alt_inspect(SEXP x, int, int, int, void (*)(SEXP, int, int, int)) {
   Holder* h = hold(x);
   const char* what = h->phys == FSTX_STRING && h->mode == FSTX_SRC_STRINGS ? "character"
                      : h->phys == FSTX_FLOAT64                             ? "double"
+                     : h->phys == FSTX_INT64 && h->mode == FSTX_SRC_FIXED  ? "int64"
                      : h->phys == FSTX_LOGICAL                             ? "logical"
                                                                            : "integer";
   if (!h->src) {
@@ -595,7 +596,8 @@ Rboolean alt_inspect(SEXP x, int, int, int, void (*)(SEXP, int, int, int)) {
 }
 
 // ---------------------------------------------------------------- fixed width (integer, double, logical)
-// data2 = the full vector once materialised, else NULL.
+// data2 = the full vector once materialised, else NULL. int64 columns (fstx 1.2) are double vectors here: their
+// 8-byte values are copied as they are (bit64's integer64 representation; the class is set by the reader).
 template <typename T>
 T* full_ptr(SEXP full);
 template <>
@@ -611,10 +613,10 @@ SEXP fixed_full(SEXP x) {
   SEXP full = R_altrep_data2(x);
   if (full != R_NilValue) return full;
   Holder* h = hold(x);
-  const SEXPTYPE t = h->mode == FSTX_SRC_CODES ? INTSXP
-                     : h->phys == FSTX_FLOAT64 ? REALSXP
-                     : h->phys == FSTX_LOGICAL ? LGLSXP
-                                               : INTSXP;
+  const SEXPTYPE t = h->mode == FSTX_SRC_CODES                       ? INTSXP
+                     : h->phys == FSTX_FLOAT64 || h->phys == FSTX_INT64 ? REALSXP
+                     : h->phys == FSTX_LOGICAL                         ? LGLSXP
+                                                                       : INTSXP;
   full = PROTECT(Rf_allocVector(t, (R_xlen_t)h->rows));
   void* dst = t == REALSXP ? (void*)REAL(full) : t == LGLSXP ? (void*)LOGICAL(full) : (void*)INTEGER(full);
   fstx_error err;
@@ -699,7 +701,8 @@ const void* fixed_dataptr_or_null(SEXP x) {
 
 int fixed_no_na(SEXP x) {
   Holder* h = hold(x);
-  return h->nulls == 0 && h->phys != FSTX_FLOAT64 ? 1 : 0;  // a double page's null count does not cover NaN
+  // a double page's null count does not cover NaN; int64 values (fstx 1.2) can have NaN bit patterns
+  return h->nulls == 0 && h->phys != FSTX_FLOAT64 && h->phys != FSTX_INT64 ? 1 : 0;
 }
 
 SEXP make_str_altrep(SEXP xp, Holder* h) {
@@ -744,10 +747,10 @@ SEXP fstx_altrep_new(SEXP xp) {
   Holder* h = fstx_holder_of(xp);
   if (!h || !h->src) Rf_error("fstx: internal error, column source is missing");
   if (h->mode == FSTX_SRC_STRINGS) return make_str_altrep(xp, h);
-  R_altrep_class_t c = h->mode == FSTX_SRC_CODES     ? cls_int
-                       : h->phys == FSTX_FLOAT64     ? cls_dbl
-                       : h->phys == FSTX_LOGICAL     ? cls_lgl
-                                                     : cls_int;
+  R_altrep_class_t c = h->mode == FSTX_SRC_CODES                       ? cls_int
+                       : h->phys == FSTX_FLOAT64 || h->phys == FSTX_INT64 ? cls_dbl
+                       : h->phys == FSTX_LOGICAL                         ? cls_lgl
+                                                                         : cls_int;
   return R_new_altrep(c, xp, R_NilValue);
 }
 

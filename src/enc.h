@@ -50,8 +50,9 @@ enum {
   F_SMALL_STR_CACHE = 0x1000
 };
 
-// page kinds (low nibble of chain byte 0, and byte 0 of the page body)
-enum : uint8_t { K_INT = 1, K_DBL = 2, K_LGL = 3, K_STR = 4, K_CODES = 5, K_DICT = 6 };
+// page kinds (low nibble of chain byte 0, and byte 0 of the page body); K_I64: fstx 1.2, int64 columns
+enum : uint8_t { K_INT = 1, K_DBL = 2, K_LGL = 3, K_STR = 4, K_CODES = 5, K_DICT = 6, K_I64 = 7 };
+constexpr int kMaxKind = K_I64;  // kinds above this are reserved (a newer fstx)
 enum : uint8_t { NA_NONE = 0, NA_BITMAP = 1, NA_RUNS = 2 };
 enum { P_FAST = 0, P_BALANCED = 1, P_SMALL = 2 };
 
@@ -157,6 +158,7 @@ struct EncCtx {
   int codec = FSTX_CODEC_ZSTD;   // codec the page will get afterwards (NONE: never try SPLIT)
   CodecContext* cc = nullptr;    // for the ZSTD -1 estimates
   std::atomic<uint64_t>* str_cache = nullptr;  // plan_str_chunk: bytes left for StrChunk::cptr / clen (null: none)
+  bool dict_by_content = false;  // plan_str_*: dictionary entries are equal by their bytes (binary columns), not pointer
 };
 
 // Fixed-width pages. The return value is the page's chain. x is read in place, never changed.
@@ -173,6 +175,11 @@ void decode_int_page_part(const uint8_t* body, size_t len, uint32_t chain, uint3
                           const uint8_t* vm, int32_t* out);
 void decode_dbl_page_part(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, const uint8_t* vm,
                           double* out);
+// int64 pages (kind K_I64, fstx 1.2): tags 1-7 on the 64-bit values; INT64_MIN marks missing values.
+uint32_t encode_i64_page(const int64_t* x, uint32_t n, const EncCtx& cx, Buf& out);
+void decode_i64_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, int64_t* out);
+void decode_i64_page_part(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, const uint8_t* vm,
+                          int64_t* out);
 
 // ---- shared by enc_num.cpp and enc_str.cpp
 // int32 child chain (chooses its own encoding); returns its tags (top tag in the low byte)
@@ -206,13 +213,34 @@ struct StrChunk {
   std::vector<const char*> cptr;
   std::vector<int32_t> clen;
 };
-// String pointer cache budget per write or append call: at most 64 MB (about 5.6 million cached strings).
-constexpr uint64_t kStrCacheBytes = 64ull << 20;
+// String pointer cache budget per write or append call: at most 8 MB (about 700,000 cached strings). 64 MB until
+// v1.0.2: R writes were 3-5% faster with it but took 57-70 MB more (desk, 27 Nov 2026).
+constexpr uint64_t kStrCacheBytes = 8ull << 20;
 constexpr uint64_t kTestStrCacheBytes = 12ull * 150000;  // tests (F_SMALL_STR_CACHE): 150,000 rows' worth
 
 // Reads rows [r0, r1) through the host callback, picks dictionary / FSST / plain, builds what the pages
 // need. force: 0, T_DICT (optionally | F_DICT_FSST), T_FSST or T_PLAIN. Returns the host's error code (0 = fine).
 int plan_str_chunk(const fstx_column_data& d, uint64_t r0, uint64_t r1, const EncCtx& cx, int force, StrChunk& sc);
+
+// plan_str_chunk in three steps, so that the writer can share one chunk's rows among threads (same plan):
+// begin tries the dictionary, which needs the rows in order, until it is chosen (done) or ruled out; the vectors
+// left over ([next_v, number of vectors)) are then read by plan_str_vectors in any order and on any threads
+// (each vector once, never two calls on the same vector); finish picks FSST or plain from the samples.
+struct StrPrep {
+  bool done = false;                                  // the plan is complete (a dictionary chunk)
+  uint64_t next_v = 0;                                // first vector begin left to plan_str_vectors
+  int force = 0;                                      // force without flags
+  std::vector<uint64_t> svec;                         // sample vectors, ascending
+  std::vector<const unsigned char*> sp;               // samples read by begin, in row order
+  std::vector<size_t> sl;
+  std::vector<std::vector<const unsigned char*>> sp2;  // samples read by plan_str_vectors, per svec entry
+  std::vector<std::vector<size_t>> sl2;
+};
+int plan_str_begin(const fstx_column_data& d, uint64_t r0, uint64_t r1, const EncCtx& cx, int force, StrChunk& sc,
+                   StrPrep& p);
+int plan_str_vectors(const fstx_column_data& d, uint64_t r0, uint64_t r1, uint64_t v0, uint64_t v1, StrChunk& sc,
+                     StrPrep& p);
+void plan_str_finish(const EncCtx& cx, StrChunk& sc, StrPrep& p);
 
 // kind K_STR (may hold NA) or K_DICT (dictionary page, no NA). mode T_PLAIN or T_FSST.
 uint32_t encode_str_page(int kind, const char* const* ptrs, const int32_t* lens, uint32_t n, int mode,
@@ -221,6 +249,26 @@ uint32_t encode_str_page(int kind, const char* const* ptrs, const int32_t* lens,
 // another (into the body itself for plain pages, into buf for FSST pages).
 void decode_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, int kind,
                      std::vector<int32_t>& lens, std::vector<uint8_t>& buf, const char** bytes);
+// decode_str_page in two steps, so that the text can be decoded straight into a caller's buffer whose size must be
+// known first: open_str_page checks the page and its lengths and gives the text's size (total); str_page_text
+// then writes the text into dst. Between the two, lens holds the stored lengths (FSST: of the codes), -1 = NA;
+// after, the text lengths. The view points into body, which must stay put.
+struct StrPageView {
+  uint32_t n = 0;
+  bool fsst = false;
+  const uint8_t* src = nullptr;    // plain: the text; FSST: the codes, string after string
+  const uint8_t* table = nullptr;  // FSST: the symbol table (checked)
+  uint64_t total = 0;              // bytes of text of the whole page
+};
+void open_str_page(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, int kind, int32_t* lens,
+                   StrPageView& v);
+// Writes the page's text (v.total bytes) to dst, which has room for v.total + slack bytes (writes stay below
+// that; slack >= 32 lets the FSST decoder use its fast path up to the last string).
+void str_page_text(const StrPageView& v, int32_t* lens, char* dst, size_t slack);
+// Only the strings at positions idx[0..cnt) of a K_STR page (ascending, repeats allowed): lens gets cnt entries
+// (-1 = NA), out the strings back to back. all is scratch for the page's n lengths. (Rows plans, enc_str.cpp.)
+void decode_str_page_rows(const uint8_t* body, size_t len, uint32_t chain, uint32_t n, const uint32_t* idx,
+                          uint32_t cnt, std::vector<int32_t>& all, std::vector<int32_t>& lens, std::vector<char>& out);
 
 }  // namespace enc
 }  // namespace fstx

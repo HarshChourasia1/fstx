@@ -103,6 +103,19 @@ def chr_(v) -> Optional[str]:
     return "%d:%s" % (len(b), hashlib.md5(b).hexdigest()) if len(b) > 2000 else v
 
 
+def raw_(v) -> Optional[str]:
+    """A binary value as rview.R shows a raw vector: lowercase hex, or "<bytes>:<md5>" past 2,000 bytes."""
+    if v is None:
+        return None
+    b = bytes(v)
+    return "%d:%s" % (len(b), hashlib.md5(b).hexdigest()) if len(b) > 2000 else b.hex()
+
+
+def _is_binary(t) -> bool:
+    f = getattr(pt, "is_binary_view", None)
+    return pt.is_binary(t) or pt.is_large_binary(t) or pt.is_fixed_size_binary(t) or bool(f and f(t))
+
+
 def col(name, typeof, cls, values, tzone=None, levels=None):
     return {"name": name, "typeof": typeof, "class": list(cls), "tzone": tzone, "levels": levels,
             "values": list(values)}
@@ -149,8 +162,9 @@ def view_arrow_column(name: str, field: pa.Field, arr, int64: str = "auto") -> d
     if pt.is_integer(t):
         if t.bit_width < 32 or t == pa.int32():
             return col(name, "integer", cls or [], [None if v is None else str(v) for v in vals])
+        # integer64 both ways: the fstx 1.0 layout and an int64 column (fstx 1.2) read the same in R
         is64 = cls is not None and "integer64" in cls
-        if is64 or int64 == "integer64" or (int64 == "auto" and not _fits(vals)):
+        if is64 or int64 in ("integer64", "native") or (int64 == "auto" and not _fits(vals)):
             return col(name, "double", ["integer64"], [None if v is None else str(v) for v in vals])
         if int64 == "auto":
             return col(name, "integer", [], [None if v is None else str(v) for v in vals])
@@ -159,6 +173,8 @@ def view_arrow_column(name: str, field: pa.Field, arr, int64: str = "auto") -> d
         return col(name, "double", cls or [], [dbl(v) for v in vals])
     if pt.is_string(t) or pt.is_large_string(t) or getattr(pt, "is_string_view", lambda _: False)(t):
         return col(name, "character", [], [chr_(v) for v in vals])
+    if _is_binary(t) and (r or {}).get("phys") != "character":  # fstx 1.2: R reads a list of raw vectors
+        return col(name, "list", cls or [], [raw_(v) for v in vals])
     if pt.is_date32(t):
         typeof = "integer" if (r or {}).get("phys") == "integer" else "double"
         days = arr.cast(pa.int32()).to_pylist()
@@ -227,7 +243,7 @@ def view_pandas(df, int64: str = "auto") -> dict:
         elif str(d) in ("int64", "uint32", "uint64", "Int64", "UInt32", "UInt64"):
             vals = [None if m else int(v) for v, m in zip(s.tolist(), na)]
             is64 = cls is not None and "integer64" in cls
-            if is64 or int64 == "integer64" or (int64 == "auto" and not _fits(vals)):
+            if is64 or int64 in ("integer64", "native") or (int64 == "auto" and not _fits(vals)):
                 cols.append(col(name, "double", ["integer64"], [None if v is None else str(v) for v in vals]))
             elif int64 == "auto":
                 cols.append(col(name, "integer", [], [None if v is None else str(v) for v in vals]))
@@ -241,6 +257,8 @@ def view_pandas(df, int64: str = "auto") -> dict:
             rlog = (r or {}).get("logical")
             if all(na) and d == object and r is None:  # pyarrow sees no type: the writer's all-null column, logical NA
                 cols.append(col(name, "logical", [], [None] * len(vals)))
+            elif any(isinstance(v, (bytes, bytearray)) for v in vals) or (all(na) and (r or {}).get("phys") == "binary"):
+                cols.append(col(name, "list", cls or [], [None if m else raw_(v) for v, m in zip(vals, na)]))
             elif any(isinstance(v, dt.date) for v in vals) or (all(na) and rlog == "Date"):
                 typeof = "integer" if (r or {}).get("phys") == "integer" else "double"
                 cols.append(col(name, typeof, cls or ["Date"],

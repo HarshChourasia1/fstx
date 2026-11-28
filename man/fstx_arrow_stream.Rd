@@ -34,6 +34,9 @@ Each batch is a record batch, one per row group by default. Column types:
   \item Date: date32. A Date with a fraction of a day is rounded down to its day, as R prints it.
   \item POSIXct: timestamp in microseconds with the column's time zone (none if the column had none), rounded
     to the nearest microsecond.
+  \item int64 (fstx 1.2): int64. integer64 columns in the fstx 1.0 layout are float64 with their bits.
+  \item binary (fstx 1.2): binary (large_binary past 2 GB in one batch, as for text), or a dictionary of
+    binary values when every page is dictionary-coded.
 }
 Text is passed on as stored in the file; it is not checked for valid UTF-8 (factor levels are, when the stream is
 made). Missing values become Arrow nulls. A double \code{NaN} stays \code{NaN}; \code{NaN} and infinite times and

@@ -211,6 +211,23 @@ void int_stats(const int32_t* x, uint32_t n, int32_t& mn, int32_t& mx, uint32_t&
 
 #endif  // vector extensions
 
+// int64 page statistics: min / max over the values that are not INT64_MIN (the missing value), and their count
+void i64_stats(const int64_t* x, uint32_t n, int64_t& mn, int64_t& mx, uint32_t& na) {
+  const int64_t hi = std::numeric_limits<int64_t>::max(), lo = std::numeric_limits<int64_t>::min();
+  int64_t sa = hi, sb = lo;
+  uint32_t t = 0;
+  for (uint32_t i = 0; i < n; ++i) {
+    const int64_t v = x[i];
+    const bool isna = v == lo;
+    t += isna;
+    sa = (isna ? hi : v) < sa ? v : sa;
+    sb = v > sb ? v : sb;
+  }
+  mn = sa;
+  mx = sb;
+  na = t;
+}
+
 }  // namespace
 
 struct WriterImpl {
@@ -400,57 +417,101 @@ struct WriterImpl {
     }
   }
 
-  // ---- string prep pass, in parallel over (string column, row group): reads every string once, checks the
-  // encoding, records per-vector sizes for page planning and picks dictionary / FSST / plain for the chunk.
+  // ---- string prep pass: reads every string once, checks the encoding, records per-vector sizes for page
+  // planning and picks dictionary / FSST / plain for each (string column, row group) chunk. Three parallel
+  // steps (enc.h, StrPrep): per chunk, the dictionary attempt, which reads rows in order until the dictionary is
+  // chosen or ruled out (65,536 rows for a column of mostly distinct values); the rows left over, in slices of
+  // kPrepSlice vectors over all chunks; per chunk, the FSST choice from the samples. A row group's strings are
+  // then read by many threads, not one (the plans are the same as one pass makes).
+  static constexpr uint64_t kPrepSlice = 64;  // vectors (65,536 rows) per task of the second step
+
   void prep_strings(const fstx_column_data* data, uint64_t n) {
     FSTX_PROF_SCOPE(W_PREP_STR);
     std::vector<uint32_t> scols;
     for (uint32_t c = 0; c < cols.size(); ++c)
-      if (cols[c].phys == FSTX_STRING) scols.push_back(c);
+      if (is_str(cols[c].phys)) scols.push_back(c);
     const uint64_t nrg = (n + rg_size - 1) / rg_size;
     sch.clear();
     sch.resize((size_t)nrg);
     for (auto& g : sch) g.resize(cols.size());
     if (scols.empty() || n == 0) return;
-    const uint64_t ntasks = nrg * scols.size();
-    std::atomic<uint64_t> next(0);
+    const uint64_t nchunks = nrg * scols.size();
+    std::vector<enc::StrPrep> prep((size_t)nchunks);
     std::atomic<int> bad(0);  // 0 ok, 1 translate, 2 impossible
     std::atomic<int64_t> bad_col(std::numeric_limits<int64_t>::max());
     std::atomic<uint64_t> cache_left(str_cache_bytes);
-    const int k = (int)std::min<uint64_t>((uint64_t)threads, ntasks);
-    for (int i = 0; i < std::max(k, 1); ++i) ctx(i);  // contexts are made here, before the workers start
-
-    auto job = [&](int id) {
-      enc::EncCtx cx;
-      cx.profile = profile;
-      cx.codec = codec;
-      cx.cc = ctxs[(size_t)id].get();
-      cx.str_cache = &cache_left;
-      for (;;) {
-        uint64_t t = next.fetch_add(1);
-        if (t >= ntasks) return;
-        const uint32_t c = scols[(size_t)(t / nrg)];
-        const uint64_t g = t % nrg;
-        const uint64_t r0 = g * rg_size, r1 = std::min(n, r0 + rg_size);
-        int rc = enc::plan_str_chunk(data[c], r0, r1, cx, force_str, sch[(size_t)g][c]);
-        if (rc != 0) {
-          int prev = bad.load();
-          while (rc > prev && !bad.compare_exchange_weak(prev, rc)) {
-          }
-          int64_t pc = bad_col.load();
-          while ((int64_t)c < pc && !bad_col.compare_exchange_weak(pc, (int64_t)c)) {
-          }
-        }
+    auto note = [&](int rc, uint32_t c) {
+      if (rc == 0) return;
+      if (cols[c].phys == FSTX_BINARY) rc = 3;  // binary values are never converted: any refusal is the host's
+      int prev = bad.load();
+      while (rc > prev && !bad.compare_exchange_weak(prev, rc)) {
+      }
+      int64_t pc = bad_col.load();
+      while ((int64_t)c < pc && !bad_col.compare_exchange_weak(pc, (int64_t)c)) {
       }
     };
-    if (k <= 1) {
-      job(0);
-    } else {
-      ThreadPool::instance().start(k, job);
-      ThreadPool::instance().wait();
+    // chunk t: column scols[t / nrg], row group t % nrg
+    auto rows_of = [&](uint64_t t, uint64_t& r0, uint64_t& r1) {
+      r0 = (t % nrg) * rg_size;
+      r1 = std::min(n, r0 + rg_size);
+    };
+    auto run = [&](uint64_t ntasks, const std::function<void(uint64_t, enc::EncCtx&)>& one) {
+      if (ntasks == 0) return;
+      std::atomic<uint64_t> next(0);
+      const int k = (int)std::min<uint64_t>((uint64_t)threads, ntasks);
+      for (int i = 0; i < std::max(k, 1); ++i) ctx(i);  // contexts are made here, before the workers start
+      auto job = [&](int id) {
+        enc::EncCtx cx;
+        cx.profile = profile;
+        cx.codec = codec;
+        cx.cc = ctxs[(size_t)id].get();
+        cx.str_cache = &cache_left;
+        for (uint64_t t; (t = next.fetch_add(1)) < ntasks;) one(t, cx);
+      };
+      if (k <= 1) {
+        job(0);
+      } else {
+        ThreadPool::instance().start(k, job);
+        ThreadPool::instance().wait();
+      }
+    };
+    run(nchunks, [&](uint64_t t, enc::EncCtx& cx) {
+      const uint32_t c = scols[(size_t)(t / nrg)];
+      uint64_t r0, r1;
+      rows_of(t, r0, r1);
+      enc::StrPrep& p = prep[(size_t)t];
+      cx.dict_by_content = cols[c].phys == FSTX_BINARY;  // binary values never share pointers: compare bytes
+      const int rc = enc::plan_str_begin(data[c], r0, r1, cx, force_str, sch[(size_t)(t % nrg)][c], p);
+      if (rc) p.done = true;  // nothing more is read from a chunk the host refused
+      note(rc, c);
+    });
+    struct Slice {
+      uint64_t t, v0, v1;
+    };
+    std::vector<Slice> slices;
+    for (uint64_t t = 0; t < nchunks; ++t) {
+      const enc::StrPrep& p = prep[(size_t)t];
+      const uint64_t nv = sch[(size_t)(t % nrg)][scols[(size_t)(t / nrg)]].vsizes.size();
+      if (!p.done)
+        for (uint64_t v = p.next_v; v < nv; v += kPrepSlice) slices.push_back({t, v, std::min(nv, v + kPrepSlice)});
     }
+    run(slices.size(), [&](uint64_t i, enc::EncCtx&) {
+      const Slice& s = slices[(size_t)i];
+      const uint32_t c = scols[(size_t)(s.t / nrg)];
+      uint64_t r0, r1;
+      rows_of(s.t, r0, r1);
+      note(enc::plan_str_vectors(data[c], r0, r1, s.v0, s.v1, sch[(size_t)(s.t % nrg)][c], prep[(size_t)s.t]), c);
+    });
+    if (bad.load() == 0)
+      run(nchunks, [&](uint64_t t, enc::EncCtx& cx) {
+        enc::plan_str_finish(cx, sch[(size_t)(t % nrg)][scols[(size_t)(t / nrg)]], prep[(size_t)t]);
+      });
     if (bad.load() == 1)
       throw Error(FSTX_ERR_TRANSLATE, "column '" + cols[(size_t)bad_col.load()].name + "' has strings that are not UTF-8",
+                  bad_col.load());
+    if (bad.load() >= 3)
+      throw Error(FSTX_ERR_HOST, "the host failed to give the values of binary column '" +
+                                     cols[(size_t)bad_col.load()].name + "'",
                   bad_col.load());
     if (bad.load() >= 2)
       throw Error(FSTX_ERR_ARG,
@@ -463,8 +524,8 @@ struct WriterImpl {
   void plan_column(uint32_t c, uint32_t rg, uint64_t r0, uint64_t r1, const fstx_column_data& d,
                    std::vector<Task>& tasks) {
     const int phys = cols[c].phys;
-    if (phys != FSTX_STRING) {
-      const uint64_t w = phys == FSTX_FLOAT64 ? 8 : 4;
+    if (!is_str(phys)) {
+      const uint64_t w = (uint64_t)width_of(phys);
       uint64_t rpp = std::max<uint64_t>(kVector, (page_bytes / w) / kVector * kVector);
       for (uint64_t s = r0; s < r1; s += rpp) tasks.push_back({c, rg, s, (uint32_t)std::min(rpp, r1 - s), 0});
       return;
@@ -530,8 +591,18 @@ struct WriterImpl {
   }
 
   // ---- encode + compress one page into a slot (worker side)
+  // A number page's rows: in place, or from the host's get_values into the worker's vals.
+  const void* num_rows(const Task& t, const fstx_column_data& d, std::vector<uint64_t>& vals) {
+    const size_t w = (size_t)width_of(cols[t.col].phys);
+    if (d.data) return (const char*)d.data + t.row_start * w;
+    if (vals.size() * 8 < (size_t)t.row_count * w) vals.resize(((size_t)t.row_count * w + 7) / 8);
+    const void* x = d.get_values(d.ctx, t.row_start, t.row_count, vals.data());
+    if (!x) fail(FSTX_ERR_HOST, "the number source of column %u failed", t.col);
+    return x;
+  }
+
   void encode(const Task& t, const fstx_column_data* data, Slot& s, CodecContext& cc, std::vector<const char*>& ptrs,
-              std::vector<int32_t>& lens) {
+              std::vector<int32_t>& lens, std::vector<uint64_t>& vals) {
     const ColDef& col = cols[t.col];
     const fstx_column_data& d = data[t.col];
     PageMeta& pm = s.meta;
@@ -544,7 +615,7 @@ struct WriterImpl {
     cx.cc = &cc;
 
     if (col.phys == FSTX_FLOAT64) {
-      const double* x = (const double*)d.data + t.row_start;
+      const double* x = (const double*)num_rows(t, d, vals);
       FSTX_PROF_BEGIN(prof_st, W_STATS);
       double mn, mx;
       uint32_t na;
@@ -559,7 +630,7 @@ struct WriterImpl {
       cx.force = force_num;
       pm.chain = enc::encode_dbl_page(x, n, cx, s.raw);
     } else if (col.phys == FSTX_INT32 || col.phys == FSTX_LOGICAL) {
-      const int32_t* x = (const int32_t*)d.data + t.row_start;
+      const int32_t* x = (const int32_t*)num_rows(t, d, vals);
       FSTX_PROF_BEGIN(prof_st, W_STATS);
       int32_t mn, mx;
       uint32_t na;
@@ -573,6 +644,21 @@ struct WriterImpl {
       FSTX_PROF_END(prof_st);
       cx.force = force_num;
       pm.chain = enc::encode_int_page(x, n, col.phys == FSTX_LOGICAL ? enc::K_LGL : enc::K_INT, kNaInt, cx, s.raw);
+    } else if (col.phys == FSTX_INT64) {
+      const int64_t* x = (const int64_t*)num_rows(t, d, vals);
+      FSTX_PROF_BEGIN(prof_st, W_STATS);
+      int64_t mn, mx;
+      uint32_t na;
+      i64_stats(x, n, mn, mx, na);
+      pm.null_count = na;
+      if (na < n) {  // rounded outward to doubles (spec 4.5): exact from -2^53 to 2^53
+        pm.mn = i64_floor_d(mn);
+        pm.mx = i64_ceil_d(mx);
+        pm.flags |= kFlagMinMax;
+      }
+      FSTX_PROF_END(prof_st);
+      cx.force = force_num;
+      pm.chain = enc::encode_i64_page(x, n, cx, s.raw);
     } else {
       const enc::StrChunk& sc = sch[(size_t)(t.rg - rg0)][t.col];
       FSTX_PROF_SCOPE(W_STR_ENC);
@@ -630,7 +716,7 @@ struct WriterImpl {
       FSTX_PROF_SCOPE(W_COMPRESS);
       bool skip = false;
       if (!keep_codec && t.what != 1 && raw_len >= kProbeMin &&
-          (col.phys == FSTX_FLOAT64 || col.phys == FSTX_INT32 || col.phys == FSTX_LOGICAL)) {
+          (col.phys == FSTX_FLOAT64 || col.phys == FSTX_INT32 || col.phys == FSTX_LOGICAL || col.phys == FSTX_INT64)) {
         const size_t pn = kProbeSlice * kProbeSlices;
         if (s.probe.size() < pn) s.probe.resize(pn);
         for (size_t k = 0; k < kProbeSlices; ++k)
@@ -674,9 +760,9 @@ struct WriterImpl {
   void append(const fstx_column_data* data, uint64_t n) {
     if (n == 0) return;
     for (uint32_t c = 0; c < cols.size(); ++c) {
-      if (cols[c].phys == FSTX_STRING) {
+      if (is_str(cols[c].phys)) {
         if (!data[c].get_strings) fail(FSTX_ERR_ARG, "string column %u has no string source", c);
-      } else if (!data[c].data) {
+      } else if (!data[c].data && !data[c].get_values) {
         fail(FSTX_ERR_ARG, "column %u has no data", c);
       }
     }
@@ -706,8 +792,9 @@ struct WriterImpl {
       Slot s;
       std::vector<const char*> ptrs(kVector);
       std::vector<int32_t> lens(kVector);
+      std::vector<uint64_t> vals;
       for (int64_t i = 0; i < N; ++i) {
-        encode(tasks[(size_t)i], data, s, ctx(0), ptrs, lens);
+        encode(tasks[(size_t)i], data, s, ctx(0), ptrs, lens, vals);
         put_page(tasks[(size_t)i], s, base_row);
       }
     } else {
@@ -723,6 +810,7 @@ struct WriterImpl {
       auto job = [&](int id) {
         std::vector<const char*> ptrs(kVector);
         std::vector<int32_t> lens(kVector);
+        std::vector<uint64_t> vals;  // number rows from get_values
         CodecContext& cc = *ctxs[(size_t)id];
         for (;;) {
           int64_t i;
@@ -734,7 +822,7 @@ struct WriterImpl {
           }
           Slot& s = slots[(size_t)(i % W)];
           try {
-            encode(tasks[(size_t)i], data, s, cc, ptrs, lens);
+            encode(tasks[(size_t)i], data, s, cc, ptrs, lens, vals);
           } catch (...) {
             std::lock_guard<std::mutex> g(m);
             if (!err) err = std::current_exception();
@@ -1009,8 +1097,13 @@ static void configure(fstx::WriterImpl& W, const fstx_write_column* cols, uint32
       fstx::ColDef d;
       d.name.assign(s.name ? s.name : "", s.name ? s.name_len : 0);
       if (!text_ok(d.name)) fstx::fail(FSTX_ERR_ARG, "column %u: its name is not valid UTF-8 text", c + 1);
-      if (s.phys < FSTX_INT32 || s.phys > FSTX_STRING) fstx::fail(FSTX_ERR_ARG, "column %u: unknown type", c);
+      if (s.phys < FSTX_INT32 || s.phys > FSTX_BINARY) fstx::fail(FSTX_ERR_ARG, "column %u: unknown type", c);
       if (s.logical < FSTX_LT_NONE || s.logical > FSTX_LT_POSIXCT) fstx::fail(FSTX_ERR_ARG, "column %u: unknown logical type", c);
+      if ((s.phys == FSTX_INT64 || s.phys == FSTX_BINARY) && s.logical != FSTX_LT_NONE)
+        fstx::fail(FSTX_ERR_ARG, "column %u: 64-bit integer and binary columns take no logical type", c);
+      // fstx 1.2 types: their required bit, set exactly when the file has such a column (spec 5)
+      if (s.phys == FSTX_INT64) W.req_features |= 1ull << fstx::kFeatInt64;
+      if (s.phys == FSTX_BINARY) W.req_features |= 1ull << fstx::kFeatBinary;
       d.phys = s.phys;
       d.logical = s.logical;
       d.ordered = s.ordered;
@@ -1042,6 +1135,7 @@ static int writer_open(const char* path, const fstx_write_column* cols, uint32_t
   try {
     if (!fstx::host_is_little_endian()) fstx::fail(FSTX_ERR_FORMAT, "big-endian machines are not supported yet");
     if (!path || !opt) fstx::fail(FSTX_ERR_ARG, "missing path or options");
+    fstx::ThreadPool::instance().warm(fstx::resolve_threads(opt->threads));  // workers start in the background
     if (n_cols > 0 && !cols) fstx::fail(FSTX_ERR_ARG, "missing column definitions");
     w = new fstx_writer();
     fstx::WriterImpl& W = w->impl;

@@ -20,7 +20,8 @@ PathLike = Union[str, "os.PathLike[str]"]
 class ColumnMeta:
     """One column as the file stores it (spec 4.2).
 
-    phys:    "integer" (int32), "double" (float64), "logical" (int32 0 / 1) or "character" (UTF-8).
+    phys:    "integer" (int32), "double" (float64), "logical" (int32 0 / 1) or "character" (UTF-8); since fstx
+             1.2 also "int64" (64-bit integers, R's bit64 integer64) and "binary" (bytes; R: a list of raw vectors).
     logical: "none", "factor" (1-based int32 codes + ``levels``), "Date" (days since 1970-01-01, stored as
              integer or double) or "POSIXct" (double seconds since 1970-01-01 UTC).
     tzone:   POSIXct only: the time zone, "" when R stored an empty one, None when the column has none.
@@ -49,7 +50,13 @@ class ColumnMeta:
     def r_class(self) -> Optional[List[str]]:
         """The class vector the column has in R: ["factor"], ["ordered", "factor"], ["Date"],
         ["POSIXct", "POSIXt"], the class in the attribute blob (["integer64"], ["difftime"], ...), [] for a
-        plain vector, None when the attributes are R serialization (the class is then unknown)."""
+        plain vector, None when the attributes are R serialization (the class is then unknown). An int64 column
+        is ["integer64"] (R reads it as bit64 integer64; the class is not stored)."""
+        if self.phys == "int64":
+            a = self.attributes
+            c = a.get("class") if a else None
+            own = [v for v in c.values if v is not None] if c is not None and c.type == "character" else []
+            return own if "integer64" in own else own + ["integer64"]
         if self.logical == "factor":
             return ["ordered", "factor"] if self.ordered else ["factor"]
         if self.logical == "Date":
@@ -78,6 +85,8 @@ class FileMeta:
     row_group_size: int
     table_attrs: Optional[bytes] = field(repr=False)
     columns: List[ColumnMeta] = field(repr=False)
+    required_features: int = 0  # footer feature bits (spec 5): bit 16 int64 columns, bit 17 binary (fstx 1.2)
+    optional_features: int = 0
 
     @property
     def names(self) -> List[str]:

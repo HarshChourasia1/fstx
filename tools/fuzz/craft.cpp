@@ -3,7 +3,8 @@
 // of stopping at a checksum. Usage: craft <out_dir>. Writes <name>.fstx for every case, and seed form
 // (16 zero control bytes + file) as <out_dir>/seed/<name>; tests/testthat/test-hardening-structure.R embeds them.
 // Cases: memory bombs (huge raw / stored page length), offsets that wrap around 2^64, overlapping pages, a page
-// inside the footer, a footer inside the pages or inside its own tail, header bits that differ from the footer.
+// inside the footer, a footer inside the pages or inside its own tail, header bits that differ from the footer;
+// fstx 1.2: page kind 7 under an int32 column, int64 values holding INT64_MIN that no NA block marks.
 #include <sys/stat.h>
 
 #include <cstdio>
@@ -95,6 +96,34 @@ bool write_fsst(const std::string& file, const std::string& last) {
   fstx_error err;
   if (fstx_writer_open(file.c_str(), &wc, 1, nullptr, 0, &o, &wr, &err) != FSTX_OK ||
       fstx_writer_append(wr, &cd, 300, &err) != FSTX_OK || fstx_writer_close(wr, &err) != FSTX_OK) {
+    std::fprintf(stderr, "write %s: %s\n", file.c_str(), err.message);
+    return false;
+  }
+  return true;
+}
+
+// fstx 1.2: one int64 column of 1024 rows, plain (force 1), codec none; with_na: every 9th row NA (bitmap)
+bool write_i64(const std::string& file, bool with_na) {
+  std::vector<int64_t> v(1024);
+  for (int r = 0; r < 1024; ++r) v[r] = with_na && r % 9 == 4 ? INT64_MIN : (1LL << 40) + r * 13;
+  fstx_write_column wc;
+  std::memset(&wc, 0, sizeof wc);
+  wc.name = "l";
+  wc.name_len = 1;
+  wc.phys = FSTX_INT64;
+  fstx_column_data cd;
+  std::memset(&cd, 0, sizeof cd);
+  cd.data = v.data();
+  fstx_write_options o;
+  std::memset(&o, 0, sizeof o);
+  o.threads = 1;
+  o.row_group_size = 1024;
+  o.page_bytes = 65536;
+  o.force_encoding = 1;
+  fstx_writer* wr = nullptr;
+  fstx_error err;
+  if (fstx_writer_open(file.c_str(), &wc, 1, nullptr, 0, &o, &wr, &err) != FSTX_OK ||
+      fstx_writer_append(wr, &cd, 1024, &err) != FSTX_OK || fstx_writer_close(wr, &err) != FSTX_OK) {
     std::fprintf(stderr, "write %s: %s\n", file.c_str(), err.message);
     return false;
   }
@@ -281,6 +310,40 @@ int main(int argc, char** argv) {
       v[bytes - b.data()] = 254;
       emit("fsst_unused_code", v);
     }
+  }
+  // fstx 1.2: page kind 7 under an int32 column (the base's page 0), and an int64 value block holding INT64_MIN
+  // that no NA block marks (a page without NA, and a page with an NA bitmap where row 5 is not marked)
+  edit(2, "kind7_under_int32", [&](std::vector<uint8_t>& b) {
+    uint8_t* p = page_at(b, 0);
+    fstx::put_u32(p + 56, (pu32(p, 56) & ~15u) | 7u);
+    return true;
+  });
+  for (int with_na = 0; with_na < 2; ++with_na) {
+    const std::string f = g_out + "/base_i64.fstx";
+    const std::string name = with_na ? "i64_unmarked_min_na" : "i64_unmarked_min";
+    if (!write_i64(f, with_na != 0)) continue;
+    std::vector<uint8_t> b = fz::read_file(f);
+    std::remove(f.c_str());
+    uint8_t* pg = page_at(b, 0);
+    uint8_t* vals = nullptr;
+    if (pg && pg[60] == 0) {
+      const uint8_t* p = b.data() + pu64(pg, 0) + 8;  // after the 8-byte page header
+      const uint8_t* e = p + pu32(pg, 40);
+      while (e - p >= 8) {
+        const uint32_t len = fstx::get_u32(p + 4);
+        if (p[0] == 1 && len >= 8 * 8) {  // T_PLAIN: the values
+          vals = (uint8_t*)p + 8;
+          break;
+        }
+        p += 8 + ((len + 7) / 8) * 8;
+      }
+    }
+    if (!vals) {
+      std::printf("%-22s NOT MADE (no plain block found)\n", name.c_str());
+      continue;
+    }
+    fstx::put_u64(vals + 5 * 8, 0x8000000000000000ull);
+    emit(name, b);
   }
   std::remove((g_out + "/base_none.fstx").c_str());
   std::remove((g_out + "/base_lz4.fstx").c_str());

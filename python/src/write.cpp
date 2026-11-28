@@ -1,18 +1,29 @@
 // fstx Python binding: writing. MIT licence.
 // fstx/_write.py decides every type question with pyarrow and hands over, per column, the stored definition and
-// Arrow arrays that already are what the engine takes: one int32 or float64 array without nulls (R's NA values
-// filled in), or string / binary chunks, plain or dictionary-coded (int32 codes into one dictionary shared by all
-// chunks, so that equal strings reach the engine as one pointer, as R's string cache gives them; the engine's
-// string dictionary keys on pointers). This file only reads their buffers through the Arrow C data interface and
-// runs the engine with the GIL released. The string callback runs on engine worker threads and touches nothing
-// but those buffers.
+// Arrow arrays: the chunks of a number column as they are (int8 / int16 / int32 / uint8 / uint16 / int64 / bool /
+// date32 / float32 / float64, nulls still nulls; int64 only for an int64 column, fstx 1.2), or string / binary
+// chunks, plain or dictionary-coded (int32 codes into one dictionary shared by all chunks, so that equal strings
+// reach the engine as one pointer, as R's string cache gives them; the engine's string dictionary keys on
+// pointers). Binary columns (fstx 1.2) go the way strings go, with any bytes allowed (no UTF-8 or NUL check). This file reads their buffers through the
+// Arrow C data interface and runs the engine with the GIL released, in one call. A number column that is one chunk
+// already as the engine takes it is passed in place; any other goes through get_values, which the engine's workers
+// call a page at a time: rows that lie in one such chunk are handed over in place, others are filled (widened, NA
+// written for nulls) into the worker's buffer. Both callbacks touch nothing but the Arrow buffers.
 #include "binding.h"
 
 #include <nanobind/stl/string.h>
 
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <exception>
+#include <functional>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 #include "arrow_abi.h"
@@ -28,20 +39,253 @@ struct StrChunk {
   uint64_t rows = 0;
   bool large = false;              // 64-bit offsets
   bool text = true;                // false: binary handed back as it was read (bytes are not checked as UTF-8)
+  bool any = false;                // a binary column (fstx 1.2): any bytes, NUL included (only lengths are checked)
   // Dictionary-coded chunk: `rows` int32 codes at `idx` (moved to the chunk's first row; validity `ivalid` from
   // bit `ibit0`). valid / offsets / bytes / bit0 / large / text then describe the dictionary of `dict_rows` values.
   const int32_t* idx = nullptr;
   const uint8_t* ivalid = nullptr;
   int64_t ibit0 = 0;
   uint64_t dict_rows = 0;
+  // when the column's chunks have more than one dictionary: each dictionary value's pointer and length in the
+  // first dictionary that holds the same bytes (NA: nullptr, -1), so equal strings reach the engine as one pointer
+  const char* const* cptr = nullptr;
+  const int32_t* clen = nullptr;
 };
 
 struct StrSrc {
   std::vector<StrChunk> chunks;
   std::vector<uint64_t> first;  // first row of each chunk
+  std::vector<std::vector<const char*>> cptr;  // StrChunk::cptr / clen, one per dictionary
+  std::vector<std::vector<int32_t>> clen;
 };
 
 inline bool bit_off(const uint8_t* bits, int64_t b) { return bits && !((bits[b >> 3] >> (b & 7)) & 1); }
+
+// ---- number columns
+enum NumKind : uint8_t { N_I8, N_I16, N_I32, N_U8, N_U16, N_I64, N_BOOL, N_F32, N_F64 };
+
+struct NumChunk {
+  NumKind kind = N_I32;
+  const void* values = nullptr;    // the values buffer (bits for bool), at element 0 of the buffer
+  const uint8_t* valid = nullptr;  // validity bitmap or null (no missing values)
+  int64_t off = 0;                 // the chunk's first element in both buffers
+  uint64_t rows = 0;
+};
+
+struct NumSrc {
+  std::vector<NumChunk> chunks;
+  std::vector<uint64_t> first;  // first row of each chunk
+  int32_t add = 0;              // added to every value (int32 targets)
+  int phys = FSTX_INT32;        // FSTX_INT32 / FSTX_LOGICAL (int32 rows), FSTX_FLOAT64 or FSTX_INT64 (8-byte rows)
+  bool bits = false;            // int64 kept bit for bit in a double (integer64), NA = INT64_MIN
+};
+
+inline bool is_str(int phys) { return phys == FSTX_STRING || phys == FSTX_BINARY; }
+inline size_t width(int phys) { return phys == FSTX_FLOAT64 || phys == FSTX_INT64 ? 8 : 4; }
+
+const int32_t kNaInt = INT32_MIN;
+const uint64_t kNaRealBits = 0x7FF00000000007A2ull;  // R's NA_real_
+
+// The Arrow formats a number column is taken in, by target (the binding converts them itself).
+bool num_kind(const std::string& f, int phys, NumKind* k) {
+  static const struct {
+    const char* fmt;
+    NumKind kind;
+    bool to_int, to_dbl, to_i64;
+  } tab[] = {{"c", N_I8, true, false, false},   {"s", N_I16, true, false, false},  {"i", N_I32, true, true, false},
+             {"C", N_U8, true, false, false},   {"S", N_U16, true, false, false},  {"l", N_I64, true, true, true},
+             {"b", N_BOOL, true, false, false}, {"tdD", N_I32, true, true, false}, {"f", N_F32, false, true, false},
+             {"g", N_F64, false, true, false}};
+  for (const auto& t : tab)
+    if (f == t.fmt && (phys == FSTX_FLOAT64 ? t.to_dbl : phys == FSTX_INT64 ? t.to_i64 : t.to_int)) {
+      *k = t.kind;
+      return true;
+    }
+  return false;
+}
+
+template <typename T>
+inline void widen_i32(const T* x, uint64_t n, int32_t add, int32_t* out) {
+  for (uint64_t i = 0; i < n; ++i) out[i] = (int32_t)x[i] + add;
+}
+template <typename T>
+inline void to_dbl(const T* x, uint64_t n, double* out) {
+  for (uint64_t i = 0; i < n; ++i) out[i] = (double)x[i];
+}
+
+// Rows [i0, i0 + n) of one chunk into out (int32, double or int64, by phys), NA where the chunk has a null.
+void fill_chunk(const NumChunk& c, uint64_t i0, uint64_t n, int phys, int32_t add, bool bits, void* out) {
+  const int64_t e0 = c.off + (int64_t)i0;  // element of the values buffer
+  if (phys == FSTX_INT64) {  // int64 chunks only (_write.py casts); missing rows get FSTX_NA_INT64
+    int64_t* o = (int64_t*)out;
+    std::memcpy(o, (const int64_t*)c.values + e0, n * 8);
+    if (c.valid)
+      for (uint64_t i = 0; i < n; ++i)
+        if (bit_off(c.valid, e0 + (int64_t)i)) o[i] = FSTX_NA_INT64;
+    return;
+  }
+  if (phys != FSTX_FLOAT64) {
+    int32_t* o = (int32_t*)out;
+    switch (c.kind) {
+      case N_I8: widen_i32((const int8_t*)c.values + e0, n, add, o); break;
+      case N_I16: widen_i32((const int16_t*)c.values + e0, n, add, o); break;
+      case N_U8: widen_i32((const uint8_t*)c.values + e0, n, add, o); break;
+      case N_U16: widen_i32((const uint16_t*)c.values + e0, n, add, o); break;
+      case N_I64: widen_i32((const int64_t*)c.values + e0, n, add, o); break;  // _write.py checked the range
+      case N_I32:
+        if (add) widen_i32((const int32_t*)c.values + e0, n, add, o);
+        else std::memcpy(o, (const int32_t*)c.values + e0, n * 4);
+        break;
+      case N_BOOL: {
+        const uint8_t* b = (const uint8_t*)c.values;
+        for (uint64_t i = 0; i < n; ++i) {
+          const int64_t k = e0 + (int64_t)i;
+          o[i] = (b[k >> 3] >> (k & 7)) & 1;
+        }
+        break;
+      }
+      default: break;
+    }
+    if (c.valid)
+      for (uint64_t i = 0; i < n; ++i)
+        if (bit_off(c.valid, e0 + (int64_t)i)) o[i] = kNaInt;
+    return;
+  }
+  double* o = (double*)out;
+  switch (c.kind) {
+    case N_F64: std::memcpy(o, (const double*)c.values + e0, n * 8); break;
+    case N_F32: to_dbl((const float*)c.values + e0, n, o); break;
+    case N_I32: to_dbl((const int32_t*)c.values + e0, n, o); break;
+    case N_I64:
+      if (bits) std::memcpy(o, (const int64_t*)c.values + e0, n * 8);
+      else to_dbl((const int64_t*)c.values + e0, n, o);
+      break;
+    default: break;
+  }
+  if (c.valid) {
+    const uint64_t na = bits ? (uint64_t)INT64_MIN : kNaRealBits;
+    for (uint64_t i = 0; i < n; ++i)
+      if (bit_off(c.valid, e0 + (int64_t)i)) std::memcpy(o + i, &na, 8);
+  }
+}
+
+// Rows [r0, r0 + n) of a column into out.
+void fill_rows(const NumSrc& s, int phys, uint64_t r0, uint64_t n, void* out) {
+  const size_t w = width(phys);
+  size_t k = (size_t)(std::upper_bound(s.first.begin(), s.first.end(), r0) - s.first.begin()) - 1;
+  uint64_t done = 0;
+  while (done < n) {
+    const NumChunk& c = s.chunks[k];
+    const uint64_t i0 = r0 + done - s.first[k];
+    const uint64_t m = std::min<uint64_t>(n - done, c.rows - i0);
+    fill_chunk(c, i0, m, phys, s.add, s.bits, (char*)out + done * w);
+    done += m;
+    ++k;
+  }
+}
+
+// Rows [r0, r0 + n) in place when one chunk holds them all as the engine takes them, else null.
+const void* in_place(const NumSrc& s, int phys, uint64_t r0, uint64_t n) {
+  if (s.chunks.empty() || s.add) return nullptr;
+  const size_t k = (size_t)(std::upper_bound(s.first.begin(), s.first.end(), r0) - s.first.begin()) - 1;
+  const NumChunk& c = s.chunks[k];
+  const uint64_t i0 = r0 - s.first[k];
+  if (c.valid || i0 + n > c.rows) return nullptr;
+  const bool same = phys == FSTX_FLOAT64 ? (c.kind == N_F64 || (c.kind == N_I64 && s.bits))
+                    : phys == FSTX_INT64 ? c.kind == N_I64 : c.kind == N_I32;
+  if (!same) return nullptr;
+  return (const char*)c.values + (size_t)(c.off + (int64_t)i0) * width(phys);
+}
+
+// The engine's get_values (ctx: the column's NumSrc), on its worker threads, one page's rows at a time.
+const void* get_values(void* ctx, uint64_t row, uint32_t n, void* buf) {
+  const NumSrc& s = *(const NumSrc*)ctx;
+  if (const void* p = in_place(s, s.phys, row, n)) return p;
+  fill_rows(s, s.phys, row, n, buf);
+  return buf;
+}
+
+// The threads of one write, kept from one parallel step to the next (the checks): run(n, job) runs
+// job(0 .. n-1) on up to `threads` threads, the calling one included; threads are started when first needed.
+class Team {
+ public:
+  explicit Team(int threads) : max_(threads > 1 ? (size_t)threads - 1 : 0) {}
+  ~Team() {
+    {
+      std::lock_guard<std::mutex> g(m_);
+      stop_ = true;
+    }
+    cv_.notify_all();
+    for (std::thread& t : th_) t.join();
+  }
+  template <typename F>
+  void run(size_t n, F job) {
+    const size_t want = std::min(max_, n ? n - 1 : 0);
+    if (want == 0) {
+      for (size_t i = 0; i < n; ++i) job(i);
+      return;
+    }
+    while (th_.size() < want) th_.emplace_back([this] { loop(); });
+    std::function<void(size_t)> f(job);
+    {
+      std::lock_guard<std::mutex> g(m_);
+      job_ = &f;
+      n_ = n;
+      next_ = 0;
+      busy_ = th_.size();
+      ++gen_;
+    }
+    cv_.notify_all();
+    work(f, n);
+    std::unique_lock<std::mutex> lk(m_);
+    done_.wait(lk, [&] { return busy_ == 0; });
+    job_ = nullptr;
+    if (err_) {
+      std::exception_ptr e = err_;
+      err_ = nullptr;
+      std::rethrow_exception(e);
+    }
+  }
+
+ private:
+  void loop() {
+    uint64_t seen = 0;
+    for (;;) {
+      std::function<void(size_t)>* f;
+      size_t n;
+      {
+        std::unique_lock<std::mutex> lk(m_);
+        cv_.wait(lk, [&] { return stop_ || gen_ != seen; });
+        if (stop_) return;
+        seen = gen_;
+        f = job_;
+        n = n_;
+      }
+      work(*f, n);
+      std::lock_guard<std::mutex> g(m_);
+      if (--busy_ == 0) done_.notify_all();
+    }
+  }
+  void work(const std::function<void(size_t)>& f, size_t n) {  // an exception goes to run's caller
+    try {
+      for (size_t i; (i = next_.fetch_add(1)) < n;) f(i);
+    } catch (...) {
+      next_ = n;
+      std::lock_guard<std::mutex> g(m_);
+      if (!err_) err_ = std::current_exception();
+    }
+  }
+  const size_t max_;
+  std::vector<std::thread> th_;
+  std::mutex m_;
+  std::condition_variable cv_, done_;
+  std::function<void(size_t)>* job_ = nullptr;
+  size_t n_ = 0, busy_ = 0;
+  std::atomic<size_t> next_{0};
+  uint64_t gen_ = 0;
+  bool stop_ = false;
+  std::exception_ptr err_;
+};
 inline bool is_null(const StrChunk& c, uint64_t i) { return bit_off(c.valid, c.bit0 + (int64_t)i); }
 inline void span_of(const StrChunk& c, uint64_t i, int64_t* a, int64_t* b) {
   if (c.large) {
@@ -71,6 +315,12 @@ int get_strings(void* ctx, uint64_t row, uint32_t n, const char** ptrs, int32_t*
     if (c.idx) {
       na = bit_off(c.ivalid, c.ibit0 + (int64_t)i);
       if (!na) v = (uint64_t)c.idx[i];
+      if (!na && c.cptr) {
+        ptrs[j] = c.cptr[v];
+        lens[j] = c.clen[v];
+        ++i;
+        continue;
+      }
     }
     if (na || is_null(c, v)) {
       ptrs[j] = nullptr;
@@ -85,6 +335,23 @@ int get_strings(void* ctx, uint64_t row, uint32_t n, const char** ptrs, int32_t*
   }
   return 0;
 }
+
+const void* capsule(nb::handle h, const char* name) {
+  void* p = PyCapsule_GetPointer(h.ptr(), name);
+  if (!p) throw nb::python_error();
+  return p;
+}
+
+struct Col {
+  std::string name, tz;
+  std::vector<std::string> levels;
+  std::vector<const char*> lv_ptr;
+  std::vector<uint32_t> lv_len;
+  std::string attrs;
+  bool has_attrs = false, has_tz = false;
+  StrSrc src;
+  NumSrc num;
+};
 
 // Well-formed UTF-8 (no overlongs, surrogates or values past U+10FFFF) without NUL: 0 ok, 1 not UTF-8, 2 NUL.
 int text_problem(const unsigned char* p, int64_t n, bool text) {
@@ -115,16 +382,22 @@ int text_problem(const unsigned char* p, int64_t n, bool text) {
   return 0;
 }
 
-// The `n` values of a plain chunk or of a dictionary: sound offsets, at most 2^31-1 bytes each, no NUL, and UTF-8
-// for text. Returns 0, or a problem code (1 not UTF-8, 2 NUL, 3 too long, 4 bad offsets) with *at set to the
-// first value that shows it. With `codes` (n entries) every value's own code is kept there and checking goes on
-// past a bad value; 4 still stops at once.
-int check_values(const StrChunk& c, uint64_t n, uint64_t* at, std::vector<uint8_t>* codes) {
-  if (n == 0) return 0;
+// Values [i0, i1) of a plain chunk or of a dictionary: sound offsets, at most 2^31-1 bytes each, no NUL, and UTF-8
+// for text (a binary column's values: offsets and lengths only). Returns 0, or a problem code (1 not UTF-8, 2 NUL, 3 too long, 4 bad offsets) with *at set to the
+// first value that shows it. With `codes` (indexed by value) every value's own code is kept there and checking
+// goes on past a bad value; 4 still stops at once. Offsets are checked against the value before i0 too, so the
+// ranges of one chunk, checked apart, find what one pass over it finds.
+int check_range(const StrChunk& c, uint64_t i0, uint64_t i1, uint64_t* at, uint8_t* codes) {
+  if (i1 <= i0) return 0;
   int64_t a0, b0, a1, b1;
-  span_of(c, 0, &a0, &b0);
-  span_of(c, n - 1, &a1, &b1);
-  bool plain = a0 >= 0 && b1 >= a0;
+  span_of(c, i0, &a0, &b0);
+  span_of(c, i1 - 1, &a1, &b1);
+  int64_t prev = a0;
+  if (i0 > 0) {
+    int64_t pa;
+    span_of(c, i0 - 1, &pa, &prev);
+  }
+  bool plain = !c.any && a0 >= 0 && b1 >= a0;
   if (plain) {  // fast path: the whole byte range is ASCII without NUL, so every string in it is fine
     const unsigned char* p = (const unsigned char*)c.bytes + a0;
     const int64_t len = b1 - a0;
@@ -143,10 +416,8 @@ int check_values(const StrChunk& c, uint64_t n, uint64_t* at, std::vector<uint8_
     }
     plain = !(any & highs) && !zero;
   }
-  if (codes) codes->assign((size_t)n, 0);
   int first = 0;
-  int64_t prev = a0;
-  for (uint64_t i = 0; i < n; ++i) {
+  for (uint64_t i = i0; i < i1; ++i) {
     int64_t a, b;
     span_of(c, i, &a, &b);
     if (a < 0 || b < a || a < prev) {
@@ -155,66 +426,150 @@ int check_values(const StrChunk& c, uint64_t n, uint64_t* at, std::vector<uint8_
     }
     prev = b;
     if (plain || is_null(c, i)) continue;
-    int r = b - a > 0x7FFFFFFF ? 3 : text_problem((const unsigned char*)c.bytes + a, b - a, c.text);
+    int r = b - a > 0x7FFFFFFF ? 3 : c.any ? 0 : text_problem((const unsigned char*)c.bytes + a, b - a, c.text);
     if (!r) continue;
     if (!codes) {
       *at = i;
       return r;
     }
-    (*codes)[(size_t)i] = (uint8_t)r;
+    codes[i] = (uint8_t)r;
     if (!first) first = r, *at = i;
   }
   return first;
 }
 
-// Every string of a column before the engine sees it. Returns 0, or a problem code (as check_values) with *row
-// set to the first row that shows it. A bad dictionary value that no row uses is never written, so is let be.
-int check_strings(const StrSrc& s, uint64_t* row) {
-  std::vector<uint8_t> codes;
-  const void* checked = nullptr;  // the dictionary checked last (the chunks normally share one)
-  int dr = 0;                     // its result
-  for (size_t k = 0; k < s.chunks.size(); ++k) {
-    const StrChunk& c = s.chunks[k];
-    if (c.rows == 0) continue;
-    uint64_t at = 0;
-    if (!c.idx) {
-      const int r = check_values(c, c.rows, &at, nullptr);
-      *row = s.first[k] + at;
-      if (r) return r;
-      continue;
-    }
-    if (!checked || checked != c.offsets) {
-      dr = check_values(c, c.dict_rows, &at, &codes);
-      checked = c.offsets;
-    }
-    *row = s.first[k];
-    if (dr == 4) return 4;
-    for (uint64_t i = 0; i < c.rows; ++i) {
-      if (bit_off(c.ivalid, c.ibit0 + (int64_t)i)) continue;
-      const int32_t v = c.idx[i];
-      *row = s.first[k] + i;
-      if (v < 0 || (uint64_t)v >= c.dict_rows) return 4;
-      if (dr && codes[(size_t)v]) return codes[(size_t)v];
+constexpr uint64_t kCheckSlice = 65536;  // values per task of the string check
+
+// Every string of every string column before the engine sees it, on the team. Returns 0, or a problem
+// code (as check_range) with *col / *row set to the first column, and its first row, that shows one. A bad
+// dictionary value that no row uses is never written, so is let be.
+int check_strings(const std::vector<Col>& cols, const std::vector<fstx_write_column>& defs, Team& team,
+                  size_t* col, uint64_t* row) {
+  // the dictionaries (the chunks of a column normally share one), each value's problem code kept
+  struct Dict {
+    const StrChunk* c;
+    std::vector<uint8_t> codes;
+    std::atomic<bool> broken{false}, bad{false};  // bad offsets somewhere; some value has a problem
+  };
+  std::vector<std::unique_ptr<Dict>> dicts;
+  std::vector<std::vector<Dict*>> dict_of(cols.size());  // [column][chunk]
+  struct Task {
+    size_t col, chunk;
+    Dict* dict;  // a dictionary's values [a, b), else rows [a, b) of the chunk
+    uint64_t a, b;
+  };
+  std::vector<Task> tasks;
+  for (size_t j = 0; j < cols.size(); ++j) {
+    if (!is_str(defs[j].phys)) continue;
+    const StrSrc& s = cols[j].src;
+    dict_of[j].assign(s.chunks.size(), nullptr);
+    for (size_t k = 0; k < s.chunks.size(); ++k) {
+      const StrChunk& c = s.chunks[k];
+      if (!c.idx) continue;
+      Dict* d = nullptr;
+      for (auto& x : dicts)
+        if (x->c->offsets == c.offsets && x->c->dict_rows == c.dict_rows) d = x.get();
+      if (!d) {
+        dicts.emplace_back(new Dict());
+        d = dicts.back().get();
+        d->c = &c;
+        d->codes.assign((size_t)c.dict_rows, 0);
+        for (uint64_t a = 0; a < c.dict_rows; a += kCheckSlice)
+          tasks.push_back({j, k, d, a, std::min(c.dict_rows, a + kCheckSlice)});
+      }
+      dict_of[j][k] = d;
     }
   }
-  return 0;
+  team.run(tasks.size(), [&](size_t i) {
+    const Task& t = tasks[i];
+    uint64_t at = 0;
+    const int r = check_range(*t.dict->c, t.a, t.b, &at, t.dict->codes.data());
+    if (r == 4) t.dict->broken = true;
+    else if (r) t.dict->bad = true;
+  });
+
+  // the rows, in slices; each slice keeps its first problem
+  tasks.clear();
+  for (size_t j = 0; j < cols.size(); ++j) {
+    if (!is_str(defs[j].phys)) continue;
+    const StrSrc& s = cols[j].src;
+    for (size_t k = 0; k < s.chunks.size(); ++k)
+      for (uint64_t a = 0; a < s.chunks[k].rows; a += kCheckSlice)
+        tasks.push_back({j, k, dict_of[j][k], a, std::min(s.chunks[k].rows, a + kCheckSlice)});
+  }
+  std::vector<int> code(tasks.size(), 0);
+  std::vector<uint64_t> at(tasks.size(), 0);
+  team.run(tasks.size(), [&](size_t i) {
+    const Task& t = tasks[i];
+    const StrChunk& c = cols[t.col].src.chunks[t.chunk];
+    const uint64_t first = cols[t.col].src.first[t.chunk];
+    if (!t.dict) {
+      uint64_t v = 0;
+      code[i] = check_range(c, t.a, t.b, &v, nullptr);
+      at[i] = first + v;
+      return;
+    }
+    if (t.dict->broken) {  // a dictionary with damaged offsets: the chunk's first row
+      if (t.a == 0) code[i] = 4, at[i] = first;
+      return;
+    }
+    const bool bad = t.dict->bad;
+    for (uint64_t r = t.a; r < t.b; ++r) {
+      if (bit_off(c.ivalid, c.ibit0 + (int64_t)r)) continue;
+      const int32_t v = c.idx[r];
+      int p = 0;
+      if (v < 0 || (uint64_t)v >= c.dict_rows) p = 4;
+      else if (bad) p = t.dict->codes[(size_t)v];
+      if (p) {
+        code[i] = p;
+        at[i] = first + r;
+        return;
+      }
+    }
+  });
+  int res = 0;
+  for (size_t i = 0; i < tasks.size(); ++i)  // tasks are in column, then row order
+    if (code[i] && (!res || tasks[i].col < *col || (tasks[i].col == *col && at[i] < *row))) {
+      res = code[i];
+      *col = tasks[i].col;
+      *row = at[i];
+    }
+  return res;
 }
 
-const void* capsule(nb::handle h, const char* name) {
-  void* p = PyCapsule_GetPointer(h.ptr(), name);
-  if (!p) throw nb::python_error();
-  return p;
+// The first int32 column (int32 / date32 chunks kept as they are, nothing added) that holds INT32_MIN in a row
+// that is not missing: R's NA_integer_, which cannot be stored as a value. -1 when none does. On the team.
+int64_t int_na_column(const std::vector<Col>& cols, const std::vector<fstx_write_column>& defs, Team& team) {
+  struct Task {
+    size_t col, chunk;
+    uint64_t a, b;
+  };
+  std::vector<Task> tasks;
+  for (size_t j = 0; j < cols.size(); ++j) {
+    const NumSrc& s = cols[j].num;
+    if (defs[j].phys == FSTX_FLOAT64 || defs[j].phys == FSTX_INT64 || is_str(defs[j].phys) || s.add) continue;
+    for (size_t k = 0; k < s.chunks.size(); ++k)
+      if (s.chunks[k].kind == N_I32)
+        for (uint64_t a = 0; a < s.chunks[k].rows; a += 1u << 20)
+          tasks.push_back({j, k, a, std::min<uint64_t>(s.chunks[k].rows, a + (1u << 20))});
+  }
+  std::vector<uint8_t> hit(tasks.size(), 0);
+  team.run(tasks.size(), [&](size_t i) {
+    const Task& t = tasks[i];
+    const NumChunk& c = cols[t.col].num.chunks[t.chunk];
+    const int32_t* x = (const int32_t*)c.values + c.off;
+    bool any = false;
+    for (uint64_t r = t.a; r < t.b; ++r) any |= x[r] == kNaInt;
+    if (any && c.valid) {  // only a value in a row that is not missing counts
+      any = false;
+      for (uint64_t r = t.a; r < t.b && !any; ++r) any = x[r] == kNaInt && !bit_off(c.valid, c.off + (int64_t)r);
+    }
+    hit[i] = any;
+  });
+  for (size_t i = 0; i < tasks.size(); ++i)
+    if (hit[i]) return (int64_t)tasks[i].col;
+  return -1;
 }
-
-struct Col {
-  std::string name, tz;
-  std::vector<std::string> levels;
-  std::vector<const char*> lv_ptr;
-  std::vector<uint32_t> lv_len;
-  std::string attrs;
-  bool has_attrs = false, has_tz = false;
-  StrSrc src;
-};
 
 std::string bytes_of(nb::handle h) {
   char* p = nullptr;
@@ -223,8 +578,146 @@ std::string bytes_of(nb::handle h) {
   return std::string(p, (size_t)n);
 }
 
-// columns: [(name, phys, logical, ordered, levels | None, tzone | None, attrs | None, chunks)], chunks a list of
-// the (schema capsule, array capsule) pairs of pyarrow's Array.__arrow_c_array__(). The caller keeps them alive.
+inline uint64_t hash_bytes(const unsigned char* p, size_t n) {
+  uint64_t h = 0x9E3779B97F4A7C15ull ^ (uint64_t)n;
+  for (; n >= 8; p += 8, n -= 8) {
+    uint64_t w;
+    std::memcpy(&w, p, 8);
+    h = (h ^ w) * 0xBF58476D1CE4E5B9ull;
+    h ^= h >> 31;
+  }
+  uint64_t w = 0;
+  std::memcpy(&w, p, n);
+  h = (h ^ w) * 0x94D049BB133111EBull;
+  return h ^ (h >> 29);
+}
+
+// A column whose chunks are coded with more than one dictionary (_write.py codes slices in parallel): every
+// dictionary value gets the pointer of the first value, in chunk order, with the same bytes. Runs after the check
+// (sound offsets).
+void same_pointers(StrSrc& s) {
+  std::vector<size_t> dict_of(s.chunks.size(), SIZE_MAX);
+  std::vector<const StrChunk*> dicts;
+  for (size_t k = 0; k < s.chunks.size(); ++k) {
+    const StrChunk& c = s.chunks[k];
+    if (!c.idx) continue;
+    for (size_t d = 0; d < dicts.size() && dict_of[k] == SIZE_MAX; ++d)
+      if (dicts[d]->offsets == c.offsets && dicts[d]->dict_rows == c.dict_rows) dict_of[k] = d;
+    if (dict_of[k] == SIZE_MAX) {
+      dict_of[k] = dicts.size();
+      dicts.push_back(&c);
+    }
+  }
+  if (dicts.size() < 2) return;
+  uint64_t total = 0;
+  for (const StrChunk* c : dicts) total += c->dict_rows;
+  size_t cap = 16;
+  while (cap < 2 * total) cap <<= 1;
+  std::vector<int64_t> slot(cap, -1);
+  std::vector<uint64_t> hv;
+  std::vector<std::pair<const char*, int32_t>> vals;
+  s.cptr.resize(dicts.size());
+  s.clen.resize(dicts.size());
+  for (size_t d = 0; d < dicts.size(); ++d) {
+    const StrChunk& c = *dicts[d];
+    std::vector<const char*>& cp = s.cptr[d];
+    std::vector<int32_t>& cl = s.clen[d];
+    cp.assign((size_t)c.dict_rows, nullptr);
+    cl.assign((size_t)c.dict_rows, -1);
+    for (uint64_t v = 0; v < c.dict_rows; ++v) {
+      if (is_null(c, v)) continue;
+      int64_t a, b;
+      span_of(c, v, &a, &b);
+      const char* p = c.bytes + a;
+      const int32_t len = (int32_t)(b - a);
+      const uint64_t h = hash_bytes((const unsigned char*)p, (size_t)len);
+      size_t i = (size_t)(h & (cap - 1));
+      for (;; i = (i + 1) & (cap - 1)) {
+        const int64_t e = slot[i];
+        if (e < 0) {
+          slot[i] = (int64_t)vals.size();
+          vals.push_back({p, len});
+          hv.push_back(h);
+          break;
+        }
+        if (hv[(size_t)e] == h && vals[(size_t)e].second == len && std::memcmp(vals[(size_t)e].first, p, (size_t)len) == 0) {
+          p = vals[(size_t)e].first;
+          break;
+        }
+      }
+      cp[(size_t)v] = p;
+      cl[(size_t)v] = len;
+    }
+  }
+  for (size_t k = 0; k < s.chunks.size(); ++k)
+    if (dict_of[k] != SIZE_MAX) {
+      s.chunks[k].cptr = s.cptr[dict_of[k]].data();
+      s.chunks[k].clen = s.clen[dict_of[k]].data();
+    }
+}
+
+// Whether more than half of the rows of these string / binary chunks are distinct values (missing values not
+// counted as values): pyarrow's count_distinct(chunks) * 2 > rows, stopping as soon as the answer is known.
+// chunks: (schema capsule, array capsule) pairs.
+bool over_half_distinct(nb::list chunks) {
+  std::vector<StrChunk> cs;
+  uint64_t total = 0;
+  for (nb::handle h : chunks) {
+    nb::tuple pair = nb::cast<nb::tuple>(h);
+    const ArrowSchema* sc = (const ArrowSchema*)capsule(pair[0], "arrow_schema");
+    const ArrowArray* ar = (const ArrowArray*)capsule(pair[1], "arrow_array");
+    const std::string f = sc->format ? sc->format : "";
+    if ((f != "u" && f != "U" && f != "z" && f != "Z") || ar->n_buffers != 3 || ar->length < 0 || ar->offset < 0)
+      throw nb::value_error("fstx: internal error, string chunks expected");
+    StrChunk c;
+    c.rows = (uint64_t)ar->length;
+    c.large = f == "U" || f == "Z";
+    c.valid = ar->null_count != 0 ? (const uint8_t*)ar->buffers[0] : nullptr;
+    c.bit0 = ar->offset;
+    total += c.rows;
+    if (!c.rows) continue;
+    if (!ar->buffers[1]) throw nb::value_error("fstx: internal error, Arrow string array without offsets");
+    c.offsets = c.large ? (const void*)((const int64_t*)ar->buffers[1] + ar->offset)
+                        : (const void*)((const int32_t*)ar->buffers[1] + ar->offset);
+    static const char none[1] = {0};
+    c.bytes = ar->buffers[2] ? (const char*)ar->buffers[2] : none;
+    cs.push_back(c);
+  }
+  nb::gil_scoped_release nogil;
+  size_t cap = 16;
+  while (cap < 2 * total) cap <<= 1;
+  std::vector<int64_t> slot(cap, -1);  // index into vals
+  std::vector<uint64_t> hv;
+  std::vector<std::pair<const unsigned char*, int64_t>> vals;
+  for (const StrChunk& c : cs)
+    for (uint64_t i = 0; i < c.rows; ++i) {
+      if (is_null(c, i)) continue;
+      int64_t a, b;
+      span_of(c, i, &a, &b);
+      if (a < 0 || b < a) return true;  // damaged offsets: the column goes as it is, and the check names them
+      const unsigned char* p = (const unsigned char*)c.bytes + a;
+      const int64_t len = b - a;
+      const uint64_t hh = hash_bytes(p, (size_t)len);
+      size_t k = (size_t)(hh & (cap - 1));
+      for (;; k = (k + 1) & (cap - 1)) {
+        const int64_t e = slot[k];
+        if (e < 0) {
+          slot[k] = (int64_t)vals.size();
+          vals.push_back({p, len});
+          hv.push_back(hh);
+          if (2 * vals.size() > total) return true;
+          break;
+        }
+        if (hv[(size_t)e] == hh && vals[(size_t)e].second == len && std::memcmp(vals[(size_t)e].first, p, (size_t)len) == 0)
+          break;
+      }
+    }
+  return 2 * vals.size() > total;
+}
+
+// columns: [(name, phys, logical, ordered, levels | None, tzone | None, attrs | None, chunks, add, bits)], chunks a
+// list of the (schema capsule, array capsule) pairs of pyarrow's Array.__arrow_c_array__(); add and bits as
+// NumSrc (numbers only). The caller keeps them alive.
 void write(const std::string& path, nb::list columns, nb::object table_attrs, uint64_t nrow, int codec, int level,
            int threads, int profile, int keep_pct, bool append) {
   static const char dummy[8] = {0};
@@ -234,7 +727,7 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
   std::vector<fstx_column_data> data(nc);
   for (size_t j = 0; j < nc; ++j) {
     nb::tuple t = nb::cast<nb::tuple>(columns[j]);
-    if (nb::len(t) != 8) throw nb::value_error("fstx: internal error, bad column spec");
+    if (nb::len(t) != 10) throw nb::value_error("fstx: internal error, bad column spec");
     Col& c = cols[j];
     fstx_write_column& d = defs[j];
     std::memset(&d, 0, sizeof(d));
@@ -269,7 +762,8 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
     }
     nb::list chunks = nb::cast<nb::list>(t[7]);
     const size_t nk = nb::len(chunks);
-    const char want = d.phys == FSTX_FLOAT64 ? 'g' : 'i';
+    c.num.add = nb::cast<int32_t>(t[8]);
+    c.num.bits = nb::cast<bool>(t[9]);
     uint64_t rows = 0;
     for (size_t k = 0; k < nk; ++k) {
       nb::tuple pair = nb::cast<nb::tuple>(chunks[k]);
@@ -278,7 +772,7 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
       const ArrowArray* ar = (const ArrowArray*)capsule(pair[1], "arrow_array");
       const std::string fmt = sc->format ? sc->format : "";
       if (ar->length < 0 || ar->offset < 0) throw nb::value_error("fstx: internal error, bad Arrow array");
-      if (d.phys == FSTX_STRING) {
+      if (is_str(d.phys)) {
         StrChunk s;
         s.rows = (uint64_t)ar->length;
         const ArrowSchema* vs = sc;  // the values: the array itself, or its dictionary
@@ -295,11 +789,12 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
           s.dict_rows = (uint64_t)va->length;
         }
         const std::string vfmt = vs->format ? vs->format : "";
-        if (vfmt != "u" && vfmt != "U" && vfmt != "z" && vfmt != "Z")
-          throw nb::value_error("fstx: internal error, a string column needs string or binary arrays");
+        if (vfmt != "z" && vfmt != "Z" && (d.phys == FSTX_BINARY || (vfmt != "u" && vfmt != "U")))
+          throw nb::value_error("fstx: internal error, a string column needs string or binary arrays (binary: binary)");
         if (va->n_buffers != 3) throw nb::value_error("fstx: internal error, bad Arrow string array");
         s.large = vfmt == "U" || vfmt == "Z";
         s.text = vfmt == "u" || vfmt == "U";
+        s.any = d.phys == FSTX_BINARY;
         s.valid = va->null_count == 0 ? nullptr : (const uint8_t*)va->buffers[0];
         s.bit0 = va->offset;
         if (s.rows) {
@@ -313,21 +808,32 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
           c.src.chunks.push_back(s);
         }
       } else {
-        if (fmt.size() != 1 || fmt[0] != want || nk != 1 || ar->n_buffers != 2 ||
-            (ar->null_count != 0 && ar->buffers[0]))
-          throw nb::value_error("fstx: internal error, a number column needs one array of its type without nulls");
-        const size_t w = d.phys == FSTX_FLOAT64 ? 8 : 4;
-        data[j].data = ar->length && ar->buffers[1] ? (const char*)ar->buffers[1] + (size_t)ar->offset * w
-                                                    : (const void*)dummy;
+        NumChunk n;
+        if (!num_kind(fmt, d.phys, &n.kind) || ar->n_buffers != 2)
+          throw nb::value_error("fstx: internal error, a number column of an Arrow type the binding does not take");
+        n.rows = (uint64_t)ar->length;
+        n.off = ar->offset;
+        n.valid = ar->null_count != 0 && ar->buffers[0] ? (const uint8_t*)ar->buffers[0] : nullptr;
+        n.values = ar->buffers[1];
+        if (n.rows) {
+          if (!n.values) throw nb::value_error("fstx: internal error, Arrow array without values");
+          c.num.first.push_back(rows);
+          c.num.chunks.push_back(n);
+        }
       }
       rows += (uint64_t)ar->length;
     }
     if (rows != nrow) throw nb::value_error("fstx: internal error, a column has the wrong number of rows");
-    if (d.phys == FSTX_STRING) {
+    if (is_str(d.phys)) {
       data[j].get_strings = get_strings;
       data[j].ctx = &c.src;
-    } else if (nk != 1) {
-      throw nb::value_error("fstx: internal error, a number column needs one array");
+    } else {
+      c.num.phys = d.phys;
+      data[j].data = nrow ? in_place(c.num, d.phys, 0, nrow) : dummy;
+      if (!data[j].data) {
+        data[j].get_values = get_values;
+        data[j].ctx = &c.num;
+      }
     }
   }
   std::string ta;
@@ -341,20 +847,36 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
   opt.threads = threads;
   opt.profile = profile;
   opt.keep_pct = keep_pct;
+  // No string pointer cache (the engine's flag 0x800, F_NO_STR_CACHE, which R's tests call no_str_cache): it saves
+  // R a second walk over its CHARSXPs, but get_strings here only reads Arrow offsets, so pages read the strings
+  // again as fast as from the cache, and the cache's up to 8 MB a call (12 bytes a string) stay free. Same bytes.
+  opt.force_encoding = 0x800;
+  const int nthreads = threads > 0 ? threads : (int)fstx_hardware_threads();
 
   fstx_error err;
   std::memset(&err, 0, sizeof(err));
   int rc = FSTX_OK, bad = 0;
   size_t bad_col = 0;
   uint64_t bad_row = 0;
+  int64_t na_col = -1;
   {
     nb::gil_scoped_release nogil;  // no Python object is touched until this block ends
-    for (size_t j = 0; j < nc && !bad; ++j) {
-      if (defs[j].phys != FSTX_STRING) continue;
-      bad = check_strings(cols[j].src, &bad_row);
-      bad_col = j;
+    Team team(nthreads);
+    try {
+      na_col = int_na_column(cols, defs, team);
+      if (na_col < 0) bad = check_strings(cols, defs, team, &bad_col, &bad_row);
+      if (na_col < 0 && !bad) {
+        std::vector<size_t> sc;
+        for (size_t j = 0; j < nc; ++j)
+          if (is_str(defs[j].phys)) sc.push_back(j);
+        team.run(sc.size(), [&](size_t i) { same_pointers(cols[sc[i]].src); });
+      }
+    } catch (const std::exception& e) {  // no thread or no memory
+      rc = FSTX_ERR_MEMORY;
+      std::snprintf(err.message, sizeof(err.message), "write_fstx: %s", e.what());
+      err.code = rc;
     }
-    if (!bad) {
+    if (!bad && na_col < 0 && rc == FSTX_OK) {
       fstx_writer* w = nullptr;
       const uint8_t* tap = has_ta ? (const uint8_t*)ta.data() : nullptr;
       rc = append ? fstx_writer_open_append(path.c_str(), defs.data(), (uint32_t)nc, tap, ta.size(), &opt, &w, &err)
@@ -366,9 +888,15 @@ void write(const std::string& path, nb::list columns, nb::object table_attrs, ui
       }
     }
   }
+  if (na_col >= 0) {
+    const std::string msg = "write_fstx: column '" + cols[(size_t)na_col].name +
+                            "' holds -2147483648, which is R's missing integer and cannot be stored as a value (cast "
+                            "the column to int64 or float64)";
+    throw nb::value_error(msg.c_str());
+  }
   if (bad) {
     static const char* why[] = {"", "a string that is not valid UTF-8", "a string with a NUL character",
-                                "a string longer than 2 GB", "damaged string offsets"};
+                                "a value longer than 2 GB", "damaged string offsets"};
     const std::string msg = "write_fstx: column '" + cols[bad_col].name + "' has " + why[bad] + " (row " +
                             std::to_string(bad_row) + "), which fstx cannot store";
     throw nb::value_error(msg.c_str());
@@ -386,6 +914,8 @@ void init_write(nb::module_& m) {
         nb::arg("codec"), nb::arg("level"), nb::arg("threads"), nb::arg("profile"), nb::arg("keep_pct"),
         nb::arg("append"),
         "Writes prepared columns (private: use fstx.write_fstx).");
+  m.def("over_half_distinct", &over_half_distinct, nb::arg("chunks"),
+        "Whether count_distinct(chunks) * 2 > rows (private: write_fstx's dictionary choice).");
 }
 
 }  // namespace fstxpy

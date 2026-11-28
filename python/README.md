@@ -1,7 +1,7 @@
 # fstx for Python
 
-Reads and writes fstx files (the FST-X column-store format of the R package fstx 1.0) from Python, on the same
-C++ engine as the R package. A file written by either language is an ordinary fstx 1.0 file that the other reads.
+Reads and writes fstx files (the FST-X column-store format of the R package fstx) from Python, on the same C++
+engine as the R package. A file written by either language is an ordinary fstx file that the other reads.
 Tables are `pyarrow.Table`s; pandas and polars are helpers on top. Python 3.10+, pyarrow 15+; pandas, polars and
 numpy are optional. The design, type by type, is in `DESIGN.md`; build and test notes are in `DEV.md`.
 
@@ -42,8 +42,18 @@ with fstx.open("sales.fstx") as f:    # the open file: f.schema, f.read(...), f.
 Options of `read_fstx`: `threads=None` (all cores), `verify=True` (checksums), `as_factor=False` (strings as
 dictionaries), `attributes=True`, `datetimes="arrow"` (`date32` / `timestamp[us]`; `"float"` gives the stored
 numbers exactly), `invalid_utf8="replace"` (`"error"`, `"binary"`). Options of `write_fstx`: `profile`,
-`compress` (`"zstd"`, `"lz4"`, `"none"`), `level`, `threads`, `append`, `int64` (`"auto"`: int32 when the
-values fit, else bit64 integer64; `"integer64"`; `"double"`).
+`compress` (`"zstd"`, `"lz4"`, `"none"`), `level`, `threads`, `append`, `int64` (see below).
+
+`int64` decides how int64, uint32 and uint64 columns are stored:
+
+- `"auto"` (default): int32 (an R integer) when every value fits, else an int64 column.
+- `"native"`: always an int64 column.
+- `"integer64"`: R's bit64 integer64 in the fstx 1.0 layout (the bits in a double column).
+- `"double"`: float64; refused when a value is past 2^53.
+
+An int64 column needs fstx 1.2 or later to read (R or Python).
+A column read from an fstx file keeps its layout when written back, and an append follows the file. A uint64 value
+above 2^63 - 1, and a non-null -2^63 (the missing value), are refused.
 
 How R's types arrive:
 
@@ -53,8 +63,14 @@ How R's types arrive:
 | factor (ordered) | `dictionary<int32, string>` (ordered) | `category` |
 | Date | `date32` | `datetime.date` objects |
 | POSIXct with tzone | `timestamp[us, tz]` | `datetime64[us, tz]` |
-| bit64 integer64 | `int64` | `Int64` |
+| bit64 integer64 (int64 column, or the fstx 1.0 layout) | `int64` | `Int64` |
+| list of raw vectors (also blob) | `binary` (`large_binary` for columns past 2 GB) | `bytes` objects |
 | difftime, labels, other attributes | the values, with the attributes in the field metadata | the same, in `df.attrs["fstx"]` |
+
+Written from Python: `binary`, `large_binary`, `binary_view` and `fixed_size_binary` are stored as binary (any
+bytes, NUL included; `fixed_size_binary` reads back as `binary`). Binary columns need fstx 1.2 or later to read.
+Plain `Table.to_pandas()` turns an int64 column with nulls into float64 (pyarrow's rule; inexact past 2^53);
+`fstx.to_pandas()` gives `Int64`.
 
 R's NA is a null everywhere; NaN stays NaN through pyarrow and polars (pandas 3 makes it missing). A table read
 here and written back keeps how R held it (classes, time zones, integer vs double Dates, row names): write from
@@ -62,38 +78,51 @@ the pyarrow.Table or from `fstx.to_pandas()`. The few things that do not survive
 section 8.
 
 Rows are 0-based in Python (R's are 1-based). Filters are AND-ed terms `(column, op, value)` with ops
-`== != < <= > >= in is_null not_null`, as R's `where =`.
+`== != < <= > >= in is_null not_null`, as R's `where =`. On int64 columns they compare exactly (Python ints and
+floats alike); binary columns take `== != in is_null not_null` with `bytes` values.
 
 ## Speed
 
-Measured 18 Nov 2026 on one desktop: Intel Core Ultra 5 245K (14 cores), 31.4 GiB RAM, Samsung 990 EVO Plus
-NVMe SSD, Windows x64; Python 3.12.10, pyarrow 26.0.1, pandas 3.1.1, this package as the wheel built with
-MSVC 19.44; R 4.6.1 with fstx 1.0.0. One table of 10,000,000 rows and 10 columns (two int32, two double, a
-logical, a 20-value string, a string unique per row, a date, a time with a time zone, a 5-level factor;
-692 MiB in Arrow memory). Median of 5 runs, page cache warm, all cores unless stated. Scripts:
-`tools/bench_py.py` and `tools/bench_r.R`.
+Measured 27 Nov 2026 on one desktop: Intel Core Ultra 5 245K (14 cores), 31.4 GiB RAM, NVMe SSD, Windows x64;
+pyarrow 26.0.1, vortex-data 0.95.0, pylance 14.0.3, duckdb 2.0.1, polars 2.2.0. fstx is the development build of
+that day (the 1.2 speed work, before the int64 and binary types and the string chooser fix), profile "balanced".
+Arrow tables out, all cores. Each case runs in a fresh process; a time is the median of 3 runs, the better of 2
+rounds; page cache warm.
 
-| seconds | fstx (balanced) | Parquet (snappy) | Feather (lz4) | Feather (none) | R fstx |
-|---|---|---|---|---|---|
-| write | 0.29 (was 0.44) | 2.18 | 0.47 | 0.23 | 0.15 |
-| write, 1 thread | 1.20 (was 1.36) | 2.17 | - | - | 0.86 |
-| read | 0.24 (was 0.24) | 0.20 | 0.20 | 0.10 | 2.48 (0.09 deferred) |
-| read, 1 thread | 0.60 (was 0.69) | 0.42 | 0.18 | - | 2.83 |
-| read 2 columns (a double, the 20-value string) | 0.09 (was 0.19) | 0.10 | 0.27 | - | 0.04 |
-| read into pandas | 0.57 (was 0.49) | 0.41 | - | - | - |
-| file size, MiB | 222.8 (was 224) | 372 | 490 | 693 | 222.8 |
+The mixed table, 5,000,000 rows and 8 columns (numbers, a date, strings, a factor, a logical), seconds:
 
-"was": the first measurement (same machine and table, earlier the same day), before the Python writer handed
-strings that repeat as a dictionary (equal strings must reach the engine as one pointer, as R gives them, to be
-dictionary-coded; DESIGN.md section 6). Since then the 20-value string column is stored as R stores it, the
-file is the size of R's, and reading that column is about twice as fast. The string column unique per row
-also writes faster (a quicker UTF-8 check); the other columns did not change.
+| | fstx | Parquet (snappy) | Parquet (zstd 3) | Vortex | Lance | DuckDB on Parquet | Polars on Parquet |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| write | **0.0954** | 0.869 | 1.29 | 0.346 | 0.969 | 0.442 | 0.151 |
+| full read | **0.0322** | 0.133 | 0.139 | 0.0422 | 0.0931 | 0.190 | 0.156 |
+| one column | 0.0061 | 0.0349 | 0.0489 | **0.0053** | 0.0155 | 0.0270 | 0.0191 |
+| 1% row window | 0.0039 | 0.0430 | 0.0533 | **0.0032** | 0.0057 | 0.0251 | 0.0151 |
+| filter (about 2% of rows) | **0.0173** | 0.121 | 0.139 | 0.0306 | 0.109 | 0.0785 | 0.0494 |
+| file size, MB | **64.8** | 128 | 88.1 | 83.7 | 147 | 124 | 88.7 |
 
-From Python, fstx writes about 1.6 times faster than Feather (lz4) and about 7 times faster than Parquet, and
-its file is the smallest. Reading is slower than Parquet (0.24 s against 0.20 s; on one thread 0.60 s against
-0.42 s). The R package still writes the same table in about half the time Python takes: what is left is the
-Python side's own preparation (about 0.1 s of casts and checks, run one column after another), not the engine.
-R's read here makes 10 million R strings (`strings = "eager"`, 2.48 s); its default makes them on first use
-(0.09 s for the read itself). `profile="fast"` (no codec) gave the same times at 231 MiB. Feather's two-column
-read is noisy (fastest of the 5 runs 0.06 s, median 0.27 s). The pandas read's median rose to 0.57 s (fastest
-0.51 s; 0.49 s before); not looked into.
+On the numeric table (10,000,000 rows x 6) and the text table (2,000,000 rows x 4 strings) fstx was the fastest in
+the same five tests except one: the text table's one-column read (Vortex 0.0189 s, fstx 0.0190 s). Its files were
+the smallest of the three tables. Reads of a few milliseconds are noisy: for some of them the two rounds differed by
+more than 20% (fstx's text window: 0.0015 and 0.0058 s). fstx's full reads and filtered reads used the least extra
+memory of all formats; its writes used more than pyarrow's Parquet writer (text 86 against 22 MB, mixed 122
+against 69 MB).
+
+## Changes
+
+### 1.2.0
+
+- New column types, shared with the R package fstx 1.2: int64 (R's bit64 integer64) and binary. Files with such a
+  column need fstx 1.2 or later.
+- `int64="auto"` now stores a column whose values do not fit int32 as an int64 column (1.0: integer64 in the 1.0
+  layout, which `int64="integer64"` still writes). New `int64="native"`.
+- Exact filters on int64 columns; `==`, `!=`, `in` and the null tests on binary columns.
+- `FileMeta.required_features` and `optional_features`; column type names `"int64"` and `"binary"`.
+- Faster reads, filters and writes (numbers above). Windows wheels are built with clang-cl.
+- Fixed: a file whose string column has dictionary-coded row groups and a plain one (for example a short last
+  row group) could not be read; every read path failed with "dictionary and plain pages mixed".
+- The writer's choice between plain and FSST string pages compares the two as pages of their real size; it took
+  the larger encoding for some text columns.
+
+### 1.0.0
+
+- First release.

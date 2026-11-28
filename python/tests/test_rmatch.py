@@ -8,6 +8,11 @@ Python -> R: every table read here, and tables built from plain Python data, are
 golden/from_python/rmatch/<name>.fstx with <name>.view.json: what R is to show after reading the file
 (rview.py's prediction, from the data written), plus the R case it came from and its known differences.
 check_rmatch.R reads each file in R and compares. The same files are read back here too.
+
+fstx 1.2 (int64 and binary columns): make_rmatch.R --v12 writes rmatch_int64_native and rmatch_binary with an R
+built from the 1.2 branch; besides the views, each is written back from Python with R's settings and must give the
+same bytes (DESIGN-1.2.md section 6, rule 3). Their tests, and every test here that reads an int64 or binary
+column, wait for the engine's drop 2 (conftest.py).
 """
 import json
 import warnings
@@ -17,12 +22,15 @@ import pytest
 
 import fstx
 import rview
-from conftest import GOLDEN
+from conftest import DROP2, GOLDEN
 
 RM = GOLDEN / "rmatch"
 OUT = GOLDEN / "from_python" / "rmatch"
 OUT.mkdir(parents=True, exist_ok=True)
 CASES = sorted(p.stem for p in RM.glob("*.fstx"))
+V12 = {"rmatch_int64_native", "rmatch_binary"}  # written by R with fstx 1.2 (make_rmatch.R --v12)
+CASE_PARAMS = [pytest.param(c, marks=pytest.mark.drop2) if c in V12 else c for c in CASES]
+drop2 = pytest.mark.drop2
 
 # Differences from R's view that DESIGN.md section 8 documents: (path, case, column) -> reason
 KNOWN = {
@@ -42,6 +50,12 @@ KNOWN = {
        for c in ("plain", "unused", "ordered", "odd_levels", "all_na", "ordered_unused")},
     # found by this file (18 Nov 2026), added to DESIGN.md section 8
     ("polars", "rmatch_factors", "na_level"): "a factor with an NA level comes back as strings through polars too",
+    # fstx 1.2: the same rules for int64 columns; binary columns lose their R class through polars
+    ("polars", "rmatch_int64_native", "none"): "polars carries no metadata: an all-NA Int64 comes back integer "
+                                               "(int64='auto')",
+    ("polars", "rmatch_int64_native", "small"): "polars carries no metadata: an Int64 whose values all fit int32 "
+                                                "comes back integer (int64='auto')",
+    ("polars", "rmatch_binary", "asis"): "polars carries no metadata: the AsIs class is lost",
 }
 
 
@@ -90,12 +104,12 @@ def save(data, name, view, source=None, known_cols=None, open_cols=None, **kw):
 
 
 # ---------------------------------------------------------------- R -> Python
-@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("case", CASE_PARAMS)
 def test_r_to_pyarrow(case):
     assert diff(rview.view_arrow(read(case)), r_view(case)) == {}
 
 
-@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("case", CASE_PARAMS)
 def test_r_to_pandas(case):
     pytest.importorskip("pandas")
     with warnings.catch_warnings():
@@ -109,7 +123,7 @@ def test_r_to_pandas(case):
         assert set(got) <= set(known("pandas", case)), got
 
 
-@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("case", CASE_PARAMS)
 def test_r_to_polars(case):
     pytest.importorskip("polars")
     with warnings.catch_warnings():
@@ -120,9 +134,11 @@ def test_r_to_polars(case):
 
 
 # ---------------------------------------------------------------- R -> Python -> R
-@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("case", CASE_PARAMS)
 @pytest.mark.parametrize("path", ["pyarrow", "pandas", "polars"])
 def test_r_to_python_to_r(case, path):
+    if path == "polars" and case in ("rmatch_int64", "rmatch_na") and not DROP2:
+        pytest.skip("waits for engine drop 2: through polars (no metadata) the values past int32 become an int64 column")
     t = read(case)
     if path == "pyarrow":
         data, view = t, rview.view_arrow(t)
@@ -341,8 +357,10 @@ def native_int64_arrow():
     })
 
 
-@pytest.mark.parametrize("mode", ["auto", "integer64", "double"])
+@pytest.mark.parametrize("mode", [pytest.param("auto", marks=drop2), pytest.param("native", marks=drop2),
+                                  "integer64", "double"])
 def test_native_int64_pyarrow(mode):
+    # "auto" and "native" store values past int32 as int64 columns (fstx 1.2), which R reads as integer64 too
     t = native_int64_arrow()
     if mode == "double":  # past 2^53: refused, so only the columns a double holds exactly
         t = t.select(["i64_small", "i64_none", "u32", "u32_small"])
@@ -351,6 +369,8 @@ def test_native_int64_pyarrow(mode):
     if mode == "auto":
         assert kinds["i64"] == ("double", ["integer64"]) and kinds["i64_small"] == ("integer", [])
         assert kinds["u32"] == ("double", ["integer64"]) and kinds["u32_small"] == ("integer", [])
+    if mode == "native":
+        assert all(k == ("double", ["integer64"]) for k in kinds.values())
     save(t, f"native_int64.pyarrow.{mode}", v, int64=mode)
 
 
@@ -363,6 +383,7 @@ def test_native_int64_refused(tmp_path):
         fstx.write_fstx(pa.table({"x": pa.array([2**53 + 1], pa.int64())}), tmp_path / "a.fstx", int64="double")
 
 
+@drop2
 def test_native_int64_pandas():
     pd = pytest.importorskip("pandas")
     df = pd.DataFrame({
@@ -379,6 +400,7 @@ def test_native_int64_pandas():
     save(df, "native_int64.pandas", v)
 
 
+@drop2
 def test_native_int64_polars():
     pl = pytest.importorskip("polars")
     df = pl.DataFrame({
@@ -465,6 +487,7 @@ def native_na_arrow():
     })
 
 
+@drop2  # its int64 column is stored as one (fstx 1.2)
 def test_native_na_pyarrow():
     t = native_na_arrow()
     v = rview.view_arrow(t)
@@ -533,3 +556,61 @@ def test_native_strings_polars():
     pl = pytest.importorskip("polars")
     df = pl.DataFrame({"s": pl.Series(TEXTS, dtype=pl.String)})
     save(df, "native_strings.polars", rview.view_polars(df))
+
+
+# ---------------------------------------------------------------- fstx 1.2: binary columns, same bytes as R
+BINS = [b"\x00\x01\x02", b"", None, b"text", bytes(range(256)), b"\xff\x00", bytes([0x41, 0x00, 0xFF]) * 30000,
+        b"\x00", None, b"\xc3\x28"]
+
+
+@drop2
+def test_native_binary_pyarrow():
+    t = pa.table({
+        "binary": pa.array(BINS, pa.binary()),
+        "large_binary": pa.array(BINS, pa.large_binary()),
+        "fixed": pa.array([b"ab", b"\x00\x00", None, b"\xff\x00"] * 2 + [b"zz", None], pa.binary(2)),
+        "repeats": pa.array([b"\x01\x02", b"\x00", None, b"\x01\x02", b""] * 2),
+        **({"binary_view": pa.array(BINS, pa.binary()).cast(pa.binary_view())} if hasattr(pa, "binary_view") else {}),
+    })
+    v = rview.view_arrow(t)
+    by = {c["name"]: c for c in v["columns"]}
+    assert by["binary"]["typeof"] == "list" and by["binary"]["class"] == [] and by["binary"]["values"][:3] == ["000102", "", None]
+    assert by["binary"]["values"][6].startswith("90000:")
+    save(t, "native_binary.pyarrow", v)
+
+
+@drop2
+def test_native_binary_pandas():
+    pd = pytest.importorskip("pandas")
+    df = pd.DataFrame({"raw": pd.Series(BINS, dtype=object), "none": pd.Series([None] * len(BINS), dtype=object)})
+    df.attrs["fstx"] = {"table_attrs": None, "nrow": None, "columns": [
+        {"name": "raw", "r": None, "attrs": None},
+        {"name": "none", "r": {"phys": "binary", "logical": "none"}, "attrs": None}]}  # all missing: the metadata types it
+    v = rview.view_pandas(df)
+    by = {c["name"]: c for c in v["columns"]}
+    assert by["raw"]["typeof"] == by["none"]["typeof"] == "list"
+    save(df, "native_binary.pandas", v)
+
+
+@drop2
+def test_native_binary_polars():
+    pl = pytest.importorskip("polars")
+    df = pl.DataFrame({"b": pl.Series(BINS, dtype=pl.Binary), "i": pl.Series([2**62, None] * 5, dtype=pl.Int64)})
+    save(df, "native_binary.polars", rview.view_polars(df))
+
+
+@drop2
+@pytest.mark.parametrize("case", sorted(V12 & set(CASES)))
+def test_same_bytes_as_r(case, tmp_path):
+    """R wrote the file (fstx 1.2, threads = 1, its defaults); Python reads it and writes it again with the same
+    settings: the bytes must be R's (DESIGN-1.2.md section 6, rule 3)."""
+    with open(RM / (case + ".view.json"), encoding="utf-8") as fh:
+        made = json.load(fh)["made_with"]
+    eng = fstx.build_info()["engine_version"]
+    if not made.startswith(f"fstx {eng},"):
+        pytest.skip(f"R's file was made with {made.split(',')[0]}, this engine is fstx {eng} (created_by differs)")
+    q = tmp_path / (case + ".fstx")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        fstx.write_fstx(read(case), q, threads=1)
+    assert q.read_bytes() == (RM / (case + ".fstx")).read_bytes()

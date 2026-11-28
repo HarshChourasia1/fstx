@@ -2,7 +2,14 @@
 
 The values are converted as R's ``.term_pred()`` (R/m5.R) converts them, from the column as R sees it:
 character, factor (level names), Date, POSIXct or a plain number / logical. Columns of any other class
-(integer64, difftime, ...) cannot be filtered, as in R: their page statistics do not mean what the values mean.
+(integer64 in the fstx 1.0 layout, difftime, ...) cannot be filtered, as in R: their page statistics do not mean
+what the values mean.
+
+fstx 1.2 columns: an int64 column compares exactly. Python ints (and numpy integers) go to the engine as int64
+(``i64`` / ``i64_set``); floats as numbers, compared with the int64 values as real numbers (``x < 2.5`` matches 2);
+an int past the int64 range is decided here (``==`` matches nothing, ``<`` every row that is not missing, ...);
+``bool`` is refused. A binary column takes ``==``, ``!=``, ``in``, ``is_null`` and ``not_null`` with ``bytes`` /
+``bytearray`` / ``memoryview`` values (compared byte for byte); ``str`` values are refused.
 """
 from __future__ import annotations
 
@@ -19,6 +26,7 @@ _OPS = {"==": _core.OP_EQ, "!=": _core.OP_NE, "<": _core.OP_LT, "<=": _core.OP_L
         ">=": _core.OP_GE, "in": _core.OP_IN, "is_null": _core.OP_ISNA, "not_null": _core.OP_NOTNA}
 _CMP = ("<", "<=", ">", ">=")
 _EPOCH = _dt.date(1970, 1, 1)
+_I64_MIN, _I64_MAX = -(2**63), 2**63 - 1
 
 
 def _zone(tz: str):
@@ -37,9 +45,14 @@ def _zone(tz: str):
 
 
 def _kind(col) -> str:
-    """character / factor / Date / POSIXct / plain, or raises for a column that cannot be filtered."""
+    """character / binary / int64 / factor / Date / POSIXct / plain, or raises for a column that cannot be
+    filtered."""
     if col.phys == "character":
         return "character"
+    if col.phys == "binary":
+        return "binary"
+    if col.phys == "int64":
+        return "int64"
     rc = col.r_class
     if rc is None:
         raise ValueError("its attributes are stored as R serialization, so its class is unknown to Python")
@@ -110,6 +123,58 @@ def _number(kind: str, col, v: Any, bad) -> Optional[float]:
     raise bad("compare a numeric or logical column with numbers")
 
 
+def _is_int(v) -> bool:
+    """A whole number given as such: int or a numpy integer, not bool (numpy's bool_ is not Integral)."""
+    return isinstance(v, numbers.Integral) and not isinstance(v, bool)
+
+
+def _int64_pred(col, op: str, v, bad) -> dict:
+    """One condition on an int64 column (has_i64 when the value is an int, exact)."""
+    p = {"col": col.index, "op": _OPS[op]}
+    none = {"col": col.index, "op": _core.OP_NONE}
+    every = {"col": col.index, "op": _core.OP_NOTNA}  # every row that is not missing
+
+    def check(x):
+        if x is None or _is_int(x):
+            return
+        if isinstance(x, bool) or type(x).__name__ == "bool_" or isinstance(x, str) or \
+                not isinstance(x, numbers.Real):
+            raise bad("compare an int64 column with whole numbers (int) or floats")
+
+    if op == "in":
+        ints = []
+        for x in v:
+            check(x)
+            if x is None:
+                continue
+            if not _is_int(x):  # a float: only a whole number in range can equal an int64
+                x = float(x)
+                if not (math.isfinite(x) and x == math.floor(x)):
+                    continue
+            x = int(x)
+            if _I64_MIN <= x <= _I64_MAX:
+                ints.append(x)
+        p["i64_set"] = ints
+        p["set_na"] = any(x is None for x in v)
+        return p
+    check(v)
+    if v is None:
+        return none
+    if not _is_int(v):
+        x = float(v)
+        if math.isnan(x):  # a comparison with NaN matches nothing
+            return none
+        p["value"] = x  # the engine compares with the int64 values as real numbers, exactly
+        return p
+    x = int(v)
+    if x > _I64_MAX:  # above every int64
+        return every if op in ("!=", "<", "<=") else none
+    if x < _I64_MIN:  # below every int64
+        return every if op in ("!=", ">", ">=") else none
+    p["i64"] = x
+    return p
+
+
 def to_preds(meta, filters) -> List[dict]:
     """The engine predicates for ``filters`` on a file with metadata ``meta`` (see fstx.read_fstx)."""
     if isinstance(filters, tuple) and filters and isinstance(filters[0], str):
@@ -157,6 +222,24 @@ def to_preds(meta, filters) -> List[dict]:
                 kind = _kind(col)
             except ValueError as e:
                 raise bad(str(e)) from None
+            if kind == "int64":
+                preds.append(_int64_pred(col, op, v, bad))
+                continue
+            if kind == "binary":
+                if op in _CMP:
+                    raise bad("binary columns support ==, !=, in, is_null and not_null only")
+                if any(x is not None and not isinstance(x, (bytes, bytearray, memoryview))
+                       for x in (v if op == "in" else [v])):
+                    raise bad("compare a binary column with bytes values (not str)")
+                if op == "in":
+                    p["strs"] = [bytes(x) for x in v if x is not None]
+                    p["set_na"] = any(x is None for x in v)
+                elif v is None:
+                    p = none
+                else:
+                    p["strs"] = [bytes(v)]
+                preds.append(p)
+                continue
             if kind in ("character", "factor"):
                 what = "strings" if kind == "character" else "level names"
                 if any(x is not None and not isinstance(x, str) for x in (v if op == "in" else [v])):

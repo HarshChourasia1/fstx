@@ -62,8 +62,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows x64 (MSVC), Linux x86_64 and aarch64 (manylinux_2_28, native ARM runner), macOS x86_64 and arm64.
-        os: [windows-latest, ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest]
+        # Windows x64 (clang-cl, see pyproject.toml), Linux x86_64 and aarch64 (manylinux_2_28, native ARM runner),
+        # macOS x86_64 and arm64.
+        # Windows is pinned to windows-2022: windows-latest and windows-2025 now run the windows-2025-vs2026 image,
+        # whose VS 2026 STL (MSVC 14.52) rejects the image's standalone clang-cl 20.1.8 ("error STL1000: Unexpected
+        # compiler version, expected Clang 22 or newer"). windows-2022 pairs VS 2022 17.14 with LLVM 20.1.8.
+        os: [windows-2022, ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest]
     steps:
       - uses: actions/checkout@v4
 

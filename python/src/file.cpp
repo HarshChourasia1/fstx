@@ -7,14 +7,16 @@
 
 namespace fstxpy {
 
-// The names R and the golden sidecars use (DESIGN.md section 4: phys integer / double / logical / character,
-// logical none / factor / Date / POSIXct).
+// The names R and the golden sidecars use (DESIGN.md section 4: phys integer / double / logical / character, and
+// since fstx 1.2 int64 / binary; logical none / factor / Date / POSIXct).
 static const char* phys_name(int p) {
   switch (p) {
     case FSTX_INT32: return "integer";
     case FSTX_FLOAT64: return "double";
     case FSTX_LOGICAL: return "logical";
     case FSTX_STRING: return "character";
+    case FSTX_INT64: return "int64";
+    case FSTX_BINARY: return "binary";
     default: return "unknown";
   }
 }
@@ -70,6 +72,8 @@ static nb::dict file_info(const File& F) {
   d["format_version"] = fi.format_version;
   d["profile"] = profile_name(fi.profile);
   d["table_attrs"] = bytes_or_none(fi.table_attrs, fi.table_attrs_len);  // fstx attribute blob (spec 9.4)
+  d["required_features"] = fi.required_features;  // footer feature bits (spec 5): 16 int64, 17 binary
+  d["optional_features"] = fi.optional_features;
   return d;
 }
 

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <new>
 #include <cstdlib>
 #include <string>
 #include <map>
@@ -24,6 +25,7 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -147,6 +149,8 @@ FileId file_id_of_path(const std::string& path) {
 MappedFile::~MappedFile() {
   if (data_) UnmapViewOfFile(data_);
   if (mapping_) CloseHandle((HANDLE)mapping_);
+  if (rfile_) CloseHandle((HANDLE)rfile_);
+  for (void* e : ev_free_) CloseHandle((HANDLE)e);
   if (file_ && file_ != INVALID_HANDLE_VALUE) CloseHandle((HANDLE)file_);
 }
 
@@ -167,12 +171,60 @@ void MappedFile::open(const std::string& path) {
   void* v = MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0);
   if (!v) fail(FSTX_ERR_IO, "cannot map '%s' (%s)", path.c_str(), win_error_text(GetLastError()).c_str());
   data_ = (const uint8_t*)v;
+  // ReOpenFile: the same file (never another one at the same path), opened for overlapped reads so that threads
+  // can read at their own offsets at once; read_at copies from the mapping if this is not possible
+  HANDLE r = ReOpenFile(h, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, FILE_FLAG_OVERLAPPED);
+  rfile_ = r == INVALID_HANDLE_VALUE ? nullptr : r;
 }
 
 void MappedFile::release(uint64_t off, uint64_t n) const {
   if (!data_ || n == 0 || off >= size_) return;
   const uint64_t a = off & ~(uint64_t)4095, e = std::min(size_, off + n);
   VirtualUnlock((LPVOID)(data_ + a), (SIZE_T)(e - a));  // not locked: this just trims the working set
+}
+
+void MappedFile::read_at(uint64_t off, void* dst, size_t n) const {
+  if (off > size_ || n > size_ - off) fail(FSTX_ERR_INTERNAL, "read outside the file");
+  uint8_t* d = (uint8_t*)dst;
+  HANDLE ev = nullptr;  // an event of this file's pool (taken here, given back below)
+  if (n && rfile_) {
+    std::lock_guard<std::mutex> g(ev_m_);
+    if (!ev_free_.empty()) {
+      ev = (HANDLE)ev_free_.back();
+      ev_free_.pop_back();
+    }
+  }
+  if (n && rfile_ && !ev) ev = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  struct GiveBack {
+    const MappedFile& f;
+    HANDLE e;
+    ~GiveBack() {
+      if (!e) return;
+      std::lock_guard<std::mutex> g(f.ev_m_);
+      try {
+        f.ev_free_.push_back(e);
+      } catch (...) {
+        CloseHandle(e);
+      }
+    }
+  } give_back{*this, ev};
+  while (n && rfile_ && ev) {
+    OVERLAPPED o;
+    std::memset(&o, 0, sizeof(o));
+    o.Offset = (DWORD)(off & 0xFFFFFFFFull);
+    o.OffsetHigh = (DWORD)(off >> 32);
+    o.hEvent = ev;
+    const DWORD want = (DWORD)std::min<size_t>(n, (size_t)1 << 30);
+    DWORD got = 0;
+    if (!ReadFile((HANDLE)rfile_, d, want, &got, &o)) {
+      if (GetLastError() != ERROR_IO_PENDING || !GetOverlappedResult((HANDLE)rfile_, &o, &got, TRUE)) break;
+    }
+    if (got == 0) break;
+    d += got;
+    off += got;
+    n -= got;
+  }
+  if (n) std::memcpy(d, data_ + off, n);  // no reopened handle, or the read stopped: the mapping has the bytes
 }
 
 OutFile::~OutFile() { close_and_delete(); }
@@ -323,6 +375,19 @@ void MappedFile::open(const std::string& path) {
   data_ = (const uint8_t*)v;
 }
 
+void MappedFile::read_at(uint64_t off, void* dst, size_t n) const {
+  if (off > size_ || n > size_ - off) fail(FSTX_ERR_INTERNAL, "read outside the file");
+  uint8_t* d = (uint8_t*)dst;
+  while (n && fd_ >= 0) {
+    const ssize_t got = ::pread(fd_, d, std::min<size_t>(n, (size_t)1 << 30), (off_t)off);
+    if (got <= 0) break;  // EINTR included: the mapping has the bytes
+    d += got;
+    off += (uint64_t)got;
+    n -= (size_t)got;
+  }
+  if (n) std::memcpy(d, data_ + off, n);
+}
+
 // madvise needs page-aligned addresses: 4 KB on x86, but 16 KB on Apple silicon and 4-64 KB on Linux ARM
 static uint64_t page_mask() {
   static const uint64_t m = [] {
@@ -444,23 +509,44 @@ bool registry_has(const FileId& id) {
 ThreadPool& ThreadPool::instance() {
   // Never destroyed: joining threads during process exit can deadlock on Windows.
   // fstx_shutdown() stops the workers when the R package is unloaded.
-  static ThreadPool* p = new ThreadPool();
+  static ThreadPool* p = [] {
+    ThreadPool* q = new ThreadPool();
+#ifndef _WIN32
+    // the child of fork() (R's parallel::mclapply) has none of the parent's workers: it starts its own
+    pthread_atfork(nullptr, nullptr, [] { ThreadPool::instance().after_fork(); });
+#endif
+    return q;
+  }();
   return *p;
+}
+
+// In the child of fork(), only the forking thread exists: the parent's worker and spawner threads are gone, and
+// the mutex and condition variables may still count their waiters, so they are made again (the old ones and the
+// thread handles are left as they are: never destroyed, joined or detached).
+void ThreadPool::after_fork() {
+  new (&m_) std::mutex();
+  new (&cv_work_) std::condition_variable();
+  new (&cv_done_) std::condition_variable();
+  new (&cv_spawn_) std::condition_variable();
+  std::vector<std::thread>* gone = new std::vector<std::thread>(std::move(threads_));
+  gone->push_back(std::move(spawner_));
+  threads_ = std::vector<std::thread>();
+  spawner_ = std::thread();
+  job_ = nullptr;
+  error_ = nullptr;
+  generation_ = 0;
+  active_ = next_slot_ = remaining_ = want_ = 0;
+  stop_ = running_ = false;
 }
 
 ThreadPool::~ThreadPool() { shutdown(); }
 
-void ThreadPool::worker_main(int id) {
-  uint64_t seen = 0;
-  std::unique_lock<std::mutex> lk(m_);
-  for (;;) {
-    cv_work_.wait(lk, [&] { return stop_ || generation_ != seen; });
-    if (stop_) return;
-    seen = generation_;
-    if (id >= active_) continue;
-    lk.unlock();
+void ThreadPool::run_slots(std::unique_lock<std::mutex>& lk) {
+  while (running_ && next_slot_ < active_) {
+    const int s = next_slot_++;
+    lk.unlock();  // job_ stays set: this slot is not finished, so wait() cannot return and clear it
     try {
-      job_(id);
+      job_(s);
     } catch (...) {
       std::lock_guard<std::mutex> g(m_);
       if (!error_) error_ = std::current_exception();
@@ -470,20 +556,71 @@ void ThreadPool::worker_main(int id) {
   }
 }
 
+void ThreadPool::worker_main() {
+  std::unique_lock<std::mutex> lk(m_);
+  uint64_t seen = running_ ? generation_ - 1 : generation_;  // a job already running: help with it
+  for (;;) {
+    cv_work_.wait(lk, [&] { return stop_ || generation_ != seen; });
+    if (stop_) return;
+    seen = generation_;
+    run_slots(lk);
+  }
+}
+
+// The spawner makes threads one after another until there are want_ (m_ is not held while one is made), then
+// waits for the next request. It stays up like the workers until shutdown() joins it: a spawner that had finished
+// but was not joined yet was a "thread leak" at process exit under TSan, and a detached one could still be running
+// its last instructions when the library is unloaded.
+void ThreadPool::spawn_loop() {
+  std::unique_lock<std::mutex> lk(m_);
+  for (;;) {
+    cv_spawn_.wait(lk, [&] { return stop_ || (int)threads_.size() < want_; });
+    if (stop_) return;
+    lk.unlock();
+    std::thread t;
+    try {
+      t = std::thread([this] { worker_main(); });
+    } catch (...) {  // no thread: the pool works with the ones it has (the caller runs any slot left)
+      lk.lock();
+      want_ = (int)threads_.size();
+      continue;
+    }
+    lk.lock();
+    threads_.push_back(std::move(t));
+  }
+}
+
+void ThreadPool::grow(int k) {
+  if (stop_) return;
+  if (k > want_) want_ = std::min(k, 256);
+  if ((int)threads_.size() >= want_) return;
+  if (!spawner_.joinable()) {
+    try {
+      spawner_ = std::thread([this] { spawn_loop(); });
+    } catch (...) {
+      return;  // no spawner: the caller runs the slots
+    }
+  }
+  cv_spawn_.notify_one();
+}
+
+void ThreadPool::warm(int k) {
+  std::lock_guard<std::mutex> g(m_);
+  grow(k);
+}
+
 void ThreadPool::start(int k, std::function<void(int)> job) {
   std::unique_lock<std::mutex> lk(m_);
   if (running_) fail(FSTX_ERR_INTERNAL, "worker pool is already running a job");
   if (k < 1) k = 1;
-  while ((int)threads_.size() < k) {
-    int id = (int)threads_.size();
-    threads_.emplace_back([this, id] { worker_main(id); });
-  }
   job_ = std::move(job);
   active_ = k;
+  next_slot_ = 0;
   remaining_ = k;
   error_ = nullptr;
   running_ = true;
   ++generation_;
+  grow(k);
   cv_work_.notify_all();
 }
 
@@ -495,6 +632,7 @@ bool ThreadPool::busy() {
 void ThreadPool::wait() {
   std::unique_lock<std::mutex> lk(m_);
   if (!running_) return;
+  run_slots(lk);  // slots no worker has claimed yet run here (workers still starting up are not waited for)
   cv_done_.wait(lk, [&] { return remaining_ == 0; });
   running_ = false;
   job_ = nullptr;
@@ -510,12 +648,15 @@ void ThreadPool::shutdown() {
     stop_ = true;
   }
   cv_work_.notify_all();
+  cv_spawn_.notify_all();
+  if (spawner_.joinable()) spawner_.join();  // first: it may still add a thread
   for (auto& t : threads_)
     if (t.joinable()) t.join();
   threads_.clear();
   std::lock_guard<std::mutex> g(m_);
   stop_ = false;
   running_ = false;
+  want_ = 0;
 }
 
 int resolve_threads(int threads) {
