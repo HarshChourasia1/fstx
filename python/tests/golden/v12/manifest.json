@@ -1,0 +1,48 @@
+{
+  "fstx": "1.2.0",
+  "r": "R version 4.6.2 (2026-10-29 ucrt)",
+  "made": "2026-11-28",
+  "note": "fstx 1.2 cases (int64 and binary columns), written with R's defaults; python/tests/test_types12.py",
+  "cases": [
+    {
+      "file": "int64_native.fstx",
+      "about": "int64 columns (fstx 1.2, R's default int64 = \"native\"): past int32 and 2^53, the extremes, NA; small values; all NA",
+      "bytes": 984,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical",
+      "roundtrip_polars": "identical"
+    },
+    {
+      "file": "int64_pages.fstx",
+      "about": "int64 pages over many rows: a growing sequence past int32 and a column of four repeating values",
+      "bytes": 904,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical",
+      "roundtrip_polars": "identical"
+    },
+    {
+      "file": "binary.fstx",
+      "about": "binary column (fstx 1.2): NUL bytes, empty raw, NULL, every byte value, invalid UTF-8, an 80 KB value; an all-NULL column",
+      "bytes": 1168,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical",
+      "roundtrip_polars": "identical"
+    },
+    {
+      "file": "binary_dict.fstx",
+      "about": "binary columns with few distinct values (dictionary pages), one of class AsIs",
+      "bytes": 1240,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical",
+      "roundtrip_polars": "identical"
+    },
+    {
+      "file": "int64_binary.fstx",
+      "about": "both new types in one file: feature bits 16 and 17",
+      "bytes": 832,
+      "roundtrip_pyarrow": "identical",
+      "roundtrip_pandas": "identical",
+      "roundtrip_polars": "identical"
+    }
+  ]
+}

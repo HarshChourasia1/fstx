@@ -7,7 +7,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "fstx"
-version = "1.0.0"
+version = "1.2.0"
 description = "Fast, safe column-store files (the FST-X format): Python on the fstx C++ engine"
 readme = "README.md"
 # PEP 639: an SPDX expression, and the licence files that go into the wheel's .dist-info/licenses and the
